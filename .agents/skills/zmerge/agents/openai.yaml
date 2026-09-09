@@ -1,0 +1,5 @@
+interface:
+  display_name: zmerge
+  short_description: 以已校验 Squash-Title 执行 squash merge
+policy:
+  allow_implicit_invocation: false

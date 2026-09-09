@@ -1,0 +1,30 @@
+name: Main tripwire
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: write
+
+# 串行查重和创建；保留待处理事件，避免连续 push 把中间一次检查取消。
+concurrency:
+  group: main-tripwire
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify main provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 2-infra/git-guard/main_guard.py

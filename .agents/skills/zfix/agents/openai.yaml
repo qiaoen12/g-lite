@@ -1,0 +1,5 @@
+interface:
+  display_name: zfix
+  short_description: 按未通过 Review 的阻断项修复并本地提交
+policy:
+  allow_implicit_invocation: false

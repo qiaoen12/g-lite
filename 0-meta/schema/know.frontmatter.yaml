@@ -1,0 +1,135 @@
+schema_version: know-frontmatter/v1
+
+# 4-know 下每个 .md 的 frontmatter 契约。
+# 审计据此检查字段完整性与 review 是否过期。
+
+required: [id, type, status, created]
+
+fields:
+
+  id:
+    type: string
+    pattern: '^[a-z0-9][a-z0-9-]*$'
+    immutable: true
+    unique: 4-know          # 命名空间是整个知识库，不是单个子目录
+    desc: |
+      稳定标识符，建立后永不修改。
+      跨文档引用、Dataview 查询、外部链接全部靠它，不靠文件路径。
+      文件可以改名、换目录、内容重写，引用都不断。
+
+      immutable 与 unique 都是契约声明，不是全自动强制的不变量：
+      审计只在「至少一侧是决策记录」时报 id 冲突（见 decision_links），
+      改 id 和两篇笔记互撞由人守。索引链接因此不敢用 id 拼路径。
+
+  type:
+    type: enum
+    values: [note, source, decision, runbook]
+    desc: 文档种类，决定它放在哪个子目录
+
+  status:
+    type: enum
+    values: [draft, active, archived]
+    default: draft
+
+  topic:
+    type: list[string]
+    desc: |
+      多值主题标签。这是替代文件夹分类的关键——
+      一篇资料可以同时属于多个主题，文件夹做不到。
+      建议用小写短词，保持词表收敛（新增前先看现有的）。
+
+  scope:
+    type: list[string]
+    required_when: 'type == decision'
+    list_syntax: block_or_empty_only
+    desc: |
+      这条决策作用于什么。词表与提交语言的 scope 完全相同
+      （形状 <domain>[.<unit>[.<member>]]，由 0-meta/policy.yaml 的 git.commit 声明，
+      unit 从目录树实时派生），所以「这个 scope 存不存在」有唯一一份判据。
+
+      与 topic 的分工：topic 回答「讲的是什么主题」，scope 回答「改的是哪块」。
+      前者自由造词，后者必须落在已有词表里，因为它要被索引消费。
+
+      多值是必须的，不是方便：本仓库现有四条 ADR 里三条跨域。
+      写成单值就得给跨域的那几条挑一个错的主人，而它们恰好是最重要的。
+
+      空列表写 []（合法但会被索引报为「没说清作用于什么」）。
+      行内写法 [a, b] 不认——解析器会大声拒绝，不会静默算成 0 项。
+
+  primary_scope:
+    type: string
+    nullable: true
+    required_when: 'type == decision'
+    desc: |
+      主归属，必须是 scope 的成员之一；多个 scope 地位平等时填 null。
+
+      总索引用它决定级别；各目录受控块仍按 scope 的全部成员生成。
+
+      级别从它的形状推——裸 domain 是体系级，单元目录是单元级，分组内成员是
+      成员级，所以不需要单独的 level 字段。「体系级」说的是声明粒度而非影响面：
+      裸 repo / meta 约束整个工作区，裸 data / vendor / inbox / record 只约束
+      自己那个域。从目录树派生的 scope 按实际路径深度定级，不能只数点号
+      （合法目录名本身可以含点）；四个语义别名（meta.policy / meta.agents /
+      meta.new / meta.hooks）绑定文件而非目录层级，级别按点号段数定。
+
+  source:
+    type: url
+    required_when: 'type == source'
+    desc: 外部资料的原始出处。半年后你会想知道这段话是谁说的
+
+  retrieved_at:
+    type: date
+    required_when: 'type == source'
+    desc: |
+      抓取日期。网页会改、会删，「我引用的是哪一版」必须可考。
+      没有这个字段，source 字段在两年后只是一个可能 404 的字符串。
+
+  locator:
+    type: string
+    optional: true
+    desc: |
+      在来源内部的具体位置：'表 3'、'第 17 页'、'§4.2'、'数据集第 120 行'。
+      一个 URL 只能定位到文档，定位不到你实际引用的那一句。
+      做研究时这一格的价值高于 confidence——它让别人（和以后的你）能复核。
+
+  archived_url:
+    type: url
+    optional: true
+    desc: |
+      存档快照（archive.org / archive.today），或 4-know/_files/ 下的本地副本路径。
+      链接腐烂是研究笔记最常见的失效原因，比论证结构不严谨常见得多。
+      重要来源建议在记录当天就存一份。
+
+  confidence:
+    type: enum
+    values: [high, medium, low]
+    default: medium
+    desc: |
+      high   = 自己验证过 / 一手材料
+      medium = 可信来源但未亲自验证
+      low    = 道听途说、待查证
+
+      注意 confidence 回答的是「我觉得它多可信」，
+      而 source + retrieved_at + locator 回答的是「我为什么相信它」。
+      后者才是可复核的。规模上来之后，前者的价值会迅速低于后者。
+
+  created:
+    type: date
+
+  review:
+    type: date
+    desc: |
+      复审日期。过期由审计报出，防止知识库腐烂。
+      建议：技术类 6 个月，方法论类 2 年，runbook 跟随所依赖系统的变更节奏。
+
+  supersedes:
+    type: string
+    optional: true
+    desc: 本文取代了哪个 id（用于决策记录的演进链）
+
+# 检查复审到期的 Dataview 查询：
+#
+#   TABLE file.link AS "该复审了", topic, review
+#   FROM "4-know"
+#   WHERE review AND review < date(today)
+#   SORT review ASC

@@ -1,0 +1,125 @@
+schema_version: task-contract/v1
+
+# Task Contract v1 的机器可读契约。语义只在这里和 0-meta/lib/new/contract.sh。
+# 模板只提供书写骨架，不另建一套规则。
+#
+# 三层事实：
+#   1. 流程底线（本文件 + contract.sh）：必填字段、证据、禁止降级、parser/validator。
+#      单个任务不能靠改自己的 Issue 放宽。
+#   2. 任务基准：目标、R、A、A→R、允许改动范围。approve 写入 origin/main
+#      的契约文件；版本是 contract.json 的 blob SHA。
+#   3. 阶段事实：进度、验证、Review、PR。必须绑定当前 Contract 与适用 HEAD。
+
+marker: '<!-- task-contract:v1 -->'
+checkpoint_marker: '<!-- new-task-checkpoint -->'
+review_marker: '<!-- new-task-review -->'
+pr_mark_begin: '<!-- new-task-pr -->'
+pr_mark_end: '<!-- /new-task-pr -->'
+
+sections:
+  required:
+    - key: background
+      heading: 背景
+      empty: forbidden
+    - key: goal
+      heading: 目标
+      empty: forbidden
+    - key: requirements
+      heading: 要求 / 实现细节
+      aliases: [要求]
+      empty: forbidden
+      min_items: 1
+      item_id: 'R[1-9][0-9]*'
+    - key: acceptances
+      heading: 验收
+      empty: forbidden
+      min_items: 1
+      item_id: 'A[1-9][0-9]*'
+      requires_current_r: true
+      alias_refs_forbidden: [全局, 全部, all, global]
+      validators:
+        field: validators
+        item_type: string
+        reference_prefix: 'validator:'
+        registry:
+          - new-check-commit
+          - contract-test
+          - bash-syntax
+        unknown: reject
+        arbitrary_commands: reject
+    - key: scope
+      heading: 允许改动范围
+      empty: forbidden
+      min_paths: 1
+      path_parser: task_parse_scope
+  optional:
+    - key: branch_suggestion
+      heading: 分支建议
+      empty: forbidden_if_present
+      hard_gate_on_mismatch: false
+
+constraints:
+  duplicate_sections: reject
+  empty_sections: reject
+  duplicate_ids: reject
+  id_redefinition: reject
+  missing_a_to_r: reject
+  unknown_r_ref: reject
+  fence_fields_are_not_real: true
+  unparseable_scope: reject
+
+requirement_status: [pending, addressed, blocked]
+acceptance_status: [pending, passed, failed, not-applicable]
+not_applicable:
+  requires_contract_condition: true
+  requires_reason_and_evidence: true
+  default_if_no_condition: always_applicable
+
+# 阶段文档的版本字段。值为 origin/main:0-meta/tasks/<n>/contract.json 的 blob SHA。
+contract_field: Contract
+
+checkpoint_fields:
+  - Issue
+  - Contract
+  - Agent
+  - 分支
+  - 工作树
+  - HEAD
+  - 工作区状态
+  - 允许范围
+  - Project
+  - PR
+  - 下一步
+  - claim_actor
+
+review_fields:
+  required:
+    - Verdict
+    - reviewed HEAD
+    - 范围
+    - Squash-Title
+    - Issue
+    - Contract
+    - review_actor
+    - Self-review
+  min_report:
+    heading: 最小充分审查
+    fields:
+      - 审查代码与调用点
+      - 复用证据
+      - 新增验证
+      - 覆盖范围
+      - 未执行的大范围验证
+      - 剩余风险
+  contract_section: Contract 对照
+  machine_fields:
+    - review_actor=<id>
+    - Self-review=yes|no
+
+pr_fields:
+  - Issue
+  - Contract
+  - reviewed HEAD
+  - 变更摘要
+  - 验证摘要
+  - Fixes

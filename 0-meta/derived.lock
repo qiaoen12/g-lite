@@ -1,0 +1,228 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# derived.lock —— 由 0-meta/policy.yaml 推导而来。不要手改。
+#
+# 改完 policy.yaml 跑 `new plan` 重算；policy.yaml 与本文件必须同一个 commit。
+# 本文件的 git diff 就是变更预览：它记录规则集合，不记录展开后的文件路径。
+#
+# 生成器：0-meta/audit/scripts/derive-paths.sh
+# ═══════════════════════════════════════════════════════════════════════════
+
+schema = derived/v1
+policy_sha256 = 47538d97d3c35ded05047d3ec083394a5911ce0b1e96bca9a02b5f0c32922483
+# root 为空：运行时用 git toplevel；禁止 tracked 本机绝对路径（#41 A5）
+root =
+
+# ── 备份 ─────────────────────────────────────────────────────────────────
+backup.include = 0-meta 1-code 2-infra 3-data 4-know 5-record _inbox
+backup.exclude.domains = _vendor
+backup.exclude.reserved = _cache _out _vendor
+backup.keep.reserved = _archive _files _raw
+backup.exclude.regenerable_strict = .venv node_modules target vendor venv wheelhouse
+backup.exclude.regenerable_weak = .venv node_modules target venv wheelhouse
+backup.exclude.build_output = .astro .next .nuxt .svelte-kit build coverage dist htmlcov
+backup.exclude.always_disposable = .mypy_cache .parcel-cache .pytest_cache .ruff_cache .turbo __pycache__
+backup.exclude.os_metadata = .DS_Store .coverage .eslintcache Thumbs.db
+backup.evidence.strict..venv = Pipfile.lock poetry.lock uv.lock
+backup.evidence.strict.node_modules = bun.lock bun.lockb package-lock.json pnpm-lock.yaml yarn.lock
+backup.evidence.strict.target = Cargo.lock
+backup.evidence.strict.vendor = composer.lock go.sum
+backup.evidence.strict.venv = Pipfile.lock poetry.lock uv.lock
+backup.evidence.strict.wheelhouse = poetry.lock uv.lock
+backup.evidence.weak..venv = Pipfile pyproject.toml requirements.txt
+backup.evidence.weak.node_modules = package.json
+backup.evidence.weak.target = Cargo.toml
+backup.evidence.weak.venv = Pipfile pyproject.toml requirements.txt
+backup.evidence.weak.wheelhouse = pyproject.toml requirements.txt
+backup.evidence.build_output.rule = source_committed_and_pushed
+backup.evidence.build_output.fallback = Cargo.toml Makefile package.json pyproject.toml
+backup.evidence.promote_pinned.requirements_txt = ^[A-Za-z0-9._-]+(\[[^]]+\])?==[^\s;]+$
+backup.destinations = cold-b2 cold-gdrive
+backup.dest.cold-b2.repo = b2:REPLACE-ME:workspace-cold
+backup.dest.cold-b2.schedule = weekly
+backup.dest.cold-gdrive.repo = rclone:REPLACE-ME:restic/workspace-cold
+backup.dest.cold-gdrive.schedule = daily
+backup.password_source = keychain://restic-cold/restic-password
+backup.password_recovery = bw://restic-cold paper
+backup.password_offline_copy_required = true
+backup.password_offline_copy_attestation = 0-meta/audit/offline-copy.attestation
+backup.retention.keep_last = 14
+backup.retention.keep_weekly = 8
+backup.retention.keep_monthly = 12
+backup.restore_drill_days = 90
+backup.external_paths = ../worktrees
+
+# ── 同步（热镜像，不计入副本数）────────────────────────────────────────
+sync.target = REPLACE-ME:/path/to/workspace-mirror
+sync.mode = push_only
+sync.include = 0-meta 1-code 2-infra 4-know
+sync.forbid.domains = 3-data 5-record _inbox _vendor
+sync.forbid.reserved = _archive _cache _files _out _raw _vendor
+sync.flags_denylist = --delete-excluded
+sync.counts_as_backup_copy = false
+
+# ── 保留名（任意深度生效）────────────────────────────────────────────
+reserved._archive = backup:required sync:forbidden vcs:forbidden mutable:-
+reserved._cache = backup:forbidden sync:forbidden vcs:forbidden mutable:true
+reserved._files = backup:required sync:forbidden vcs:forbidden mutable:true
+reserved._out = backup:forbidden sync:forbidden vcs:forbidden mutable:true
+reserved._raw = backup:required sync:forbidden vcs:forbidden mutable:append_only
+reserved._vendor = backup:forbidden sync:forbidden vcs:upstream mutable:true
+
+# ── Git（monorepo 跟踪范围）──────────────────────────────────────────
+git.mode = monorepo
+git.root = .
+git.default_branch = main
+git.tracked_domains = 0-meta 1-code 2-infra 4-know
+git.partial_domains = 3-data
+git.partial.3-data.track = DATASET.md README.md RETENTION.md pipeline/ schema/
+git.partial.3-data.never = _cache/ _out/ _raw/
+git.never_domains = 5-record _inbox _vendor
+git.never_exception.5-record = AGENTS.md RETENTION.md
+git.never_exception._inbox = AGENTS.md
+git.never_exception._vendor = AGENTS.md VENDOR.md
+git.never_reserved = _archive _cache _files _out _raw _vendor
+git.max_tracked_file_bytes = 5242880
+git.branch.long_lived = main
+git.branch.prefixes = code data inbox infra know meta record repo research vendor
+git.branch.naming_regex = ^(code|data|inbox|infra|know|meta|record|repo|research|vendor)/[a-z0-9][a-z0-9._-]*$
+git.branch.merge_strategy = squash
+git.worktree.root = ../worktrees
+git.worktree.always_include = .agents 0-meta
+git.worktree.sparse_mode = cone
+git.worktree.external_backup = true
+git.standalone.count = 0
+git.standalone.paths = 
+
+prompt_budget.root_agents_bytes = 4096
+prompt_budget.meta_agents_bytes = 4096
+prompt_budget.agent_card_bytes = 2048
+prompt_budget.start_card_bytes = 2048
+prompt_budget.skill_card_bytes = 2048
+prompt_budget.skill_card_lines = 48
+prompt_budget.workflow_bytes = 4096
+prompt_budget.skill_paths = .agents/skills/zdev/SKILL.md .agents/skills/zfix/SKILL.md .agents/skills/zmerge/SKILL.md .agents/skills/zpr/SKILL.md .agents/skills/zreview/SKILL.md .agents/skills/zsync/SKILL.md
+
+# ── 提交语言 ─────────────────────────────────────────────────────────
+git.commit.format = <type>(<scope>): <描述>
+git.commit.scope_shape = <domain>[.<unit>[.<member>]]
+git.commit.scope_domains = code data inbox infra know meta record repo research vendor
+git.commit.scope_src.code = 1-code
+git.commit.scope_src.data = 3-data
+git.commit.scope_src.inbox = _inbox
+git.commit.scope_src.infra = 2-infra
+git.commit.scope_src.know = 4-know
+git.commit.scope_src.meta = 0-meta
+git.commit.scope_src.record = 5-record
+git.commit.scope_src.repo = .
+git.commit.scope_src.research = 4-know/research
+git.commit.scope_src.vendor = _vendor
+git.commit.scope_no_unit = inbox record repo
+git.commit.scope_unit_exclude.know = research
+git.commit.scope_skip_reserved = _archive _cache _files _out _raw _vendor
+git.commit.scope_member_from.code = grouped_projects
+git.commit.scope_aliases = meta.agents meta.hooks meta.new meta.policy
+git.commit.scope_alias.meta.agents = 0-meta/AGENTS.md
+git.commit.scope_alias.meta.hooks = .pre-commit-config.yaml
+git.commit.scope_alias.meta.new = 0-meta/bin/new
+git.commit.scope_alias.meta.policy = 0-meta/policy.yaml
+git.commit.types.all = chore clean collect create docs feat fix plan refactor revert revise seal test transform translate
+git.commit.types.code = docs feat fix refactor test
+git.commit.types.data = clean collect seal transform translate
+git.commit.types.inbox = docs
+git.commit.types.infra = docs feat fix refactor test
+git.commit.types.know = create plan revise
+git.commit.types.meta = docs feat fix refactor
+git.commit.types.record = docs
+git.commit.types.repo = docs
+git.commit.types.research = create plan revise
+git.commit.types.universal = chore revert
+git.commit.types.vendor = docs
+git.commit.type_glossary.chore = 非领域语义的维护动作；最低优先级兜底，能用领域专属 type 就不要用它
+git.commit.type_glossary.clean = 清洗、去重、纠错
+git.commit.type_glossary.collect = 采集、导入新数据
+git.commit.type_glossary.create = 新建首版知识、文档、报告
+git.commit.type_glossary.docs = README、注释、说明文档
+git.commit.type_glossary.feat = 新增能力
+git.commit.type_glossary.fix = 修复错误
+git.commit.type_glossary.plan = 计划、研究设计、框架、方案
+git.commit.type_glossary.refactor = 重构内部结构，目标行为基本不变
+git.commit.type_glossary.revert = 回滚某次正式提交
+git.commit.type_glossary.revise = 修订已有知识、文档、报告
+git.commit.type_glossary.seal = 固化原始数据并生成 MANIFEST.sha256
+git.commit.type_glossary.test = 测试、验证、恢复演练
+git.commit.type_glossary.transform = 转换、聚合、生成派生数据
+git.commit.type_glossary.translate = 翻译实际数据内容
+git.commit.multi_scope_separator = ,
+git.commit.scope_path_direction = declared_must_have_evidence
+git.commit.scope_path_on_violation = hard_fail
+git.commit.desc_min_chars = 4
+git.commit.allow_wip_on_short_lived = true
+git.commit.enforce_after = 31a7d29cdb0c3ea948d71e322630f300fae82e5e
+git.commit.skip_path_check_when_empty_stage = true
+git.commit.main_vague_re = ^(update|updates|wip|fix2|checkpoint|agent changes|misc|tmp|temp|保存|更新|修改|调整|优化|提交)$
+git.commit.exempt_autogen_re = ^(Revert "|Merge branch |Merge remote-tracking branch |Merge pull request |Merge tag |fixup! |squash! )
+
+# ── 密钥 ─────────────────────────────────────────────────────────────
+secrets.policy = no_plaintext_anywhere
+secrets.on_violation = hard_fail
+secrets.deny_glob_count = 13
+secrets.deny_globs = **/*.key **/*.ovpn **/*.pem **/*credentials*.json **/*password*.csv **/*密码*.csv **/.env **/.env.local **/.env.production **/cookie*secret* **/id_ed25519 **/id_rsa* **/secrets.json
+
+# ── AI 访问边界（layer 1 声明）─────────────────────────────────────────
+ai_access.0-meta = read
+ai_access.1-code = read-write
+ai_access.2-infra = read-write
+ai_access.3-data = read
+ai_access.4-know = read-write
+ai_access.5-record = deny
+ai_access._inbox = read
+ai_access._vendor = read
+ai_access.must_deny = **/*.key **/*.pem **/.env **/id_ed25519 **/id_rsa* 5-record/
+ai_access.adapter_files = .aiignore .claude/settings.json .cursorignore
+ai_access.adapter_advisory = AGENTS.md
+ai_access.layer_3_status = planned
+
+# ── 审计 ─────────────────────────────────────────────────────────────
+audit.checks = backup_closure commit_convention copy_count dataset_links decision_links git_hygiene naming password_sources plaintext_secrets plan_staleness raw_integrity retention sync_safety topology worktree_hygiene
+audit.hard_fail = backup_closure git_hygiene password_sources plaintext_secrets plan_staleness raw_integrity sync_safety topology
+audit.tier.commit = git_hygiene naming plaintext_secrets plan_staleness
+audit.tier.commit.budget_seconds = 3
+audit.tier.daily = commit_convention copy_count dataset_links decision_links git_hygiene naming password_sources plaintext_secrets retention sync_safety topology worktree_hygiene
+audit.tier.daily.budget_seconds = 120
+audit.tier.deep = backup_closure raw_integrity
+audit.tier.deep.budget_seconds = 3600
+
+# ── 数据集归属声明 ───────────────────────────────────────────────────
+data.producer_types = code external manual pipeline
+data.index_file = 3-data/INDEX.md
+
+# ── 决策记录归属声明 ─────────────────────────────────────────────────
+decision.records_dir = 4-know/decision
+decision.index_file = 0-meta/DECISIONS.md
+decision.scope_tool = 0-meta/audit/scripts/check-commit-msg.sh
+decision.scope_validate_mode = --scope-valid
+decision.scope_dir_mode = --scope-dir
+decision.scope_level_mode = --scope-level
+decision.marker_begin = <!-- BEGIN decisions (generated by new adr --index) -->
+decision.marker_end = <!-- END decisions -->
+
+# ── 命名 ─────────────────────────────────────────────────────────────
+naming.0-meta = strict-ascii
+naming.1-code = strict-ascii
+naming.2-infra = strict-ascii
+naming.3-data = strict-ascii
+naming.4-know = free-with-id
+naming.5-record = free
+naming._inbox = free
+naming._vendor = strict-ascii
+
+# ── GitHub Project（运行时视图；身份仍从 origin 推导）────────────────
+github.project.number = 1
+github.project.title = Tasks
+github.repo_override = 
+github.status.backlog = Backlog
+github.status.ready = Ready
+github.status.progress = In progress
+github.status.review = In review
+github.status.done = Done
+

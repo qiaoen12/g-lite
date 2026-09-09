@@ -1,0 +1,134 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# 本工作区 monorepo 的跟踪范围。
+#
+# 「工作区是一个 git repo」不等于「工作区所有文件都进 git」。
+# 本文件由 0-meta/policy.yaml 的 git 段决定，改 policy 之后跑 new plan 对照。
+#
+# 排列顺序有意义：git 采用「最后一条匹配的规则获胜」。
+# 因此结构是——先放域级规则和它们的例外，最后放保留名与密钥这两组绝对禁令，
+# 让它们无条件覆盖前面任何一条 `!` 重新纳入。
+#
+# 注意 git 的一条硬限制：父目录被排除之后，子文件无法再被 `!` 纳入。
+# 所以 3-data 和 5-record 用 `/域/*/*` 或 `/域/*` 这种「排除内容但不排除目录本身」
+# 的写法，而不是 `/域/`。
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+# ── 一、整域跟踪：0-meta / 1-code / 2-infra / 4-know ──────────────────────
+# 无需任何规则。它们默认进 git，由下面第五、六节剥离不该进的部分。
+
+
+# ── 二、3-data：只跟踪契约与代码，数据本体不进 git ────────────────────────
+# 排除数据集目录下的一切，再逐项纳回。不写成 /3-data/ 是因为那样会锁死重新纳入。
+/3-data/*/*
+!/3-data/*/DATASET.md
+!/3-data/*/RETENTION.md
+!/3-data/*/README.md
+!/3-data/*/pipeline/
+!/3-data/*/schema/
+
+
+# ── 三、5-record：档案本体永不进 git，只跟踪两个清单 ──────────────────────
+/5-record/*
+!/5-record/AGENTS.md
+!/5-record/RETENTION.md
+
+
+# ── 四、_inbox：只跟踪治理文档 ────────────────────────────────────────────
+# 规则文件必须随仓库走，否则 clone 出来是一个没有规则的工作区。
+/_inbox/*
+!/_inbox/AGENTS.md
+
+# _vendor 同理，但它同时是保留名，规则必须写在第六节末尾才不会被覆盖。
+
+
+# ── 五、依赖与构建产物（任意深度）─────────────────────────────────────────
+# 判据是「有没有真锁文件」，规则见 policy.yaml 的 regenerable 段。
+node_modules/
+.venv/
+venv/
+wheelhouse/
+__pycache__/
+*.pyc
+dist/
+build/
+coverage/
+htmlcov/
+target/
+.next/
+.nuxt/
+.astro/
+.svelte-kit/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.turbo/
+.parcel-cache/
+
+
+# ── 六、保留名：任意深度，无条件生效 ──────────────────────────────────────
+# 放在末尾，覆盖上面任何 `!` 重新纳入。
+# 例如 3-data/foo/pipeline/_out/ 会被这里挡住，即便 pipeline/ 已被纳回。
+**/_out/
+**/_cache/
+**/_files/
+**/_archive/
+**/_raw/
+
+# _vendor 需要保留两个治理文档，所以排除的是「内容」而不是「目录本身」——
+# 写成 **/_vendor/ 会锁死目录，下面两条 ! 就永远生效不了
+# （git 规则：父目录被排除后，子文件无法再被重新纳入）。
+# 加 /* 之后目录仍可进入，其下的子目录照样在第一层就被挡住，效果等价。
+**/_vendor/*
+!/_vendor/AGENTS.md
+!/_vendor/VENDOR.md
+
+
+# ── 七、明文凭据：双保险 ──────────────────────────────────────────────────
+# 主防线是 pre-commit 的 gitleaks 与 new check 的 git_hygiene。
+# 这里是最后一道，同样放在末尾以覆盖一切。
+*.pem
+*.key
+*.ovpn
+id_rsa*
+id_ed25519
+.env
+.env.local
+.env.production
+secrets.json
+*credentials*.json
+*password*.csv
+*密码*.csv
+!*.pub
+!.env.tpl
+!.env.example
+!.env.sample
+
+
+# ── 八、系统与编辑器 ──────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.eslintcache
+.coverage
+.vscode/
+.idea/
+.obsidian/
+
+# Claude Code 的项目级配置分两个文件，处理方式相反：
+#   .claude/settings.json        AI 访问适配器，必须进 git（见 policy 的 ai_access）
+#   .claude/settings.local.json  「本次批准，别再问」写在这里，属于本机偏好
+.claude/settings.local.json
+
+# 注意 .cursorignore 和 .aiignore 不在这里，也不该在。
+# 它们是随仓库走的治理配置——不跟踪的话，clone 或 worktree 出来的
+# 就是一个没有访问边界的工作区。
+
+
+# ── 九、生成器的原子替换临时文件 ──────────────────────────────────────────
+# `new data --index` 与 `new adr --index` 都走「写同目录临时文件 → rename」，
+# 因为残缺的索引比没有索引更糟：它看起来是权威的。rename 要求临时文件与目标
+# 同一个文件系统，所以它只能落在树内，落点是 `.<目标文件名>.XXXXXX`。
+#
+# 正常退出与 INT / TERM 由 bin/new 的 tmp_cleanup 清理，SIGKILL 不会。
+# 排除它们是为了让那种情况下的残留文件不被 `git add -A` 顺手提交进去。
+.*.md.??????
