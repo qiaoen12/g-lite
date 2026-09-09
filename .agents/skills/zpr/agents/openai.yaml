@@ -1,0 +1,5 @@
+interface:
+  display_name: zpr
+  short_description: 送出标题已合规的 PR 并保持 In review
+policy:
+  allow_implicit_invocation: false

@@ -1,0 +1,1407 @@
+schema_version: workspace-policy/v2.2
+
+# ══════════════════════════════════════════════════════════════════════
+# 本文件是 v2 唯一的机器可读策略事实源。
+#
+# 与 v1 的关键差异：
+#   1. 备份路径清单不再手写，由 backup.derive 规则从本文件推导生成。
+#   2. 同步 include 清单不再手写，由 sync 规则推导生成。
+#   3. 不再排除任何目录；密钥改为主动搜捕（见 secrets 段）。
+#   4. reserved_dirs 在任意深度生效，治理不再止步于第 2 层。
+#
+#   5. v2.2：工作区是一个 monorepo，不是几十个仓库。见第九节 git 段。
+#
+# 人类可读解释见 0-meta/docs/ 那七篇；「当初为什么这样定」见 0-meta/DECISIONS.md。
+# 早先这两行指向同目录的 DESIGN.md 与 MIGRATION.md，那两个文件从未存在过——
+# 迁移过程本身在 git 历史里，不需要另立一份映射表。
+#
+# 修改本文件必须同轮跑 `new plan --apply`，并以 audit.checks 全绿为验收。
+# 这里刻意不写审计共几项：写死的数字每加一项就说一次谎，
+# 而准确条数就在本文件的 audit.checks 那一行，数得出来。
+# ══════════════════════════════════════════════════════════════════════
+
+# 仓库根由 git toplevel 在运行时解析，禁止把本机绝对路径写进 tracked 文件（#41 A5）。
+# derived.lock 的 root 因此为空；备份脚本在 root 为空时用脚本位置反推仓库根。
+root: "."
+
+# repo / workspace 身份从 origin fetch URL 推导（task_github_nwo），不在这里写 workspace.id。
+# github.repo_override 可选，仅供测试/镜像与 origin 脱钩；省略则只信 origin。
+github:
+  project:
+    # Consumer GitHub Project. Framework default is a template; set to your Project.
+    number: 1
+    title: Tasks
+  status:
+    backlog: Backlog
+    ready: Ready
+    progress: In progress
+    review: In review
+    done: Done
+
+# 开工加载预算。只约束明确交给 Agent 的卡片/adapter，不把按需 docs 算入。
+# 数值以字节计；new check --tier commit 读取 derived.lock 后执行。
+prompt_budget:
+  root_agents_bytes: 4096
+  meta_agents_bytes: 4096
+  agent_card_bytes: 2048
+  start_card_bytes: 2048
+  skill_card_bytes: 2048
+  skill_card_lines: 48
+  workflow_bytes: 4096
+  skill_paths:
+    - .agents/skills/zdev/SKILL.md
+    - .agents/skills/zfix/SKILL.md
+    - .agents/skills/zreview/SKILL.md
+    - .agents/skills/zsync/SKILL.md
+    - .agents/skills/zpr/SKILL.md
+    - .agents/skills/zmerge/SKILL.md
+
+
+# ── 一、策略域 ────────────────────────────────────────────────────────
+# 每个顶层目录 = 一条策略。子目录默认继承，除非命中 reserved_dirs。
+#
+# 字段语义：
+#   sensitivity  public | internal | confidential | unknown
+#   vcs          monorepo | partial | forbidden | upstream
+#                  monorepo  由根仓库整域跟踪
+#                  partial   只跟踪本域声明的子路径，其余不进 git（见 vcs_tracked）
+#                  forbidden 整域不进 git
+#                  upstream  各自带上游 .git，根仓库不跟踪
+#                v2.2 取消了 required / optional 与 vcs_remote —— 在 monorepo 模式下
+#                「本目录有没有 remote」不是一个域级问题，remote 只有根仓库一个。
+#   backup       required | forbidden
+#                  forbidden 只用于「可再生」，不用于「另有副本」——
+#                  「另有副本」在 v2.1 被取消，理由见 1-code 下的注释
+#   sync         allowed | forbidden
+#   retention    permanent | disposable | per_manifest | {max_age_days, on_expiry}
+#   naming       strict-ascii | free-with-id | free
+
+domains:
+
+  0-meta:
+    purpose: 治理规则、审计工具、模板、schema
+    sensitivity: internal
+    vcs: monorepo
+    backup: required
+    sync: allowed
+    retention: permanent
+    naming: strict-ascii
+
+  1-code:
+    purpose: 自有软件项目；默认由根 monorepo 跟踪，不各自建仓库
+    sensitivity: internal
+    vcs: monorepo
+    # v2.2 修正。此处原为 vcs:required + vcs_remote:required + child_is_repo:true，
+    # 即「每个子目录一个独立 git 仓库，各自建 remote」。
+    #
+    # 该设计对一人维护 + 大量 AI agent 的场景成本过高：几十个项目就是几十个
+    # GitHub repo、几十次 init/remote 配置、几十处 push 状态要单独查，
+    # 而 policy.yaml 无法看见任何一个仓库的内部状态——治理面被切碎了。
+    #
+    # 改为默认继承根仓库。独立仓库不再是默认，而是「晋升」（见 git.standalone）。
+    backup: required
+    # v2.1 修正。此处原为 not_required，理由是「git 远端即第二副本」。
+    # 该理由不成立：git 远端只覆盖「已 commit 且已 push」的内容，对未提交改动
+    # 和未跟踪文件毫无保护，其 RPO 等于「距上次 push 的时长」——而本文件
+    # copy_count.thresholds 自己把这个时长容忍到 7 天。等于书面承诺 7 天 RPO。
+    #
+    # 职责重新划分：git = 版本历史与协作；restic = 灾难恢复。不要让前者兼任后者。
+    #
+    # 成本很低，且不需要新增任何排除清单：node_modules/.venv/target/dist 由
+    # regenerable 段剥离，_out/_cache 由 reserved_dirs 剥离，实际入备的只有
+    # 源码正文与 .git。
+    sync: allowed
+    retention: permanent
+    naming: strict-ascii
+    child_is_repo: false      # v2.2：子目录不再是独立仓库
+    max_group_depth: 1        # 允许一层分组，例如 1-code/account-registration/reg-factory
+    min_group_members: 3      # 分组成员少于 3 个则应展平，避免无意义的中间层
+
+  2-infra:
+    purpose: 基础设施声明（IaC）；凭据只允许以密文形式出现
+    sensitivity: internal
+    vcs: monorepo
+    backup: required
+    sync: allowed
+    retention: permanent
+    naming: strict-ascii
+    allow_encrypted_secrets: true
+
+  3-data:
+    purpose: 数据集；_raw 追加式，_out 可由 pipeline 重建
+    sensitivity: internal
+    vcs: partial
+    # v2.2 修正。此处原为 vcs:forbidden（整域不进 git），理由是「大文件不进 git，
+    # pipeline 脚本可放 1-code」。后半句在实践中不成立：pipeline 和它处理的数据
+    # 分居两域，改一个必须记得改另一个，而没有任何机制在检查这件事。
+    #
+    # 数据集里真正不能进 git 的只有数据本体。契约（DATASET.md）、采集与清洗代码
+    # （pipeline/）、字段定义（schema/）都是小文本，且它们才是「_out 能否重建」
+    # 这个判断的前提——不版本化它们，可再生性就只是一句口头承诺。
+    vcs_tracked: [DATASET.md, RETENTION.md, README.md, pipeline/, schema/]
+    vcs_never:   [_raw/, _out/, _cache/]     # 与 reserved_dirs 一致，此处只是显式重申
+    backup: required
+    sync: forbidden
+    retention: per_manifest
+    naming: strict-ascii
+    naming_scope: dataset_dir_only   # _raw/ 内文件名保持采集原样，不做规范化
+    requires_manifest: DATASET.md
+
+    # v2.5：数据集的归属声明。
+    #
+    # 采集端与应用端是多对多——一个采集器产出多个数据集，一份数据被多个项目引用，
+    # 还存在只有一端甚至两端皆空的情况。这种关系塞不进目录名，名字只有一个位置。
+    #
+    # 所以分三层：目录名承载导航（主应用端，一眼可见但只是近似），
+    # DATASET.md 的 frontmatter 承载事实，INDEX.md 由 frontmatter 生成提供反向查询。
+    #
+    # INDEX.md 必须是生成的。手写清单会漂移这件事，backup 的路径清单和 sync 的
+    # include 清单已经各证明过一次，没有理由在第三个地方再证明一遍。
+    link_declaration:
+      required: true
+      location: DATASET.md 的 frontmatter
+      producer_types: [code, pipeline, manual, external]
+      index_file: 3-data/INDEX.md
+      index_generator: 'new data --index'
+
+      # producers / consumers 只接受两种写法：`[]` 与块式列表（每项一行、以 - 开头）。
+      # 有两种合法 YAML 会被这个解析器读成 0 项：行内列表 `[a, b]`，以及块式键
+      # 下面写成映射（`producers:` 换行 `  code: x`，漏了 `- `）。上一版对两者都
+      # 静默返回空，于是索引少一行而没有任何告警。
+      # 「静默给错答案」比「拒绝解析」危险得多，所以：
+      #   既不是 [] 也不是块式列表        → 告警
+      #   声明成块式却没有任何 - 项        → 告警（空列表必须显式写成 []）
+      list_syntax: block_or_empty_only
+
+      # 声明内部必须自洽。下面每条都是一眼能查、查了就不会说谎的。
+      #   dataset 字段没有任何程序在消费（索引用的是目录名），不校验它，
+      #   它就是一行随时开始说谎的注释——改目录名时最容易漏的正是它。
+      #   缺失和写错要一起查：只查「非空且不相等」等于给「干脆不写」开一道后门。
+      #
+      #   consumers 的路径存在性同 git.worktree 对 --path 的处理：打错一个字，
+      #   sparse-checkout 会静默通过并给出一个空工作区，索引则给出一条死链，
+      #   而索引存在的全部意义就是「读一个文件就知道该去哪」。
+      #   代价是「先声明、后创建应用端」这种顺序会持续告警——真遇上就把这条删掉，
+      #   不要靠改声明去迁就检查。
+      consistency:
+        - dataset 字段存在且等于所在目录名
+        - primary_consumer 若非 null，必须出现在 consumers 里
+        - producers 每项形如 <类型>: <说明>，类型取 producer_types，说明不可为空
+        - consumers 每项指向的目录在工作区里真实存在
+
+      index_staleness: |
+        判据是整份文件：审计重新渲染一遍索引，与磁盘上的 INDEX.md 做全文件比较。
+        上一版只在 INDEX.md 里记一个声明指纹、审计 grep 那个字符串——
+        删光表格、留下指纹那一行，检查照样通过。指纹能证明声明没变，
+        证明不了索引内容正确，而这里要保证的恰恰是后者。
+
+        生成也改成「写同目录临时文件 → rename 替换」。直接覆写目标文件的话，
+        中途中断会留下一份残缺索引，而残缺索引比没有索引更糟——它看起来是权威的。
+      both_ends_empty: |
+        没有采集端说明来路不明，没有应用端说明没人用。
+        这种数据集属于 _inbox，不属于 3-data。
+
+  4-know:
+    purpose: 知识、研究、笔记、决策记录
+    sensitivity: internal
+    vcs: monorepo             # 附件 _files/ 由保留名剥离
+    backup: required
+    sync: allowed
+    retention: permanent
+    naming: free-with-id      # 文件名可中文；frontmatter.id 必须稳定 ASCII
+    requires_frontmatter: true
+    frontmatter_schema: 0-meta/schema/know.frontmatter.yaml
+
+    # v2.6：决策记录（type: decision）的归属声明。
+    #
+    # 决策与它作用的对象是多对多。一条 ADR 常同时动 policy、脚本、docs 和某个项目
+    # （本仓库现有四条里三条跨域），而一个项目的决策也不止一条。这种关系塞不进
+    # 目录名——名字只有一个位置，这与 3-data 的采集端/应用端是同一个形状的问题，
+    # 所以用同一个解法，不发明第二套：
+    #   4-know/decision/  承载物理存放（按文档种类分，不按主题分）
+    #   frontmatter.scope 承载事实（多值、完整）
+    #   两个生成的索引    提供反向查询（见 index_file 与 controlled_blocks）
+    #
+    # 曾考虑把体系级 ADR 搬进 0-meta、项目级搬进项目目录。放弃的理由有两条：
+    # 跨域的那几条挑不出主人，而它们恰好是最重要的；且 0-meta 是 strict-ascii
+    # 且无 frontmatter 契约，搬过去会静默脱离 id / status / review 的约束，
+    # 而 id 稳定性正是跨文档引用的唯一依靠。
+    decision_declaration:
+      required_for_type: decision
+      records_dir: 4-know/decision
+      location: 决策记录 frontmatter 的 scope 与 primary_scope
+
+      # 级别不新增字段，从 primary_scope 推：
+      #   裸 domain                    体系级，声明粒度是整个域
+      #   <domain>.<unit>              项目级或单元级
+      #   <domain>.<unit>.<member>     成员级
+      #
+      # 「体系级」说的是声明粒度，不是影响面。裸 repo / meta 确实约束整个
+      # 工作区，但裸 data / vendor / inbox / record 只约束自己那个域——
+      # 级别回答「声明得多粗」，影响面要读 ADR 正文。
+      #
+      # 刻意不引入 level: high|mid|low。提交语言的 scope 词表已经从目录树派生
+      # 并被 commit-msg 门禁验证，再立一份「级别」必然与它分叉；而且「高」是
+      # 主观的，声明粒度是可判定的。同一个问题只该有一套词表。
+      #
+      # 从目录树派生的 scope 按实际路径深度定级，不能只数点号：strict-ascii
+      # 允许目录名本身含点，code.foo.bar 可能是一级目录 foo.bar，也可能是
+      # 分组 foo 的成员 bar。scope 工具在枚举目录时同时保留真实路径与级别；
+      # 同名映射出现两条就拒绝。
+      #
+      # 四个语义别名（meta.policy / meta.agents / meta.new / meta.hooks）例外：
+      # 它们绑定的是文件而不是目录层级，级别按点号段数定。meta.policy 解析到的
+      # 目录是 0-meta，与裸 meta 同一深度，但级别是单元级。
+      level_from: primary_scope
+      scope_vocabulary: git.commit          # 与提交语言共用，不另立词表
+      scope_tool:
+        executable: 0-meta/audit/scripts/check-commit-msg.sh
+        validate_mode: --scope-valid
+        directory_mode: --scope-dir
+        level_mode: --scope-level
+
+      # 与 3-data 的 link_declaration 同一条理由：行内列表 `scope: [a, b]` 是
+      # 合法 YAML 但不合本工作区约定，必须大声拒绝，不能解析成 0 项让索引
+      # 少一行而没人知道。空列表要显式写成 []。
+      list_syntax: block_or_empty_only
+
+      consistency:
+        - scope 每项必须是合法且无歧义的 scope（由 scope_tool 判定）
+        - primary_scope 若非 null，必须出现在 scope 里
+        - scope 为 [] 时 primary_scope 必须是 null
+        - supersedes 若非空，必须指向一个真实存在的决策 id
+        # 冲突域是整个 4-know，不只 decision/：schema 里 id 的定义是「跨文档引用、
+        # Dataview 查询、外部链接全部靠它」，命名空间就是整个知识库。
+        # `new note x` 之后再 `new adr x` 是两条普通命令，两个文件会同 id。
+        # 检查覆盖「至少一侧是决策记录」的冲突；两篇笔记互撞属于 schema 契约，
+        # 由人守，不在本检查范围内（同 id 的 immutable 也是纯契约）。
+        - id 不得与 4-know 里任何其他文档的 id 重复
+
+      # 索引里的链接一律用文件的实际相对路径，不用 <id>.md 拼。
+      # 4-know 的命名是 free-with-id，文档明确承诺「文件重命名、换目录，引用都不断」。
+      # 靠 id 拼路径会把这句话变成谎：改一次名，索引里全部链接就断，而
+      # index_staleness 比的是「重新渲染的结果与磁盘一致」——两边一样地断，照样报绿。
+      # 报绿的坏检查比没有检查更糟，所以 id 只做标识符，路径由扫描结果承载。
+      link_target: actual_relative_path
+
+      # free-with-id 允许的文件名里有 Markdown 与 URL 的活字符，而决策记录的
+      # 标题格式恰好爱用：`为什么不用 borg?.md` 的 ? 会被当 query，
+      # `选 restic (而不是 borg).md` 的 ) 直接截断链接语法。断的样子是链接照样
+      # 渲染、点进去什么都没有。编码只覆盖破坏解析的那几个字符，UTF-8 原样留着
+      # ——把中文也编码掉，链接就成了一串 %E4%B8%BA，而中文文件名是明确允许的。
+      link_encoding: percent-encode  # % 反斜线 空格 # ? ( ) [ ] < > "，四处渲染共用一份实现
+
+      index_file: 0-meta/DECISIONS.md
+      index_generator: 'new adr --index'
+      index_staleness: |
+        判据是整份文件：审计重新渲染一遍索引，与磁盘上的 DECISIONS.md 做全文件
+        比较。与 3-data 的 index_staleness 同构，理由也一样——指纹能证明声明没变，
+        证明不了索引内容正确，而这里要保证的恰恰是后者。
+        生成走「写同目录临时文件 → rename 替换」，中途中断不留残缺索引。
+
+      # 反向索引还要落到干活的地方。根 AGENTS.md 定的阅读顺序是
+      # 「目标目录最近的 AGENTS.md → 目录内 README.md → policy.yaml」，
+      # 4-know/decision/ 不在这条链的任何一环——在 2-infra/backup 里改备份脚本的人
+      # （或 agent）永远不会知道 restic-cold-backup 这条决策存在。
+      # 这比放错目录严重：它让决策记录对日常工作流不可见。
+      #
+      # 受控块与 AGENTS.md 的提交语言块同一个模式：生成、被审计钉住、手改即报。
+      controlled_blocks:
+        marker_begin: '<!-- BEGIN decisions (generated by new adr --index) -->'
+        marker_end: '<!-- END decisions -->'
+        target_rule: |
+          scope 对应目录里有 AGENTS.md 就写它，否则写 README.md；两者都没有就
+          往上找最近的祖先目录，直到根。不主动创建文件——凭一条 scope 声明就在
+          项目里凭空造出 AGENTS.md，等于让索引去改变它本该只是描述的东西。
+
+          祖先回退不是将就，是与阅读顺序对齐：根 AGENTS.md 定的是「目标目录最近的
+          AGENTS.md」，在 3-data/foo/ 里干活的人读到的本来就是 3-data/AGENTS.md。
+          不回退的话，19 个常见 scope 里有 7 个会被静默跳过（全部数据集、4-know
+          各子目录、各调研专题），而「干活时读得到」是这套机制唯一的存在理由。
+
+          回退深度取决于目标目录：八个域目录都有 AGENTS.md，所以域内单元级 scope
+          最多退到域目录；但 research.<topic> 会走两层（4-know/research/<topic>
+          → 4-know/research → 4-know）。别名 meta.hooks 绑定的是根目录下的
+          .pre-commit-config.yaml，它的落点直接就是根 AGENTS.md——那是每次都
+          加载的规则文件，写进去之前要确认这条决策真的是仓库级的。
+        deny_dirs: |
+          ai_access 声明为 deny 的顶层目录一律不写、不 stat、不 grep。
+          record 是合法 scope 且映射到 5-record，而 5-record 是 deny——不挡的话，
+          索引生成器会读并整份重写一个策略声明「不准读」的目录里的文件。
+          用工具把边界洗掉比人直接去读更难发现，所以判据放在扫描侧，
+          而不是指望没人写 scope: [record]。
+          这类 scope 会被报出来，不静默跳过：它只在总索引里可查，没有就近入口。
+        both_ends_empty: |
+          scope 为 [] 的决策记录不出现在任何目录的受控块里，只出现在总索引的
+          「需要处理」段。它没说清自己作用于什么，等于没做完。
+
+  5-record:
+    purpose: 合同、报销、税务、证件、体检等人读档案
+    sensitivity: confidential
+    vcs: forbidden
+    backup: required          # restic 自带加密；不做逐文件加密（见 DESIGN 第五节注释）
+    sync: forbidden           # ← 硬约束，sync_safety 检查据此反查同步规则
+    retention: per_manifest
+    naming: free              # 中文优先；脚本从不引用这些路径
+    requires_manifest: RETENTION.md
+
+  _inbox:
+    purpose: 未归类暂存
+    sensitivity: unknown
+    vcs: forbidden
+    backup: required          # 还不知道是什么，先保住
+    sync: forbidden
+    retention:
+      max_age_days: 30
+      on_expiry: audit_fail
+    naming: free
+
+  _vendor:
+    purpose: 第三方代码副本，可重新获取
+    sensitivity: public
+    vcs: upstream
+    backup: forbidden
+    sync: forbidden
+    retention: disposable
+    naming: strict-ascii
+    requires_manifest: VENDOR.md
+    manifest_fields: [path, upstream, commit, tag, retrieved_at, license, reason]
+    # v2.1：只记 URL 不构成可再生性证明。
+    # `git clone <url>` 今天和两年后拿到的可能是完全不同的代码，
+    # 「重新下载一个同名的新版本」不等于「恢复同一个依赖」。
+    escape_rule: |
+      记 commit 只解决「拿到的是不是同一份」，不解决「还拿不拿得到」——
+      上游删库或 force push 之后 SHA 同样失效。
+      因此判定标准是：如果上游消失会让你痛，它就不属于 _vendor。
+      要么 fork 进 1-code 自己托管，要么把 tarball 放进 3-data/<name>/_raw/。
+      _vendor 的零备份策略，只对「丢了再下一个就行」的东西成立。
+
+
+# ── 二、保留目录名 ────────────────────────────────────────────────────
+# 这些名字可以出现在任意深度，携带策略并覆盖父域继承。
+# 这是 v2 把治理从「第 2 层」下沉到「全部层级」的机制。
+
+reserved_dirs:
+
+  _raw:
+    purpose: 原始采集数据，追加式写入
+    backup: required
+    sync: forbidden
+    vcs: forbidden
+    mutable: append_only
+    # v2.1 修正。此处原为 mutable:false（「只读，永不修改」）。
+    # 对持续采集的数据集（Reddit、Discord 这类）「整体不可变」是错的描述——
+    # 需要的是「可以新增，不可以改动已有」。而原先建议的 chmod -R a-w 会连目录
+    # 写位一起去掉，反而禁掉了合法的追加，与同一份文档上一行自相矛盾。
+    #
+    # 真正的保障不是权限位（能改回来），是哈希清单（改了藏不住）。
+    integrity:
+      manifest: _raw/MANIFEST.sha256
+      on_new_file:     ok            # RAW_APPENDED  —— 追加是允许的
+      on_hash_change:  hard_fail     # RAW_MUTATED   —— 已落盘的原始记录被改写
+      on_missing_file: hard_fail     # RAW_DELETED
+      audit_tier: deep               # 全量哈希是分钟级操作，绝不进 commit 档
+    write_protection: 'find _raw -type f -exec chmod a-w {} +'   # 只锁文件，目录保持可写
+    disposable: false
+
+  _out:
+    purpose: |
+      确定性产物：由「已备份的输入 + 已版本化的代码 + 已声明的命令」
+      可以机械重新生成的文件。
+    backup: forbidden
+    sync: forbidden
+    vcs: forbidden
+    mutable: true
+    disposable: true
+    # v2.1 修正。此处原为「产物、报告、导出，可由源重建」。
+    # 「报告 / 导出」这两个词太宽，会把无法重建的最终成果吸进一个
+    # 「不备份 + 随时可删」的桶里。判据只有一条：能不能机械重建。
+    #
+    #   脚本生成的统计表、图表、清洗结果        → _out  ✓
+    #   人工改了两小时的 PPT、客户签署的 PDF     → _out  ✗（无法重建，误删即永久丢失）
+    #   下载下来的第三方文件                     → _out  ✗（不是你的代码产出的）
+    #
+    # 完整落点见 0-meta/docs/02-代码项目.md 的「产物 vs 成果」表。
+    requires_rebuild_command: true
+    # 重建命令须写在 README.md / DATASET.md / Makefile 任一处；缺失由审计告警。
+    # 说不出重建命令的目录，就不是 _out。
+
+  _cache:
+    purpose: 缓存与临时状态
+    backup: forbidden
+    sync: forbidden
+    vcs: forbidden
+    mutable: true
+    disposable: true
+
+  _vendor:
+    purpose: 第三方代码（顶层或项目内均可）
+    backup: forbidden
+    sync: forbidden
+    vcs: upstream
+    mutable: true
+    disposable: true
+    requires_manifest: VENDOR.md
+    manifest_fields: [path, upstream, commit, tag, retrieved_at, license, reason]
+
+  _archive:
+    purpose: 冷存历史副本
+    backup: required
+    sync: forbidden
+    vcs: forbidden
+    mutable: false
+    disposable: false
+    requires_manifest: RETENTION.md
+
+  _files:
+    purpose: 4-know 的附件（PDF、图片），体积大不进 git
+    backup: required
+    sync: forbidden
+    vcs: forbidden
+    mutable: true
+    disposable: false
+
+
+# ── 三、密钥 ──────────────────────────────────────────────────────────
+# v1 把 credentials/ 和 secrets/ 加入排除名单，结果是审计永远看不到
+# 风险最高的位置。v2 反过来：不排除任何目录，主动搜捕。
+
+secrets:
+  policy: no_plaintext_anywhere
+
+  allowed_forms:
+    encrypted_suffixes: ['.enc.yaml', '.enc.yml', '.enc.json', '.enc.env', '.age', '.gpg']
+    reference_prefixes: ['op://', 'keychain://', 'vault://', 'bw://']
+
+  deny_globs:
+    - '**/*.pem'
+    - '**/*.key'
+    - '**/id_rsa*'
+    - '**/id_ed25519'
+    - '**/.env'
+    - '**/.env.local'
+    - '**/.env.production'
+    - '**/secrets.json'
+    - '**/*credentials*.json'
+    - '**/*password*.csv'
+    - '**/*密码*.csv'
+    - '**/cookie*secret*'
+    - '**/*.ovpn'
+
+  deny_exempt_suffixes: ['.example', '.sample', '.template', '.tpl', '.pub']
+  deny_exempt_prefixes: ['_vendor/']    # 第三方源码里的同名文件不算违规
+
+  # 检测方式：文件名匹配 + 文件头魔数（前 32 字节）。
+  # 绝不读取密钥正文，绝不把匹配内容写进审计报告。
+  inspection: metadata_and_magic_bytes_only
+
+  on_violation: hard_fail
+
+  # 迁移目的地，供 MIGRATION.md 引用
+  destinations:
+    ssh_private_key: 'keychain + ssh-agent（带 passphrase）；长期目标改用 step-ca 短期证书'
+    api_key:         '1Password，工作区只留 op:// 引用'
+    config_secret:   'SOPS + age，产出 *.enc.yaml，可进 git'
+    browser_export:  '导入密码管理器后 rm -P 覆盖删除'
+    restic_password: 'Bitwarden Lite + 本机 Keychain（仅此一口令，供调度）+ 一份纸质离线'
+
+
+# ── 四、可再生判定 ────────────────────────────────────────────────────
+# v1 的「重建证据」机制方向正确，v2.1 把它分档。
+#
+# 原先的写法把 requirements.txt / pyproject.toml / package.json / Makefile
+# 都当作「可重建」的证明。它们不是锁文件，只是依赖声明：
+#
+#     requests>=2.0
+#     numpy
+#
+# 半年后 pip install -r 拿到的不是同一套环境。正确的公式是：
+#
+#     可重建 = 依赖版本被钉死 + 工具链版本已知 + 构建命令已知
+#
+# 三档处理：
+#   强证据 → 不备份，静默
+#   弱证据 → 不备份，但告警提示补锁文件（备份 node_modules 几乎从不划算）
+#   无证据 → 判定为不可再生，照常进备份（补一个锁文件比配排除规则划算）
+
+regenerable:
+
+  strict_lock:
+    node_modules:  [package-lock.json, pnpm-lock.yaml, yarn.lock, bun.lock, bun.lockb]
+    .venv:         [uv.lock, poetry.lock, Pipfile.lock]
+    venv:          [uv.lock, poetry.lock, Pipfile.lock]
+    wheelhouse:    [uv.lock, poetry.lock]
+    target:        [Cargo.lock]
+    vendor:        [go.sum, composer.lock]
+
+  weak_declaration:
+    node_modules:  [package.json]
+    .venv:         [pyproject.toml, requirements.txt, Pipfile]
+    venv:          [pyproject.toml, requirements.txt, Pipfile]
+    wheelhouse:    [pyproject.toml, requirements.txt]
+    target:        [Cargo.toml]
+
+  # requirements.txt 只有在每一行依赖都用 == 钉死时，才从弱证据升级为强证据。
+  promote_if_fully_pinned:
+    requirements.txt: '^[A-Za-z0-9._-]+(\[[^]]+\])?==[^\s;]+$'
+
+  # 构建产物目录的证据语义与依赖目录不同：它能不能重建，取决于
+  # 「源码是否已提交并推送」，而不是有没有锁文件。
+  # 这一条在 1-code 改为 backup:required 之后才真正闭合——
+  # 之前源码本身就没有第二副本，谈不上「靠源码重建产物」。
+  build_output:
+    dirs: [dist, build, coverage, htmlcov, .next, .nuxt, .astro, .svelte-kit]
+    evidence: source_committed_and_pushed
+    fallback_weak: [package.json, pyproject.toml, Makefile, Cargo.toml]
+
+  # 纯缓存，任何情况下都不需要证据
+  always_disposable: [__pycache__, .mypy_cache, .pytest_cache, .ruff_cache, .turbo, .parcel-cache]
+
+  # 钉死了依赖但工具链版本未知，仍然重建不出同一环境
+  toolchain_pins: ['.python-version', '.node-version', '.nvmrc', '.tool-versions', 'rust-toolchain.toml', '.ruby-version']
+
+  policy:
+    strict_lock:            {backup: forbidden, audit: ok}
+    weak_declaration:       {backup: forbidden, audit: warn}
+    no_evidence:            {backup: required,  audit: warn}
+    missing_toolchain_pin:  {backup: unchanged, audit: warn}
+
+  rebuild_commands:
+    package-lock.json: 'npm ci'
+    pnpm-lock.yaml:    'pnpm install --frozen-lockfile'
+    yarn.lock:         'yarn install --frozen-lockfile'
+    bun.lock:          'bun install --frozen-lockfile'
+    uv.lock:           'uv sync --frozen'
+    poetry.lock:       'poetry install --sync'
+    requirements.txt:  'python -m venv .venv && .venv/bin/pip install -r requirements.txt'
+    Cargo.lock:        'cargo build --locked'
+
+  os_metadata: ['.DS_Store', 'Thumbs.db', '.eslintcache', '.coverage']
+
+
+# ── 五、备份 ──────────────────────────────────────────────────────────
+
+backup:
+  # 应备份集合是算出来的，不是写出来的。
+  # v1 的 projects-cold-restic-paths.txt 手写清单在此废弃。
+  derive: |
+    all_paths
+      - regenerable where evidence in (strict_lock, weak_declaration)
+      - build_output where source_committed_and_pushed
+      - always_disposable
+      - os_metadata
+      - reserved_dirs where backup == forbidden
+      - domains where backup == forbidden
+  # v2.1：删掉了 "domains where backup == not_required" 这一支。
+  # 它当时只服务于 1-code 一个域，而 1-code 已改为 required。
+  # 现在没有任何域使用 not_required —— 一个域要么值得备份，要么可再生，
+  # 「另有副本所以不用备份」这条中间状态被取消了。
+
+  # v2.2：备份根之外还需要显式收录的路径。
+  # 目前只有 worktree 根。它是仓库根的兄弟目录，不加这条就不会被 restic 收，
+  # 而 AI 在 worktree 里未提交的工作恰好是当前副本数最少的东西。
+  external_paths:
+    - path: '../worktrees'
+      source: git.worktree.root
+      rationale: |
+        worktree 里的未提交改动不在任何仓库里，也不在备份根里。
+        它的生命周期短，但「短」不等于「不需要保护」——AI 跑一夜的产出
+        在 squash merge 之前，副本数是零。
+      excludes_inherited: true    # 沿用同一套 regenerable / reserved 剥离规则
+
+  destinations:
+    - name: cold-gdrive
+      type: restic
+      repo: 'rclone:REPLACE-ME:restic/workspace-cold'
+      schedule: daily
+      rationale: |
+        第一异地目的地。填好后再跑 new plan --apply。
+        backup_closure 的判据是「最近一次快照的路径集合」与应备份集合做差集。
+    - name: cold-b2
+      type: restic
+      repo: 'b2:REPLACE-ME:workspace-cold'
+      schedule: weekly
+      rationale: |
+        第二异地目的地。需要一个与第一目的地不相关的副本。填好后再跑 new plan --apply。
+
+  # 两个字段，两件相反的事。一个字段表达不了。
+  #
+  # password_source     无人值守的机器怎么取值。必须本机可取，否则 launchd 跑不起来。
+  # password_recovery   灾难时人怎么取值。必须含至少一个本机之外的来源，否则 Mac 挂了就是死循环。
+  #
+  # 本机那份（Keychain）只装这一个 restic 仓库口令，不装 Bitwarden 主密码——
+  # 爆炸半径是「这份冷备」，不是整个口令库。
+  password_source: 'keychain://restic-cold/restic-password'
+  password_recovery:
+    - 'bw://restic-cold'                  # 离机口令库引用，由 consumer 填写
+    - paper                               # 纸质离线；attestation 证明做过，不含口令正文
+  password_offline_copy_required: true
+  password_offline_copy_attestation: 0-meta/audit/offline-copy.attestation
+
+  retention:
+    keep_last: 14
+    keep_weekly: 8
+    keep_monthly: 12
+
+  restore_drill:
+    interval_days: 90
+    must_be_on_different_machine: true
+    evidence_dir: 0-meta/audit/restore-drill/
+    # 演练必须回答：在完全没有本机的前提下，能否拿到口令并还原一个文件。
+
+
+# ── 六、同步（热镜像）──────────────────────────────────────────────────
+# 重新定位：这是给 VPS 上 agent 投喂上下文的只读副本，不是备份。
+# 它会传播删除，因此不计入副本数。
+
+sync:
+  target: 'REPLACE-ME:/path/to/workspace-mirror'
+  mode: push_only
+  remote_mount: read_only        # 防止本地与远端双写导致脑裂
+  counts_as_backup_copy: false
+
+  rules_are_generated: true      # include 清单由本文件推导，禁止手写
+  # v1 的 projects-warm-rsync-filter.rules 第 87 行手写了
+  #   + /70-infra/70-vps/credentials/***
+  # 把整个机队私钥推送到其中一台机器。生成式清单从根本上排除这类手写失误。
+
+  forbid_domains: [5-record, 3-data, _inbox, _vendor]
+  # 这份清单与各域的 sync 字段重复，因此由 derive-paths.sh 交叉校验：
+  # 凡 sync:forbidden 的域没出现在这里，会报 sync.forbid_domains_gap。
+  # （首次运行即抓到 _vendor 缺失——手写清单漂移在小范围内也照样发生。）
+  forbid_reserved: [_raw, _out, _cache, _vendor, _archive, _files]
+  forbid_secrets: true           # 与 secrets.deny_globs 联动
+
+  rsync_flags_denylist: ['--delete-excluded']   # 保留 --delete，去掉级联删除放大
+  rsync_flags_note: |
+    去掉 --checksum。对 25 万文件全量哈希会显著拖慢每次同步，
+    实际后果是降低同步频率，反而拉长 RPO。用默认的 size+mtime 判定即可。
+
+
+# ── 七、命名 ──────────────────────────────────────────────────────────
+# 按域分级，而非全局一刀切。
+# v1 的全局规则让「报销/差旅/2025-02-北京」永久违规，
+# 结果是 5 项违规挂了 60 天无人处理——覆盖面过大的规则会失去可信度。
+
+naming:
+  profiles:
+    strict-ascii:
+      pattern: '^[a-z0-9][a-z0-9._-]*$'
+      rationale: 脚本、CI、部署、bind mount 会引用这些路径；路径即接口
+      scope: directory_segments
+      # 只管目录段，不管文件名。理由同样是上面那条——被引用的是目录，
+      # 而 AGENTS.md / DATASET.md / VENDOR.md 这类大写清单名是刻意的。
+      # 把规则铺到文件名上，第一天就会产出一批永远修不掉的违规，
+      # 然后整条规则失去可信度。这是 v1 已经踩过一次的坑。
+    free-with-id:
+      path_pattern: null                      # 文件名不限，中文可
+      requires_frontmatter_field: id
+      id_pattern: '^[a-z0-9][a-z0-9-]*$'
+      rationale: 人写人读；跨文档链接靠 frontmatter.id，不依赖路径
+    free:
+      path_pattern: null
+      rationale: 纯人读档案，脚本从不引用
+
+  applies:
+    0-meta: strict-ascii
+    1-code: strict-ascii
+    2-infra: strict-ascii
+    _vendor: strict-ascii
+    3-data: strict-ascii          # 仅数据集目录名；_raw/ 内保持原样
+    4-know: free-with-id
+    5-record: free
+    _inbox: free
+
+
+# ── 八、审计 ──────────────────────────────────────────────────────────
+
+audit:
+  checks:
+
+    - id: topology
+      desc: 顶层是否只有 domains 中声明的 8 个
+      hard_fail: true
+      inherited_from: v1
+
+    - id: plaintext_secrets
+      desc: 全库搜捕 secrets.deny_globs，不排除任何目录
+      hard_fail: true
+      new_in: v2
+      catches: |
+        70-vps/credentials/ssh-keys/*.pem（8 把无口令私钥）
+        70-vps/credentials/secrets/vps-backup.env
+        40-asset/secrets/Chrome 密码.csv
+        v1 因为把 credentials/ 与 secrets/ 加入排除名单，这三处永远不会被报出。
+
+    - id: copy_count
+      desc: 根仓库有无 remote；未推送与未提交的天数；已登记的 standalone 仓库同样测量
+      hard_fail: false
+      new_in: v2
+      changed_in: v2.2
+      # v2.2：测量对象从「1-code 下每个子仓库」变成「根仓库 + 已登记的 standalone」。
+      # monorepo 之后 remote 只有一个，这项检查从「几十次独立测量」收敛为一次，
+      # 这本身就是换模式的主要收益之一。
+      thresholds:
+        uncommitted_days: 3
+        unpushed_days: 7
+        no_remote: warn_immediately
+      catches: |
+        60-app 与 60-script 下 15 个项目无 git；60-dev 下 5 个无 git；
+        developer-roadmap-bilingual 无 remote 且 121 个改动未提交。
+        v1 只测量文件系统，从不测量 VCS 状态——而 VCS 状态才是「有几份副本」的最强信号。
+
+    - id: git_hygiene
+      desc: 实查 git ls-files 与嵌套 .git，验证跟踪范围与 git.mode 声明一致
+      hard_fail: true
+      new_in: v2.2
+      tier: commit
+      method: |
+        1. git ls-files 里出现 5-record/（除 never_domain_exceptions）→ 硬失败
+        2. git ls-files 里出现 never_reserved 中任一目录段 → 硬失败
+        3. git ls-files 里出现 secrets.deny_globs 命中项 → 硬失败
+        4. 1-code / 2-infra 下存在嵌套 .git 且未登记在 git.standalone.repos → 硬失败
+        5. 已登记 standalone 的路径没出现在根 .gitignore → 硬失败
+        6. 单个已跟踪文件超过 max_tracked_file_bytes → 告警
+      rationale: |
+        只检查 .gitignore 是不够的。.gitignore 只能阻止未来的 add，
+        它不会让已经 tracked 的文件消失——一个文件一旦进过索引，
+        后来补的忽略规则对它完全无效。所以判据必须是 git ls-files 的实际输出，
+        而不是规则文件的内容。这与 sync_safety 是同一个思路：
+        检查「实际发生了什么」，不是检查「我们打算怎样」。
+
+    - id: worktree_hygiene
+      desc: 所有 worktree 的 dirty / unpushed 状态；worktree 根是否在备份路径内
+      hard_fail: false
+      new_in: v2.2
+      tier: daily
+      rationale: |
+        worktree 根在备份根之外，未提交的工作零副本。
+        这是 monorepo + worktree 组合引入的新风险，v2.1 的 copy_count 覆盖不到：
+        它测量的是仓库，而 worktree 的脏数据不在任何仓库里。
+
+    - id: commit_convention
+      desc: 回扫 enforce_after 之后的主线提交，检查是否符合提交语言
+      hard_fail: false
+      new_in: v2.4
+      tier: daily
+      method: |
+        0-meta/audit/scripts/check-commit-msg.sh --scan <enforce_after>..<default_branch>
+        终点是 main 而不是 HEAD。回扫按 main 的严格度判，而它是定时跑的——
+        用 HEAD 的话，审计恰好在工作分支上起来就会把分支里合法的 wip: 全报成违规。
+        与 commit-msg 钩子是同一个脚本、同一套 exempt 判断，只是入口不同。
+        回扫只校验消息本身，不查 scope-path 一致性：逐条 git show 会让这一项
+        随历史长度线性变慢，而它的价值在于「钩子被绕过时消息还合不合规」。
+      rationale: |
+        git commit --no-verify 能绕过 commit-msg，本地补不了这个洞。
+        这一项是事后发现：钩子拦不住的，第二天至少会被报出来。
+        hard_fail:false 是刻意的——提交已经发生，阻断当天其余检查没有意义，
+        而一个会让整轮 daily 变红的历史遗留问题，最后会被人整项关掉。
+
+    - id: password_sources
+      desc: 机器取值可达；人恢复有本机之外来源；纸质副本有 attestation（不含口令）
+      hard_fail: true
+      new_in: v2.3
+      tier: daily
+      method: |
+        2-infra/backup/scripts/check-password.sh
+        password_source 取不到东西 → 硬失败（调度会静默空跑）
+        password_recovery 没有 bw:// / op:// / paper 之类的离机来源 → 硬失败
+        纸质 attestation 缺席 → 告警，不硬失败（无法证明纸存在，只能证明声明过）
+      rationale: |
+        口令预检曾经只看退出码，bw 在非交互环境返回 0 但没输出，restic 才报空口令。
+        同一类失败模式：声明了 password_offline_copy_required 却没有任何东西在检查。
+        机器取值和人恢复约束相反，必须两边都查。
+
+    - id: backup_closure
+      desc: backup.derive 得出的应备份集合 与 restic 最近快照路径集合 的差集
+      hard_fail: true
+      new_in: v2
+      method: |
+        restic snapshots latest --json → 提取路径集合
+        与 derive 结果做差集；非空即失败。
+        这是闭环校验：配置写对但没跑、跑了但失败、清单过期，三种情况都能抓到。
+      catches: |
+        60-dev(2134)、80-data(31721)、80-research(140) 当前零副本，
+        而 v1 审计报告显示「漂移 0 项、错误 0 项」。
+
+    - id: sync_safety
+      desc: sync.forbid_* 覆盖的路径是否出现在实际同步规则的 include 侧
+      hard_fail: true
+      new_in: v2
+      method: 解析 rsync filter 文件，与 policy 交叉比对
+      catches: |
+        warm filter 第 87 行 `+ /70-infra/70-vps/credentials/***`。
+        v1 没有任何机制交叉检查「策略说不同步」与「规则文件说要同步」。
+
+    - id: raw_integrity
+      desc: 比对 _raw/MANIFEST.sha256 —— 新增文件放行，已有文件哈希变动即失败
+      hard_fail: true
+      new_in: v2.1
+      tier: deep
+      method: |
+        对每个含 _raw/ 的数据集：
+          清单中不存在的文件  → RAW_APPENDED，写回清单，放行
+          清单中存在且哈希一致 → ok
+          清单中存在但哈希不同 → RAW_MUTATED，硬失败
+          清单中存在但文件消失 → RAW_DELETED，硬失败
+      rationale: |
+        「_raw 只读」在 v2 里只是一句文档纪律，没有任何东西在验证它。
+        权限位能被改回来，哈希清单不能——它把约定变成机器可判定的事实。
+
+    - id: retention
+      desc: _inbox 超期、缺 DATASET.md / RETENTION.md / VENDOR.md、frontmatter.review 过期、恢复演练超期、_out 未声明重建命令
+      hard_fail: false
+      partially_in: v1
+      implemented:
+        - _inbox 顶层条目 mtime 超过 30 天
+        - 缺 DATASET.md / RETENTION.md / VENDOR.md
+        - 4-know 非 archived 文档的 frontmatter.review 早于今天，或不是有效 YYYY-MM-DD 日期（v2.6 补上）
+      not_implemented:
+        - 恢复演练超期 —— 间隔已推导进 lock（backup.restore_drill_days），但没有任何判据在读它
+        - _out 未声明重建命令 —— DATASET.md 模板里有这一节，没有东西验证它被填了
+      rationale: |
+        implemented / not_implemented 分开列，是因为 review 那条曾经在 desc 里
+        写了整整一个大版本而实现是空的。一个声明存在、从不发声的检查比没有这个检查更糟：
+        它让人以为知识库腐烂有人在管。剩下两条同病，先如实标出来，不假装它们在跑。
+
+    - id: dataset_links
+      desc: 数据集是否声明了采集端与应用端；INDEX.md 是否与声明同步
+      hard_fail: false
+      new_in: v2.5
+      tier: daily
+      method: |
+        对每个 3-data/<dataset>：
+          DATASET.md 缺 frontmatter                       → 告警
+          producers / consumers 不是 [] 或块式列表         → 告警（语法不合约定）
+          声明成块式却没有任何 - 项                         → 告警（空列表要写 []）
+          producers 某项缺类型前缀、说明为空、或类型不合法    → 告警
+          dataset 字段缺失或与目录名不一致                  → 告警
+          primary_consumer 非 null 且不在 consumers 里      → 告警
+          consumers 某项指向的目录不存在                    → 告警
+          producers 与 consumers 同时为空                  → 告警（该进 _inbox）
+        INDEX.md 缺失，或重新渲染后与磁盘上的不是同一份文件  → 告警（new data --index）
+      rationale: |
+        刻意不设硬失败。缺一行声明不造成不可逆后果，而一个会让整轮 daily 变红的
+        文档类问题，最后会被人整项关掉——那个代价比声明缺失本身大。
+
+        全部判据只有一份实现（bin/new 的 dataset_scan），生成器和审计共用它。
+        上一版两边各写了一遍「缺 frontmatter / 留着占位符 / 两端皆空」——
+        两份清单迟早分叉，表现是审计报一件生成器不认为有问题的事。
+
+    - id: decision_links
+      desc: 决策记录是否声明了 scope 与 primary_scope；总索引与各目录受控块是否与声明同步
+      hard_fail: false
+      new_in: v2.6
+      tier: daily
+      method: |
+        对每个 4-know/decision/*.md：
+          缺 frontmatter 或缺 id                          → 告警（索引无从引用它）
+          type 不是 decision                              → 告警
+          标题仍是模板占位符                                → 告警
+          scope 不是 [] 或块式列表                          → 告警（语法不合约定）
+          声明成块式却没有任何 - 项                          → 告警（空列表要写 []）
+          scope 某项不是合法 scope                          → 告警（词表见 git.commit）
+          scope 为空                                      → 告警（没说清作用于什么）
+          缺 primary_scope                                → 告警
+          primary_scope 非 null 且不在 scope 里             → 告警
+          supersedes 指向的 id 不存在                       → 告警（演进链断了）
+          id 与 4-know 里其他文档重复                       → 告警（链接与反查都会指错）
+          scope 落在 ai_access: deny 的目录里                → 告警（不写受控块）
+        0-meta/DECISIONS.md 缺失，或重新渲染后与磁盘上的不是同一份文件 → 告警
+        某个 scope 目标目录的受控块缺失、内容不一致、或已不在任何 scope 里 → 告警
+        （全部指向同一个动作：new adr --index）
+      rationale: |
+        不设硬失败的理由同 dataset_links，不重复。
+
+        判据只有一份实现（bin/new 的 decision_scan），生成器与审计共用；
+        scope 词表本身又只有 check-commit-msg.sh 一份实现，bin/new shell out 调用它。
+        两层都是同一条理由：判据分叉之后，审计会报一件生成器不认为有问题的事，
+        然后没人知道该信哪个。
+
+        受控块也逐字节比，不只比总索引。受控块是给「干活时读得到」用的那一份，
+        过期比总索引过期更容易骗到人——读它的人根本不知道它是生成的。
+
+    - id: naming
+      desc: 按 naming.applies 分域检查
+      hard_fail: false
+      inherited_from: v1
+
+    - id: plan_staleness
+      desc: derived.lock 的 policy_sha256 是否与当前 policy.yaml 一致
+      hard_fail: true
+      new_in: v2.1
+      tier: commit
+      rationale: |
+        策略改了但没重算派生结果，等于备份和同步仍按旧规则跑，
+        而文档已经写成新规则——这正是 v1 里手写清单漂移的机制，
+        只不过换了个位置重演。用哈希把两者钉在同一个 commit 里。
+
+  # v2.1：审计分三档执行。
+  # 原先写的是 on_commit 跑 `audit --strict`，即每次提交对全库做一遍完整检查。
+  # 本工作区量级在 25 万文件，这个设计的真实结局是 hook 被关掉——
+  # 而一个被关掉的门禁比没有门禁更糟，因为它还在制造安全感。
+  #
+  # 分档原则：commit 档只回答「这一次写入能不能放行」，
+  # daily 档回答「现在整体健不健康」，deep 档回答「副本和原始数据是否真的完好」。
+
+  tiers:
+
+    commit:
+      trigger: 'pre-commit hook'
+      scope: staged_files_only
+      budget_seconds: 3
+      checks: [plaintext_secrets, naming, plan_staleness, git_hygiene]
+      extra: 'gitleaks protect --staged'
+      note: |
+        只看暂存区。它的职责是拦住这一次写入，不是体检。
+        git_hygiene 进 commit 档是刻意的：monorepo 之后，「误把 5-record
+        或 _raw 提交进去」是唯一一类事后清理成本极高的错误——
+        文件一旦进过历史，就要 filter-repo 重写并强推。必须在入口拦。
+
+        本档只查提交的**内容**。提交的**名字**在 commit-msg 钩子里查，
+        那是另一个钩子类型，不在这份 checks 里。分开的理由很实际：
+        pre-commit 跑的时候提交信息还不存在。
+
+    daily:
+      trigger: 'launchd — com.qiaoen.workspace-audit'
+      scope: full_tree_metadata      # 只看路径与元数据；不读文件内容，不算哈希
+      budget_seconds: 120
+      checks: [topology, plaintext_secrets, copy_count, sync_safety, retention, naming, git_hygiene, worktree_hygiene, password_sources, commit_convention, dataset_links, decision_links]
+
+    deep:
+      trigger: 'launchd 每周日 — com.qiaoen.workspace-audit-deep'
+      scope: full_tree_content
+      budget_seconds: 3600
+      checks: [backup_closure, raw_integrity]
+      note: |
+        含全量哈希与 restic 快照拉取，分钟级到十分钟级。
+        raw_integrity 只能在这一档跑；把它放进 commit 档等于让每次提交等几分钟。
+
+  alert_to: 2-infra/monitor
+
+  output_dir: 0-meta/audit/_out/
+  # 输出落在保留名 _out/ 下，自动不进备份、不进同步、不进 git。
+  # v1 需要 excluded_relative_paths 手工排除自己的输出，此特例在 v2 中消失。
+
+  determinism:
+    config_hash: sha256           # 沿用 v1：同输入 + 同配置 + 同 --as-of ⇒ 同输出
+    as_of_required: true
+
+
+# ── 九、Git ───────────────────────────────────────────────────────────
+# v2.2 的核心变更：整个工作区是一个 monorepo，不是几十个仓库。
+#
+# 原设计是「1-code 每个子目录一个独立仓库，各自建 remote」。放弃的理由不是
+# monorepo 更时髦，而是原设计把治理面切碎了：policy.yaml 是唯一事实源，
+# 但它看不见任何一个子仓库的内部状态——有没有 push、有没有把 .env 提交进去、
+# 分支停在哪。几十个仓库就是几十个 policy 管不到的盲区。
+#
+# 三个机制职责必须分开，不要混为一谈：
+#   branch           版本 / 任务隔离
+#   worktree         多个 branch 同时存在于多个物理目录
+#   sparse-checkout  一个 worktree 实际暴露哪些文件
+#
+# 「工作区是一个 git repo」≠「工作区所有文件都进 git」。
+# 跟踪范围由 tracked / never 决定，与 backup 范围是两回事。
+
+git:
+  mode: monorepo              # monorepo | per_project
+  # per_project 是 v2.1 的旧模式，保留取值只为让 new code 能读到模式再决定行为。
+  # 不要把 monorepo 逻辑硬编码进脚本——脚本读这里，改这里就改行为。
+  root: .
+  default_branch: main
+
+  # ── 跟踪范围 ──
+  tracked_domains: [0-meta, 1-code, 2-infra, 4-know]
+  partial_domains:
+    3-data:
+      track: [DATASET.md, RETENTION.md, README.md, 'pipeline/', 'schema/']
+      never: ['_raw/', '_out/', '_cache/']
+  never_domains: [5-record, _inbox, _vendor]
+  # 例外只给治理文档本身。规则文件必须能随仓库走，否则 clone 出来的工作区
+  # 是一个没有规则的工作区——而这正是 v1 最大的讽刺（整套分类体系自己没有版本控制）。
+  never_domain_exceptions:
+    5-record: [AGENTS.md, RETENTION.md]
+    _inbox:   [AGENTS.md]
+    _vendor:  [AGENTS.md, VENDOR.md]
+
+  # 保留名在任意深度都不进 git。与 reserved_dirs 的 vcs 字段一致，
+  # 此处显式列出是为了让 git_hygiene 审计有一份可直接比对的清单。
+  never_reserved: [_raw, _out, _cache, _vendor, _archive, _files]
+
+  max_tracked_file_bytes: 5242880   # 5 MiB；超限走 _files/ 或 git-lfs
+
+  # ── 分支 ──
+  branching:
+    long_lived: [main]
+    # 只有一条长期主线。曾考虑过 main / 1-code / 2-infra 三条长期分支，
+    # 按目录切分——这是个概念错误：branch 不是「某个目录的分支」，
+    # `1-code` 分支仍然代表整个工作区在某个时间点的完整快照。
+    # 长期并存三条，等于三条完整时间线，policy 会在它们之间漂移。
+    forbid_long_lived_by_domain: true
+    merge_strategy: squash
+    delete_after_merge: true
+
+    # v2.4：short_lived_prefixes 与 naming 两份手写清单在此删除，改由
+    # commit.scope_domains 派生（见 derive-paths.sh 的 git.branch.* 输出）。
+    #
+    # 删除的理由不是去重，是原清单犯了和旧 commit_convention 一模一样的错：
+    # 它把 1-code 映射成前缀 feat——拿一个动作词去回答一个位置问题。
+    # 于是 feat / fix / chore 三个词同时出现在两套词表里且含义不同：
+    #   feat/reddit-v3      「这是 1-code 的任务」   位置
+    #   feat(code.reddit)   「这次是新增能力」       动作
+    # 同一个词两种意思，正是 v2.4 要消灭的东西。
+    #
+    # 现在分支前缀 = scope domain：分支回答「属于哪块」，提交回答「什么性质」。
+    prefixes_derived_from: commit.scope_domains
+
+  # ── 提交语言 ──
+  # v2.4 新增。原先只有 branching.commit_convention 一行正则，而且没有任何
+  # 东西在执行它：.pre-commit-config.yaml 只注册了 pre-commit 一种钩子类型，
+  # 当时的十二项审计里没有一项碰提交信息，derive-paths.sh 也不读那个字段。
+  # 也就是说 v2.3 之前任何 agent 提交 `update stuff` 都能过。
+  #
+  # 这个工作区同时装着代码、基础设施、数据、知识、研究，所以不照搬软件项目的
+  # type 词表。借用 type(scope) 的结构，但两个维度必须正交：
+  #   type  = 这次做了什么性质的动作
+  #   scope = 实际改的是哪一块
+  # infra / data / know / research / meta 描述的是「改哪里」，因此它们是
+  # scope 的 domain，不是 type。
+  commit:
+    format: '<type>(<scope>): <描述>'
+    scope_shape: '<domain>[.<unit>[.<member>]]'
+    scope_required: true
+
+    # domain → 目录。这张表有三个消费者：commit-msg 钩子校验 scope、
+    # new worktree 推断分支前缀、daily 档回扫主线。三处读同一份，
+    # 所以「加一个域」是改这里一行，不是改三个脚本。
+    #
+    # repo 的 '.' 不表示「仓库根目录下的文件」，而表示「不属于任何域」——
+    # .claude/settings.json 带斜杠但仍是仓库级配置，按前者会漏掉它。
+    scope_src:
+      code:     1-code
+      infra:    2-infra
+      data:     3-data
+      know:     4-know
+      research: 4-know/research
+      meta:     0-meta
+      vendor:   _vendor
+      record:   5-record
+      inbox:    _inbox
+      repo:     '.'
+
+    # 只用裸 domain，不派生 unit。
+    # record 的子目录名全是中文（健康 / 合同 / 报销…），而且整域除两个清单
+    # 文件外不进 git；inbox 与 repo 同理，没有稳定的子单元。
+    scope_no_unit: [record, inbox, repo]
+
+    # know 的一级目录里 research 已经是独立 domain，不重复派生。
+    # _files 由 scope_skip_reserved 兜住。
+    scope_unit_exclude:
+      know: [research]
+
+    # 派生时跳过保留名。不跳的话 1-code/example-app/_out 会派生出
+    # code.example-app._out —— 一个既不该提交也没有意义的 scope。
+    scope_skip_reserved: [_raw, _out, _cache, _vendor, _archive, _files]
+
+    # 第三段 member 只从已声明的分组结构派生，不做普通目录递归。
+    # 递归会让 scope 数量随目录深度爆炸，而 1-code 的分组本来就被
+    # max_group_depth 限制在一层——递归派生的那些额外值全是噪声。
+    scope_member_from:
+      code: grouped_projects
+
+    # 派生不出来的语义 scope。绑实际路径，而不是只把名字加进白名单——
+    # 绑了路径这条声明就自我验证：路径没了审计会报，白名单没法静默漂移。
+    # 同时 scope_path_consistency 对它们能用同一套逻辑，不需要开特例。
+    scope_alias:
+      meta.policy: 0-meta/policy.yaml
+      meta.agents: 0-meta/AGENTS.md
+      meta.new:    0-meta/bin/new
+      meta.hooks:  .pre-commit-config.yaml
+
+    # 某个 scope 的合法 type = universal + 它所属 domain 那一组。
+    types:
+      universal: [chore, revert]
+      code:      [feat, fix, refactor, test, docs]
+      infra:     [feat, fix, refactor, test, docs]
+      data:      [collect, clean, transform, translate, seal]
+      know:      [plan, create, revise]
+      research:  [plan, create, revise]
+      meta:      [feat, fix, refactor, docs]
+      vendor:    [docs]
+      record:    [docs]
+      inbox:     [docs]
+      repo:      [docs]
+
+    # 词义。AGENTS.md 的受控块由这里生成，不另写一份。
+    type_glossary:
+      chore:     非领域语义的维护动作；最低优先级兜底，能用领域专属 type 就不要用它
+      revert:    回滚某次正式提交
+      feat:      新增能力
+      fix:       修复错误
+      refactor:  重构内部结构，目标行为基本不变
+      test:      测试、验证、恢复演练
+      docs:      README、注释、说明文档
+      collect:   采集、导入新数据
+      clean:     清洗、去重、纠错
+      transform: 转换、聚合、生成派生数据
+      translate: 翻译实际数据内容
+      seal:      固化原始数据并生成 MANIFEST.sha256
+      plan:      计划、研究设计、框架、方案
+      create:    新建首版知识、文档、报告
+      revise:    修订已有知识、文档、报告
+
+    # create 而不是 draft：`new note` / `new adr` 生成的 frontmatter 里
+    # status: draft 已经用 draft 表示「状态」。type 位再用它，同一个词在
+    # 同一个体系里同时表示动作和状态。create 只说「以前没有，现在有第一版」。
+    #
+    # seal 保留为独立 type 而不并入 chore：它是明确的数据生命周期动作，
+    # 而 raw_integrity 这项 deep 档审计正是以它为前提。
+
+    multi_scope:
+      allowed: true
+      separator: ','
+      rule: |
+        默认单 scope。只有当一个不可分割的意图确实同时作用于多个 scope，
+        且它们共用同一个 type 时，才用多 scope。
+        「branch 可以跨域」不等于「squash 之后必须是一条多 scope 提交」——
+        跨域分支该拆成几条提交，仍然按「是否是独立意图」判断。
+        拆法见 docs/07-git-工作流.md 第六节。
+
+    # 「先看实际改了什么对象，再选 type」这句话的前半截可以被机器验证：
+    # commit-msg 跑的时候索引已经就绪，diff --cached 拿得到这次的全部文件。
+    scope_path_consistency:
+      direction: declared_must_have_evidence
+      rule: 每个声明的 scope，至少要有一个暂存文件落在它对应的目录下
+      on_violation: hard_fail
+      boundary: |
+        单向，且刻意不做反向。不要求所有暂存文件都被某个 scope 覆盖——
+        反向检查会逼着「顺手改了根 .gitignore」的提交挂上 repo，
+        那就把「默认单 scope」自己推翻了。
+        因此这条能抓「scope 是猜的」，抓不到「夹带了无关文件」。
+        后者由 commit 粒度原则和人来负责，不由这条规则负责。
+        type 那半截机器验证不了（分不清 feat 和 fix），只能靠文档。
+
+    description:
+      min_chars: 4
+      max_chars: null
+      # 不设上限。72 字符的常见上限是按英文定的，对中文描述等于逼人写缩写。
+
+    # 只在 main 上生效。
+    main_gate:
+      allow_wip_on_short_lived: true
+      # 判据是「整条 description 等于空泛词」，不是子串匹配。
+      # 子串封禁会毙掉「更新 Quest 用户画像结论」这种完全合法的描述——
+      # 而 v1 的全局命名规则已经用 60 天证明过这件事的代价：
+      # 覆盖面过大的规则会失去可信度，然后被整条绕过。
+      vague_whole_match:
+        [update, updates, wip, fix2, checkpoint, 'agent changes',
+         misc, tmp, temp, 保存, 更新, 修改, 调整, 优化, 提交]
+
+    # 左开区间：这条提交本身不检查，它之后产生的第一条起必须合规。
+    # 划在初始提交上，等于豁免区间为空——先于新规范的 7 条历史标题已经按
+    # 提交语言重写，没有剩下要放过的东西。初始提交自己留在区间外：它已经推到
+    # 远端，改它要 force push，代价大于一条不合规的标题。
+    #
+    # 这个值必须跟着历史重写一起挪。它指向的对象一旦不存在，回扫不是报错而是
+    # 直接跳过并返回 0——整项检查静默消失，比没有这项检查更糟。
+    enforce_after: 31a7d29cdb0c3ea948d71e322630f300fae82e5e
+
+    # commit-msg 钩子与 daily 回扫共用这一份，不各写一套。
+    # 两边判断不一致的话，钩子放行的提交会被审计天天报，
+    # 而「审计总在报一件你已经决定允许的事」是门禁被关掉的标准前奏。
+    exempt:
+      autogenerated_prefixes:
+        - 'Revert "'
+        - 'Merge branch '
+        - 'Merge remote-tracking branch '
+        - 'Merge pull request '
+        - 'Merge tag '
+        - 'fixup! '
+        - 'squash! '
+      # --amend 且没有新增改动时，diff --cached 是空的。
+      # 此时跳过 scope-path 一致性，否则改一句错别字都会被判成 scope 无证据。
+      skip_path_check_when_empty_stage: true
+
+  # ── worktree ──
+  worktree:
+    root: '../worktrees'
+    # 注意这是仓库根的兄弟目录，不是子目录。放在子目录里会被 topology
+    # 检查判为「顶层多出一个未声明的域」，还会被同步和备份重复收录。
+    always_include: [0-meta, ".agents"]
+    # 固定公共可见：治理层（AGENTS / policy / schema / 审计工具）和
+    # z 系列 Skills。普通任务不声明 `.agents` 也要能读到 zdev / zreview。
+    #
+    # 能看见 ≠ 允许修改。本列表只进入 sparse-checkout，不构成写授权。
+    # 可写范围只来自 Issue「允许改动范围」；未写入该段时，Agent 不得改
+    # 0-meta 或 .agents。new task 的稀疏校验不得把这两项判为越界，
+    # 也不得把它们当成所有任务的默认可写目录。
+    sparse_mode: cone
+    external_backup: true
+    # ↑ v2.2 新增，且是规格里漏掉的一条。
+    # worktree 在备份根（仓库根）之外，默认不会被 restic 收。
+    # 那么 AI 在 worktree 里未提交的工作就是零副本——这恰好推翻了 v2.1
+    # 刚立的「git 远端不是备份，所以 1-code 也进冷备」。
+    # 把 worktree 根显式加进备份路径，并由 worktree_hygiene 检查 dirty 状态。
+
+  # ── 晋升为独立仓库 ──
+  # monorepo 是默认，不是永久禁止。不要求在项目出生第一天就预测它的未来。
+  standalone:
+    repos: []                 # 形如 - path: 1-code/foo
+                              #        remote: git@github.com:me/foo.git
+                              #        reason: 已开源
+    # 登记在这里的路径必须同时出现在根 .gitignore 里，否则内层 .git 会被
+    # 根仓库记成 gitlink 然后一直报错。这条由 git_hygiene 闭环校验。
+    promote_when:
+      - 准备开源
+      - 需要外部协作者
+      - 需要独立 Issues / Release
+      - 独立 CI/CD 复杂到会干扰主线
+      - 需要不同的访问权限
+      - 其他系统需要直接 clone 该项目
+      - 生命周期已明显脱离本工作区
+    history_extraction: 'git filter-repo --path 1-code/foo --path-rename 1-code/foo/:'
+
+
+# ── 十、AI 与第三方代码的访问边界 ──────────────────────────────────────
+# AGENTS.md 是行为规范，不是权限控制。它约束「配合的 agent 应该怎么做」，
+# 约束不了「以你的用户身份运行的进程能读到什么」。
+#
+# FileVault 也不管这件事：它防的是关机后硬盘被拿走，不防正在运行的软件。
+#
+# 三层，强度递增。只有第三层是真边界，前两层是意图与配合。
+
+ai_access:
+
+  layer_1_declaration:
+    strength: 零。这里只是意图的事实源，下面两层由它生成
+    0-meta:   read
+    1-code:   read-write
+    2-infra:  read-write     # 密文文件可读；解密用的 age 私钥不在工作区内
+    3-data:   read
+    4-know:   read-write
+    5-record: deny
+    _inbox:   read
+    _vendor:  read
+
+  layer_2_tool:
+    strength: 认这些文件的工具才生效；不认的工具直接穿透
+    generated_from: layer_1_declaration
+
+    # 不存在「通用 AI 访问控制标准」。每个工具只认自己的配置文件，
+    # 所以这一层不是一个文件，是一组 adapter——层本身没有强度，
+    # 强度是各个 adapter 分别有的，而且差得很远。
+    #
+    # 唯一的事实源是上面的 layer_1_declaration。下面每一项都是它对某个
+    # 工具的翻译，不是独立的策略。要改「AI 能读什么」，改 layer_1，
+    # 然后逐个同步 adapter；不要只改某一个 adapter。
+    #
+    # enforced 的语义很窄：工具本身会拒绝这次读取，而不是「工具被要求不要读」。
+    # enforced:false 的 adapter 不进审计——不可判定的东西不该有一项检查为它亮绿灯。
+    adapters:
+      cursor:
+        file: .cursorignore
+        enforced: true
+        agent_writable: false
+        template: 0-meta/templates/cursorignore.tpl
+        note: |
+          Cursor 禁止 agent 写这个文件，只能人工 cp 模板。这条限制是对的：
+          能改自己访问控制文件的 agent 等于没有访问控制。
+          代价是它无法自动安装，所以 new setup 只能检查、不能代劳。
+
+      claude-code:
+        file: .claude/settings.json
+        enforced: true
+        key: permissions.deny
+        note: |
+          deny 优先于任何 allow，且跨 scope 生效。项目级 settings 里
+          `/` 开头锚定仓库根，裸文件名按 gitignore 语义在任意深度匹配。
+          Read deny 同时约束 Bash 里的 cat / head / tail，
+          但约束不了「agent 写一个脚本自己去 open()」——那是 layer 3 的事。
+
+      jetbrains-and-misc:
+        file: .aiignore
+        enforced: true
+        note: 非正式约定，JetBrains AI 等少数工具认。写着基本没成本，别指望它。
+
+      codex-and-workbuddy:
+        file: AGENTS.md
+        enforced: false
+        note: |
+          这两个工具没有路径级 deny 配置，只有行为规范。
+          也就是说对它们而言 layer 2 是空的，实际保护等级直接掉到 layer 1。
+          在 layer 3 落地之前，这是本工作区最大的一个敞口，不要假装它不存在。
+
+    must_deny:
+      - '5-record/'
+      - '**/.env'
+      - '**/*.pem'
+      - '**/*.key'
+      - '**/id_rsa*'
+      - '**/id_ed25519'
+    audit: |
+      enforced:true 的 adapter 缺失或未落实 must_deny → 失败。
+      清单由 derive-paths.sh 写进 derived.lock 的 ai_access.adapter_files，
+      new check 从 lock 读——加一个新工具只需改本文件，不需要改脚本。
+
+  layer_3_system:
+    strength: 对所有以当前用户身份运行的进程生效
+    method: 5-record 迁到独立加密卷（APFS 加密卷或 sparsebundle），默认不挂载
+    rationale: |
+      allowlist 要枚举「谁不许读」，而未挂载的卷不需要枚举任何东西。
+      这与 secrets 段是同一个思想的第二次应用：
+      让最高敏感度的东西离开这个命名空间，而不是在命名空间内给它贴标签。
+    status: planned
+    doc: 0-meta/docs/06-权限边界.md
+
+
+# ── 十一、变更预览 ─────────────────────────────────────────────────────
+# 单一事实源同时也是单一爆炸点：一次错误的 policy 修改，会同时改变备份范围、
+# 同步范围、可删除判定和审计口径。越自动化，越需要「先看差异，再应用」。
+
+plan:
+  lock_file: 0-meta/derived.lock
+  generator: 0-meta/audit/scripts/derive-paths.sh
+  command: 'new plan'
+  tracked_in_git: true
+
+  # 关键取舍：把派生结果落成被 git 跟踪的 lock 文件，而不是在终端里打一遍。
+  # 终端输出看完就没了，事后无法复核，也进不了 review。
+  # 落成 lock 之后，`git diff 0-meta/derived.lock` 本身就是 plan，
+  # 而且是永久的、可进 PR 的、能追责的。
+  contents:
+    - policy_sha256
+    - backup.include
+    - backup.exclude_rules
+    - sync.include
+    - sync.forbid
+    - reserved_dirs 策略摘要
+    - ai_access.layer_1_declaration 摘要
+  scope_note: |
+    lock 只记录「策略推导出的规则集合」，不记录展开后的具体文件路径。
+    规则集合小而稳定，适合 diff；路径展开有 25 万条且每天都在变，
+    它属于运行产物，落在 0-meta/audit/_out/ 下，不进 git。
+
+  staleness_check:
+    id: plan_staleness
+    rule: derived.lock 中的 policy_sha256 与当前 policy.yaml 不符 → 失败
+    tier: commit
+    rationale: 保证 policy 与 lock 永远在同一个 commit 里，不会出现「改了但没算」
+
+  danger_conditions:        # plan 输出中必须单独高亮的变更
+    - 任一域的 backup 由 required 变为 forbidden
+    - 任一域的 sync 由 forbidden 变为 allowed
+    - reserved_dirs 中 backup:required 的项被改为 forbidden
+    - secrets.deny_globs 中的条目被删除
+    - audit 中 hard_fail:true 的检查被降级为 false
+    - ai_access 中 deny 被放宽
+    - git.mode 变更                      # v2.2：会同时改变 new code 行为与全部跟踪范围
+    - git.never_domains 中的域被移出      # 等于允许 5-record / _vendor 进 git
+    - git.never_reserved 中的保留名被移出
+
+  workflow: |
+    改 policy.yaml
+      → schema 校验（YAML 可解析 + 必填字段齐全）
+      → new plan（重算 lock，打印 diff，高亮 danger 项）
+      → 人工确认
+      → 提交（policy.yaml 与 derived.lock 必须在同一个 commit）

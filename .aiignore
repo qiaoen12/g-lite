@@ -1,0 +1,86 @@
+# 由 0-meta/policy.yaml 的 ai_access.layer_1_declaration 生成。
+# 改这个文件之前先改 policy.yaml，否则下次 `new plan` 会报不一致。
+#
+# 强度说明：这是 layer 2（工具层）。认这个文件的工具才生效，不认的直接穿透。
+# 真正的边界是 layer 3——把 5-record 放到默认不挂载的加密卷。
+# 见 0-meta/docs/06-权限边界.md。
+
+# ═══ deny：机密档案 ═══════════════════════════════════════════
+# 合同、报销、税务、资产、证件、健康。ai_access 声明为 deny。
+5-record/
+
+# ═══ deny：凭据 ═══════════════════════════════════════════════
+# 正常情况下这些文件根本不该存在（审计硬失败）。
+# 这里再挡一道，是为了覆盖「写入之后、审计发现之前」的那段时间。
+**/.env
+**/.env.*
+!**/.env.tpl
+!**/.env.example
+**/*.pem
+**/*.key
+!**/*.pub
+**/id_rsa*
+**/id_ed25519
+**/secrets.json
+**/*credentials*.json
+**/*password*.csv
+**/*密码*.csv
+**/*.ovpn
+
+# 密文读了也没用，但没必要进索引
+**/*.enc.yaml
+**/*.enc.yml
+**/*.enc.json
+**/*.enc.env
+**/*.age
+**/*.gpg
+
+# ═══ 检索效率：可再生目录 ═════════════════════════════════════
+# 以下不是安全考虑，只是没必要索引。
+**/node_modules/
+**/.venv/
+**/venv/
+**/__pycache__/
+**/.mypy_cache/
+**/.pytest_cache/
+**/.ruff_cache/
+**/.turbo/
+**/.parcel-cache/
+**/target/
+**/dist/
+**/build/
+**/.next/
+**/.nuxt/
+**/.astro/
+**/.svelte-kit/
+
+# ═══ 检索效率：保留名 ═════════════════════════════════════════
+**/_out/
+**/_cache/
+**/_archive/
+_vendor/
+
+# _raw 是原始采集数据，体量大且无检索价值。
+# 需要读某个具体文件时手动给全路径即可。
+**/_raw/
+
+# _files 是 PDF、图片附件，多为二进制
+4-know/_files/
+
+# ═══ 检索效率：二进制与日志 ═══════════════════════════════════
+**/*.mp4
+**/*.mov
+**/*.avi
+**/*.mkv
+**/*.zip
+**/*.tar.gz
+**/*.rar
+**/*.7z
+**/*.exe
+**/*.bin
+**/*.dmg
+**/*.pkg
+**/*.sqlite
+**/*.db
+**/*.log
+**/.DS_Store

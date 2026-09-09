@@ -1,0 +1,5 @@
+interface:
+  display_name: zreview
+  short_description: 审查当前 HEAD 并更新唯一 Review 评论
+policy:
+  allow_implicit_invocation: false

@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.g-lite.backup-cold</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/ABS/PATH/TO/WORKSPACE/2-infra/backup/scripts/backup-cold-launchd.sh</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/ABS/PATH/TO/WORKSPACE</string>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>10</integer>
+    <key>Minute</key>
+    <integer>15</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/ABS/PATH/TO/HOME/Library/Logs/com.g-lite.backup-cold.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/ABS/PATH/TO/HOME/Library/Logs/com.g-lite.backup-cold.err.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>/ABS/PATH/TO/HOME</string>
+  </dict>
+  <key>Nice</key>
+  <integer>15</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

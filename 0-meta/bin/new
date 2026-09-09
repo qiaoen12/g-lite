@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+# 工作区脚手架。用法见 `new` 或 `new help`。
+set -Eeuo pipefail
+export LC_COLLATE=C
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+TODAY="$(date +%Y-%m-%d)"
+REVIEW_6M="$(date -v+6m +%Y-%m-%d 2>/dev/null || date -d '+6 months' +%Y-%m-%d)"
+
+NEW_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib/new" && pwd)"
+# 加载顺序：core 提供共享原语；其余按依赖。
+. "$NEW_LIB/core.sh"
+. "$NEW_LIB/data-index.sh"
+. "$NEW_LIB/scaffold.sh"
+. "$NEW_LIB/decision.sh"
+. "$NEW_LIB/worktree.sh"
+. "$NEW_LIB/task.sh"
+. "$NEW_LIB/z-cli.sh"
+. "$NEW_LIB/metrics.sh"
+. "$NEW_LIB/check.sh"
+. "$NEW_LIB/setup.sh"
+. "$NEW_LIB/guard.sh"
+
+# 退出时先落度量（只有 new task 会开始计时，其它子命令是 no-op），再清临时文件。
+trap 'metrics_exit_trap $?' EXIT
+trap 'tmp_cleanup; exit 130' INT
+trap 'tmp_cleanup; exit 143' TERM
+
+usage() {
+  cat <<'USAGE'
+用法：new <类型> <名字>
+
+  new code    <name>        自有代码项目      → 1-code/
+  new data    <name>        数据集            → 3-data/
+  new note    <slug>        自己的笔记        → 4-know/note/
+  new source  <slug>        外部资料摘录      → 4-know/source/
+  new adr     <slug>        技术决策记录      → 4-know/decision/
+  new rb      <slug>        操作手册          → 4-know/runbook/
+  new research <topic>      调研专题          → 4-know/research/
+  new vendor  <git-url>     第三方代码        → _vendor/
+  new infra   <name>        基础设施单元      → 2-infra/
+
+  new data --seal <name>    给 _raw/ 生成哈希清单 _raw/MANIFEST.sha256
+  new data --index          从各 DATASET.md 的 frontmatter 重算 3-data/INDEX.md
+                            （反向查询：某个项目要用的数据在哪个数据集）
+  new adr --index           从各决策的 frontmatter 重算 0-meta/DECISIONS.md，
+                            并刷新各目录 AGENTS.md / README.md 里的受控块
+                            （按级别看演进，按 scope 反查某块有哪些决策）
+
+并行工作（monorepo + worktree + sparse-checkout）：
+
+  new worktree <name> --path <p> [--path <p>…] [--branch <b>] [--from <base>]
+                            开一个只暴露指定路径的工作目录，供另一个 AI 独占
+  new worktree --list       列出全部 worktree 及其 dirty / 合入状态
+  new worktree-clean <name> [--force]
+                            安全收尾：dirty / 未合入 / 未推送 任一命中即拒绝
+
+  new task                  预检当前已 bind 的 Git 工作树与 Issue；不改 GitHub、不启动 Agent
+  new task bind <n>         在任务 worktree 显式绑定 Issue（本 worktree 的 git dir）
+  new task approve <n>      人在主工作区、main 上把 Issue 正文写成 origin/main
+                            上的契约文件。Backlog → Ready；在途任务只换契约、不动 Status。内容未变则 no-op
+  new task claim [--actor <id>]
+                            预检通过后领取（Ready → In progress）、写 Checkpoint，
+                            不启动 Agent。actor 只记 provenance，不是授权。
+  new task grok|codex       同一 claim 核心，成功后在当前终端启动对应 Agent，
+                            并把 zdev 作为首条指令。未登记的名字直接拒绝。
+                            若 git 分支恰好是 Orca 把合法 displayName 的 / 拍成 - 的
+                            结果，开工前在安全条件下改回规范名，再重跑分支校验。
+  new task review           预检通过后交付当前任务分支：push、创建或复用 base=main
+                            的非 Draft PR、写 Checkpoint，In progress → In review。
+                            PR 标题必须通过现有 commit-msg 校验：有通过 Review 时用
+                            Squash-Title；否则不得直接使用不合规 Issue 标题。
+                            写入后回读；改标题不覆盖人工正文。
+                            不合并 PR、不关闭 Issue、不向 main push、不把状态改为 Done。
+                            仅人实际输入本命令，或明确要求「输入并执行 new task review」
+                            时才可运行；「可以交付」「可以合并」不是授权。
+
+  new z dev|fix|sync|review|pr|merge
+                            canonical z 入口，不加载 Skill。Skill 只是 adapter。
+
+  new plan                  重算 derived.lock，打印 diff 与危险变更
+  new plan --apply          确认无误后写入 derived.lock
+
+  new metrics [--since 7d]  汇总本机度量：入口 × 结果、耗时 p50/p90、开工加载字节数、
+                            meta 与非 meta 任务比、失败原因 Top。数据在
+                            ~/.local/state/<origin-id>/metrics.jsonl，由 new task 与
+                            z 系列入口每次结束时追加，不进 git。
+  new metrics doctor       检查 metrics 目录、jq、JSONL schema 和同目录读写，
+                            不修改 GitHub / Project。
+
+  new setup                 换机 / fresh clone 恢复：依赖、PATH 入口、hooks、
+                            本机 state、适配器状态。不要求 Orca 或固定绝对路径。
+  new guard install|status|sync
+                            本机 staging bare：fetch/claim 仍走 GitHub，
+                            普通 push 经 staging，lease/删除比较 GitHub 真实 tip
+  new check                 全量自查（daily 档）
+  new check --tier commit   只看暂存区（commit 档，pre-commit hook 跑的就是它）
+  new check --tier deep     备份闭环 + _raw 全量哈希（分钟级，每周日跑）
+
+名字规则：code/data/vendor/infra 必须小写英文（路径会被脚本引用）；
+         note/source/adr/rb 的 slug 用于 frontmatter id，同样小写英文，
+         文件标题可以是中文。
+
+改完 0-meta/policy.yaml 必须跑 `new plan`——policy 与 derived.lock
+要在同一个 commit 里，否则 commit 档审计会拦下。
+
+Git 模式（monorepo / per_project）读自 derived.lock 的 git.mode，
+而 derived.lock 由 policy.yaml 推导。要改行为，改 policy，不要改这个脚本。
+USAGE
+}
+
+# ─────────────────────────────────────────────── dispatch
+if [ $# -eq 0 ]; then usage; exit 0; fi
+sub="$1"; shift || true
+case "$sub" in
+  code)     [ $# -eq 1 ] || die "用法：new code <name>";     cmd_code "$1" ;;
+  data)
+    case "${1:-}" in
+      --seal)
+        [ $# -eq 2 ] || die "用法：new data --seal <name>"
+        cmd_data_seal "$2" ;;
+      --index)
+        [ $# -eq 1 ] || die "用法：new data --index"
+        cmd_data_index ;;
+      *)
+        [ $# -eq 1 ] || die "用法：new data <name> | new data --seal <name> | new data --index"
+        cmd_data "$1" ;;
+    esac ;;
+  note)     [ $# -eq 1 ] || die "用法：new note <slug>";     cmd_note "$1" ;;
+  source)   [ $# -eq 1 ] || die "用法：new source <slug>";   cmd_source "$1" ;;
+  adr)
+    case "${1:-}" in
+      --index)
+        [ $# -eq 1 ] || die "用法：new adr --index"
+        cmd_adr_index ;;
+      *)
+        [ $# -eq 1 ] || die "用法：new adr <slug> | new adr --index"
+        cmd_adr "$1" ;;
+    esac ;;
+  rb)       [ $# -eq 1 ] || die "用法：new rb <slug>";       cmd_rb "$1" ;;
+  research) [ $# -eq 1 ] || die "用法：new research <topic>";cmd_research "$1" ;;
+  vendor)   [ $# -eq 1 ] || die "用法：new vendor <git-url>";cmd_vendor "$1" ;;
+  infra)    [ $# -eq 1 ] || die "用法：new infra <name>";    cmd_infra "$1" ;;
+  worktree) cmd_worktree "$@" ;;
+  worktree-clean) cmd_worktree_clean "$@" ;;
+  task)     cmd_task "$@" ;;
+  z)        cmd_z "$@" ;;
+  metrics)  cmd_metrics "$@" ;;
+  plan)     cmd_plan "${1:-}" ;;
+  check)    cmd_check "$@" ;;
+  setup)    [ $# -eq 0 ] || die "用法：new setup"; cmd_setup ;;
+  guard)    cmd_guard "$@" ;;
+  help|-h|--help) usage ;;
+  *) die "未知类型：${sub}（跑 \`new help\` 看用法）" ;;
+esac
