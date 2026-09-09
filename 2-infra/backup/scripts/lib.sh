@@ -132,4 +132,4 @@ restic_env() {
   export RCLONE_DRIVE_PACER_BURST="${RCLONE_DRIVE_PACER_BURST:-5}"
 }
 
-BACKUP_TAG=projects2-cold
+BACKUP_TAG=workspace-cold

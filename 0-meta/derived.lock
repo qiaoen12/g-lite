@@ -8,7 +8,7 @@
 # ═══════════════════════════════════════════════════════════════════════════
 
 schema = derived/v1
-policy_sha256 = 443147cef7204e913fcf0a5b0f9e868b698ee5eb45ce87aec570cfee13695242
+policy_sha256 = 47538d97d3c35ded05047d3ec083394a5911ce0b1e96bca9a02b5f0c32922483
 # root 为空：运行时用 git toplevel；禁止 tracked 本机绝对路径（#41 A5）
 root =
 

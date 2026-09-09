@@ -135,8 +135,8 @@ cmd_setup() {
   echo "── 6. 本机调度（可选 adapter）───────────"
   case "$(uname -s)" in
     Darwin)
-      local plist="$HOME/Library/LaunchAgents/com.qiaoen.workspace-audit.plist"
-      if launchctl list 2>/dev/null | grep -q workspace-audit; then
+      local plist="$HOME/Library/LaunchAgents/com.g-lite.workspace-audit.plist"
+      if launchctl list 2>/dev/null | grep -q g-lite.workspace-audit; then
         c_ok "    ✓ 每日审计已加载"
       elif [ -f "$plist" ]; then
         c_warn "    ⚠ plist 存在但未加载：launchctl bootstrap gui/$(id -u) $plist"

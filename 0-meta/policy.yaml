@@ -963,13 +963,13 @@ audit:
         pre-commit 跑的时候提交信息还不存在。
 
     daily:
-      trigger: 'launchd — com.qiaoen.workspace-audit'
+      trigger: 'launchd — com.g-lite.workspace-audit'
       scope: full_tree_metadata      # 只看路径与元数据；不读文件内容，不算哈希
       budget_seconds: 120
       checks: [topology, plaintext_secrets, copy_count, sync_safety, retention, naming, git_hygiene, worktree_hygiene, password_sources, commit_convention, dataset_links, decision_links]
 
     deep:
-      trigger: 'launchd 每周日 — com.qiaoen.workspace-audit-deep'
+      trigger: 'launchd 每周日 — com.g-lite.workspace-audit-deep'
       scope: full_tree_content
       budget_seconds: 3600
       checks: [backup_closure, raw_integrity]

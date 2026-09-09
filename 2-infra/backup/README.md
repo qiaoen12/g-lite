@@ -123,7 +123,7 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.g-lite.backup-cold.p
 ## 巡检输出
 
 `_out/`（生成的清单、日志索引）。保留名，自动不进备份、不进 git。
-restic 运行日志在 `~/Library/Logs/projects2-backup/`。
+restic 运行日志在 `~/Library/Logs/g-lite-backup/`。
 
 ## 恢复演练
 

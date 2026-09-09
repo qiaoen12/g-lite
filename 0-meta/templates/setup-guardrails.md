@@ -93,7 +93,7 @@ gitleaks **不会**报。它的 `private-key` 规则连带熵阈值一起判定�
 
 ## 3　launchd（每天自动审计）
 
-`~/Library/LaunchAgents/com.qiaoen.workspace-audit.plist`：
+`~/Library/LaunchAgents/com.g-lite.workspace-audit.plist`：
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -101,7 +101,7 @@ gitleaks **不会**报。它的 `private-key` 规则连带熵阈值一起判定�
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>com.qiaoen.workspace-audit</string>
+  <key>Label</key><string>com.g-lite.workspace-audit</string>
   <key>ProgramArguments</key>
   <array>
     <string>/ABS/PATH/TO/WORKSPACE/0-meta/bin/new</string>
@@ -118,8 +118,8 @@ gitleaks **不会**报。它的 `private-key` 规则连带熵阈值一起判定�
 ```
 
 ```bash
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.qiaoen.workspace-audit.plist
-launchctl kickstart -k gui/$(id -u)/com.qiaoen.workspace-audit    # 立即跑一次验证
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.g-lite.workspace-audit.plist
+launchctl kickstart -k gui/$(id -u)/com.g-lite.workspace-audit    # 立即跑一次验证
 ```
 
 ## 4　每日冷备（launchd + Keychain）

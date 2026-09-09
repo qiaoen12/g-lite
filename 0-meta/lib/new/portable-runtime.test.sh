@@ -65,6 +65,12 @@ expect_true "G Project title 不是 Projects2 专属" \
   '[ "$(policy_get github.project.title)" != "Projects2 Tasks" ]'
 expect_true "G worktree.root 不是 Projects2-worktrees" \
   '! grep -Fq "Projects2-worktrees" "$ROOT/0-meta/policy.yaml"'
+expect_true "G restic tag 不是 projects2-cold" \
+  '! grep -Fq "projects2-cold" "$ROOT/2-infra/backup/scripts/lib.sh"'
+expect_true "G backup 脚本无 projects2-backup" \
+  '! grep -Fq "projects2-backup" "$ROOT/2-infra/backup/scripts/backup-cold.sh" && ! grep -Fq "projects2-backup" "$ROOT/2-infra/backup/scripts/lib.sh"'
+expect_true "G setup 不探测 com.qiaoen launchd" \
+  '! grep -Fq "com.qiaoen." "$ROOT/0-meta/lib/new/setup.sh"'
 expect_eq "G Status ready 来自 lock" "Ready" "$(policy_get github.status.ready)"
 expect_eq "G Status progress 来自 lock" "In progress" "$(policy_get github.status.progress)"
 expect_true "G task.sh 不再写死 Project #2" \
