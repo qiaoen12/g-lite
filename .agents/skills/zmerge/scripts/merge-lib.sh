@@ -447,6 +447,89 @@ zmerge_deliver_review() {
   "$ROOT/0-meta/bin/new" task review
 }
 
+# R3 的重试只允许由一次 Guard staging-main stale 失败触发。refresh 前后
+# 都复读 candidate HEAD、origin/main、Review、auto-merge 和 Contract；真正
+# 创建/读取 PR 后，zmerge_do_merge 还会走 zmerge_reread_before_merge 的全门禁。
+zmerge_guard_recovery_preflight() {
+  local current cur_blob
+  current="$(git -C "$Z_WT" rev-parse HEAD 2>/dev/null || true)"
+  [ -n "$current" ] || { err_code task.head_unreadable "无法读取 candidate HEAD，停止 Guard recovery"; return 1; }
+  [ "$current" = "$Z_HEAD" ] || {
+    err_code z.pr_head_changed "candidate HEAD 已改变（${current} ≠ ${Z_HEAD}），需要新的 zreview"; return 1;
+  }
+  z_fetch_origin_main "$Z_WT" "$Z_MAIN" || {
+    err_code z.main_fetch_failed "无法复读 origin/${Z_MAIN}，停止 Guard recovery"; return 1;
+  }
+  if ! z_main_is_current "$Z_WT" "origin/${Z_MAIN}" HEAD; then
+    err_code z.main_ahead "candidate 真落后于最新 main；不要由 Guard recovery 偷偷同步。下一步：new z sync"; return 1
+  fi
+  z_require_passing_review || return 1
+  z_require_auto_merge_safe_review || return 1
+  contract_fetch_main "$Z_WT" "$Z_MAIN" \
+    || { err_code contract.fetch_main_failed "无法复读 origin/${Z_MAIN} 上的 Contract，停止 Guard recovery"; return 1; }
+  cur_blob="$(contract_main_blob "$Z_WT" "$Z_NUMBER" "$Z_MAIN" 2>/dev/null || true)"
+  [ -n "$cur_blob" ] || { err_code contract.missing "origin/${Z_MAIN} 没有 Contract，停止 Guard recovery"; return 1; }
+  if contract_stale "$Z_CONTRACT_BLOB" "$cur_blob" "Guard recovery"; then
+    err_code contract.stale "Contract 已改变，旧 Review/merge authorization 失效；需要新的 zreview"; return 1
+  fi
+  return 0
+}
+
+zmerge_deliver_review_with_guard_recovery() {
+  local out retry_out refresh_out domain rc=0 retry_rc=0
+  ZMERGE_DELIVER_FAILURE_CLASSIFIED=0
+  out="$(zmerge_deliver_review 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    [ -z "$out" ] || printf '%s\n' "$out"
+    return 0
+  fi
+  if [ "$(type -t guard_classify_push_failure 2>/dev/null)" = function ]; then
+    domain="$(guard_classify_push_failure "$Z_WT" "$out" "$rc")"
+  else
+    domain=unknown
+  fi
+  if [ "$domain" != guard-staging ]; then
+    [ -z "$out" ] || printf '%s\n' "$out" >&2
+    return "$rc"
+  fi
+
+  [ -z "$out" ] || printf '%s\n' "$out" >&2
+  # 这一步只在现有 merge authorization 仍可证明时执行；不因 staging
+  # stale 而放宽 HEAD/Review/Contract 门禁。
+  zmerge_guard_recovery_preflight || {
+    ZMERGE_DELIVER_FAILURE_CLASSIFIED=1
+    return 1
+  }
+  refresh_out="$(guard_refresh_staging_for_merge "$Z_WT" "$Z_MAIN")" || {
+    err_code z.guard_refresh_blocked "Guard staging stale 但 refresh 被 fail-closed；未 replay transaction/lease。请显式 new guard sync 核对";
+    ZMERGE_DELIVER_FAILURE_CLASSIFIED=1
+    return 1
+  }
+  case "$refresh_out" in
+    refreshed|noop) ;;
+    *)
+      err_code z.guard_refresh_blocked "Guard refresh 未返回可证明的 scoped result；未重试 task review。请显式 new guard sync 核对"
+      ZMERGE_DELIVER_FAILURE_CLASSIFIED=1
+      return 1
+      ;;
+  esac
+  echo "Guard staging stale：已完成 scoped ${refresh_out}，复读全部已有 merge gates。" >&2
+  zmerge_guard_recovery_preflight || {
+    ZMERGE_DELIVER_FAILURE_CLASSIFIED=1
+    return 1
+  }
+
+  retry_out="$(zmerge_deliver_review 2>&1)" || retry_rc=$?
+  if [ "$retry_rc" -ne 0 ]; then
+    [ -z "$retry_out" ] || printf '%s\n' "$retry_out" >&2
+    err_code z.review_deliver_failed "Guard scoped refresh 后 task review 仍失败；不再自动重试";
+    ZMERGE_DELIVER_FAILURE_CLASSIFIED=1
+    return 1
+  fi
+  [ -z "$retry_out" ] || printf '%s\n' "$retry_out"
+  return 0
+}
+
 # after_merge=1：本轮刚 gh pr merge 成功，失败必须用「远端已合并;finalize 未完成:…」
 zmerge_finalize() {
   local after_merge="${1:-0}"
@@ -495,8 +578,10 @@ zmerge_do_merge() {
   z_warn_if_status_drift "$derived" "$project"
   case "$derived" in
     "$TASK_STATUS_PROGRESS"|"$TASK_STATUS_REVIEW")
-      zmerge_deliver_review || {
-        err_code z.review_deliver_failed "new task review 失败"
+      zmerge_deliver_review_with_guard_recovery || {
+        if [ "${ZMERGE_DELIVER_FAILURE_CLASSIFIED:-0}" != 1 ]; then
+          err_code z.review_deliver_failed "new task review 失败"
+        fi
         return 1
       }
       ;;

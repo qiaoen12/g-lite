@@ -298,7 +298,7 @@ new task review     # In progress：push → 创建或复用 base=main 的非 Dr
 
 成功后任一步失败都不删锁、不把 Status 退回 Ready；只有锁内 winner 能 resume。ownership 不符只拒绝接管，不回退、不删锁。领取时若分支名不以 `-<n>` 结尾，先改成 `<当前名>-<n>`；有 orca 时同步 displayName，没有 orca 时 git 改名仍然成立。该后缀不再当锁。`refs/claims/<n>` 与任务同寿，finalize 不删除。
 
-`new guard install` 之后，任务 worktree 由 bind / 预检把 origin push URL 接到本机 staging，并把 `receivepack` 指到 guard wrapper。fetch 与 claim 仍直达 GitHub。wrapper 从发起 push 的 worktree 读取显式 Binding，在 `git-receive-pack` 之前把 GitHub refs 镜像进 `refs/guard/github/`（失败 fail-closed）；pre-receive 只从这份 snapshot main 读契约和策略，拒绝 main、非法 message、越界及 hard-deny 路径，连最终被 revert 的任务历史也检查；staging 收下后 post-receive 用一次 `--atomic` 加每条 `--force-with-lease=<old>` 转发；wrapper 把转发失败变成客户端非 0。主工作区不接线。
+`new guard install` 之后，任务 worktree 由 bind / 预检把 origin push URL 接到本机 staging，并把 `receivepack` 指到 guard wrapper；这两项以及 `claim` remote 都写入该 linked worktree 的 `config.worktree`，不写 shared `.git/config`。fetch 与 claim 仍直达 GitHub。wrapper 从发起 push 的 worktree 读取显式 Binding，在 `git-receive-pack` 之前把 GitHub refs 镜像进 `refs/guard/github/`（失败 fail-closed）；pre-receive 只从这份 snapshot main 读契约和策略，拒绝 main、非法 message、越界及 hard-deny 路径，连最终被 revert 的任务历史也检查；staging 收下后 post-receive 用一次 `--atomic` 加每条 `--force-with-lease=<old>` 转发；wrapper 把转发失败变成客户端非 0。主工作区不接线。shared transport 若已有 v1.0 legacy、混合值或用户自定义值，bind/approve 不覆盖，先用 `new guard recover --preview` 核对；默认 `new guard recover` 只解除可证明的 legacy 值，第二次是 no-op。
 
 放行判定（zsync、zdev/zfix/zreview、`new task review` 的创建/复用 PR）只用 `derive_task_state`：origin/main 无契约 → Backlog；有契约、无 `refs/claims/<n>` 且无历史 `-<n>` 事实 → Ready；有 claim → 按锁内 winner branch 精确匹配 PR（无开放非 Draft PR → In progress；有开放非 Draft PR → In review；该分支 PR 已合并 → Done）。claim 不可读或 winner branch 缺失则 hard stop，不得退化成 Ready。Status 是视图，放行判定只用推导状态；与 Project Status 不一致只警告，不阻断、不写回。`new task review` 已由耐久事实决定可交付后，末段 Status 漂移不得 return 1、不得写回。互斥由所有机器共同的 `claim` remote 上 `refs/claims/<n>` 原子创建保证。
 
@@ -313,6 +313,8 @@ Issue 绑定只读 worktree-local `new task bind`，读不到就拒绝，不从�
 `new task review` 只在推导状态为 In progress 或 In review 的受管理 Orca 工作树中运行。工作区必须干净，当前分支相对 `main` 必须有待交付提交。In progress：已有符合条件的 PR 则复用，否则创建。In review：仅当存在唯一、可证明属于当前任务的未关闭 PR 时，重新 push 已审查 HEAD 并更新原 PR；没有匹配 PR 或多个候选 PR 时硬停止，不新建第二个 PR。Project Status 是视图：push 前不探写、不因字段不完整或写入失败停止；PR 建成后 best-effort 写一次 In review，回读不是 In review 只警告，不写回、不失败。复用时只替换 `<!-- new-task-pr -->` 到 `<!-- /new-task-pr -->` 的自动交付区块，区块外的人工说明保留。为修正标题只改 PR 的 title，不覆盖区块外的人工说明。PR 标题必须通过现有 `check-commit-msg.sh --title`：有当前 HEAD 的通过 Review 时用 Squash-Title；没有适用 Review 时，已有 PR 标题或 Issue 标题也必须合法，否则停止。In review 重交付必须已有当前 HEAD 的通过 Review。读取 PR 正文失败或标记不成对则不覆盖。读取 Checkpoint 评论失败、空输出、非数组响应或多条 Checkpoint 时不得另开新楼。不得把任意 In review 当作 `new task review` 的入口。`zmerge` / `zpr` 在 In progress 或 In review 时都调用 `new task review`。Checkpoint 记录交付前 Status 与目标，不把尚未改写的状态写成已经 In review。布尔字段不能用 jq 的 `//` 读取，否则 `isDraft=false` 会被当成空。
 
 `new task review` 不会合并 PR、不会关闭 Issue、不会向 `main` push、不会把状态改为 Done。默认由 `zmerge` 在门禁通过后 squash merge；最终提交标题必须是已校验的 Squash-Title。PR 正文含 `Fixes #号`；合并后由 GitHub 关闭 Issue，Project 的关闭→Done 工作流再改状态。本流程不删除工作树或本地分支。
+
+若 candidate 已含最新 main、当前 HEAD 的 Review 仍有效，但 Guard staging 的 main mirror 单向落后，`zmerge` 只在已有 merge authorization 仍通过且 transaction/lease facts 无歧义时，刷新 staging 的 main、有限重试一次并重新读取全部 merge gates。pending/failed/unknown transaction、lease 歧义、unrelated ref 或非 fast-forward 都 fail-closed；candidate 真落后明确执行 `new z sync`，HEAD 改变必须重新 `zreview`。这条内部 refresh 不 replay forwarding transaction。
 
 下面是用 `new worktree` 自己开视图的流程（非 Orca 的并行工作）。
 

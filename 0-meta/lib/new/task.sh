@@ -1162,7 +1162,7 @@ task_confirm_gh_access() {
 
 # 只推当前任务分支。refspec 两端都是该分支，不会写成默认分支。
 task_push_task_branch() {
-  local wt="$1" br="$2" main="$3" cur remote_sha
+  local wt="$1" br="$2" main="$3" cur remote_sha push_out push_rc=0 fetch_raw fetch_out fetch_rc=0
   if ! task_branch_pushable "$br" "$main"; then
     err_code review.branch_not_pushable "    ✗ 拒绝 push：分支非法（${br:-空}）"
     return 1
@@ -1172,11 +1172,27 @@ task_push_task_branch() {
     err_code review.head_mismatch "    ✗ HEAD 是 ${cur:-游离}，不是 ${br}，拒绝 push"
     return 1
   fi
-  if ! GIT_TERMINAL_PROMPT=0 git -C "$wt" push -u origin -- "refs/heads/${br}:refs/heads/${br}" >&2; then
-    err_code review.push_failed "    ✗ push origin ${br} 失败"
+  push_out="$(GIT_TERMINAL_PROMPT=0 git -C "$wt" push -u origin -- \
+    "refs/heads/${br}:refs/heads/${br}" 2>&1)" || push_rc=$?
+  if [ "$push_rc" -ne 0 ]; then
+    if [ "$(type -t guard_report_push_failure 2>/dev/null)" = function ]; then
+      guard_report_push_failure "$wt" "$push_out" "$push_rc"
+    else
+      err_code review.push_failed "    ✗ push origin ${br} 失败"
+    fi
     return 1
   fi
-  remote_sha="$(git -C "$wt" ls-remote origin "refs/heads/${br}" | awk 'NF{print $1; exit}')"
+  [ -z "$push_out" ] || printf '%s\n' "$push_out" >&2
+  fetch_raw="$(git -C "$wt" ls-remote origin "refs/heads/${br}" 2>&1)" || fetch_rc=$?
+  if [ "$fetch_rc" -ne 0 ]; then
+    if [ "$(type -t guard_report_push_failure 2>/dev/null)" = function ]; then
+      guard_report_push_failure "$wt" "$fetch_raw" "$fetch_rc"
+    else
+      err_code review.push_unconfirmed "    ✗ push 后无法读取远端 refs/heads/${br}"
+    fi
+    return 1
+  fi
+  remote_sha="$(printf '%s\n' "$fetch_raw" | awk 'NF{print $1; exit}')"
   if [ -z "$remote_sha" ]; then
     err_code review.push_unconfirmed "    ✗ push 后远端没有 refs/heads/${br}"
     return 1
@@ -1965,6 +1981,12 @@ task_bind() {
   [ -n "$nwo" ] || die_code review.origin_unparsed "无法从 origin URL 解析 GitHub 仓库（不猜测）"
   owner="${nwo%/*}"
   repo="${nwo#*/}"
+  # linked worktree 的 task transport 必须落在 config.worktree；先启用
+  # worktreeConfig，再收 sparse，避免后续任何 remote 写入回到 shared config。
+  if [ "$(type -t guard_enable_worktree_config 2>/dev/null)" = function ] \
+      && ! task_is_main_worktree "$wt"; then
+    guard_enable_worktree_config "$wt" || return 1
+  fi
   task_bind_ensure_sparse "$wt" "$scope" || return 1
   bindf="$(task_bind_path "$wt")" \
     || die_code task.issue_unbound "无法解析本 worktree 的 git dir，拒绝 bind"

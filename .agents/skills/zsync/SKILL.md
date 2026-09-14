@@ -9,7 +9,7 @@ user-invocable: true
 
 ## 何时用
 
-人明确选择 `zsync`，且需要把任务分支同步到最新 `origin/main`。它只同步，不写 Review、不合并。
+人明确选择 `zsync`，且需要把任务分支同步到最新 `origin/main`。它只同步，不写 Review、不合并。Guard staging stale 不等于 candidate 落后；前者由已授权的 `zmerge` scoped refresh 处理，后者才走本 Skill。
 
 ## 调用
 
@@ -25,4 +25,4 @@ canonical CLI 负责 `git rebase origin/main`、冲突恢复和远端 `--force-w
 
 ## 不做
 
-不隐式启动、不解决冲突、不使用裸 force、不改 Project、合并或关闭 Issue；不自动执行 `zreview` 或 `zmerge`，不删除工作树或本地分支。
+不隐式启动、不解决冲突、不使用裸 force、不改 Project、合并或关闭 Issue；不自动执行 `zreview` 或 `zmerge`，不删除工作树或本地分支。不得把 Guard route、network、authentication 或 non-fast-forward 故障泛化成 zsync。

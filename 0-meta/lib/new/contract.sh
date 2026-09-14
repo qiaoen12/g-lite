@@ -634,7 +634,7 @@ contract_warn_if_issue_differs() {
 
 contract_approve() {
   local root="$1" n="$2" body="$3" title="${4:-}" url="${5:-}" main="${6:-main}"
-  local json canon md_path json_path dir cur_br old_json old_md new_md blob
+  local json canon md_path json_path dir cur_br old_json old_md new_md blob push_out push_rc=0
   [[ "$n" =~ ^[1-9][0-9]*$ ]] || { contract_err contract.unclassified "Issue 编号不合法：$n"; return 1; }
 
   json="$(mktemp -t contract-approve.XXXXXX)"; TMPS="$TMPS $json"
@@ -652,6 +652,10 @@ contract_approve() {
   contract_fetch_main "$root" "$main" || return 1
   if [ "$(git -C "$root" rev-parse HEAD)" != "$(git -C "$root" rev-parse "origin/${main}")" ]; then
     contract_err contract.approve_failed "本地 ${main} 与 origin/${main} 不一致。先 git pull --ff-only，再 approve。"
+    return 1
+  fi
+  if [ "$(type -t guard_main_transport_preflight 2>/dev/null)" = function ] \
+      && ! guard_main_transport_preflight "$root"; then
     return 1
   fi
 
@@ -680,8 +684,14 @@ ${url}}" -- "$md_path" "$json_path"; then
     contract_err contract.unclassified "提交失败（钩子未通过则不提交）。已写入的文件保留在工作区，可 git checkout -- ${md_path} ${json_path} 撤销。"
     return 1
   fi
-  if ! GIT_TERMINAL_PROMPT=0 git -C "$root" push --quiet origin "${main}:${main}" 2>/dev/null; then
-    contract_err contract.approve_failed "push origin ${main} 失败。提交已在本地 ${main}；请 git pull --rebase origin ${main} && git push 后重试 approve（幂等）。"
+  push_out="$(GIT_TERMINAL_PROMPT=0 git -C "$root" push --quiet origin \
+    "${main}:${main}" 2>&1)" || push_rc=$?
+  if [ "$push_rc" -ne 0 ]; then
+    if [ "$(type -t guard_report_push_failure 2>/dev/null)" = function ]; then
+      guard_report_push_failure "$root" "$push_out" "$push_rc"
+    else
+      contract_err contract.approve_failed "push origin ${main} 失败。提交已在本地 ${main}，停止并保留提交。"
+    fi
     return 1
   fi
   blob="$(git -C "$root" rev-parse "HEAD:${json_path}")"
