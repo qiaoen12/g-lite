@@ -266,14 +266,17 @@ FRAME="$TDIR/framework"
 mkdir -p "$FRAME"
 git clone -q --no-hardlinks "$ROOT" "$FRAME/main"
 git_cfg "$FRAME/main"
-git -C "$FRAME/main" worktree add -q -b meta/issue-13-check "$FRAME/wt" main
+source_branch="$(git -C "$ROOT" branch --show-current)"
+git -C "$FRAME/main" fetch -q . "refs/heads/${source_branch}:refs/heads/product"
+git -C "$FRAME/main" worktree add -q -b meta/issue-13-check "$FRAME/wt" product
 git_cfg "$FRAME/wt"
 printf '%s\n' commit-tier-only > "$FRAME/wt/0-meta/lib/new/commit-tier-only.txt"
+check_head="$(git -C "$FRAME/wt" rev-parse HEAD)"
 if check_out="$(cd "$FRAME/wt" && 0-meta/bin/new check --tier commit 2>&1)"; then
   expect_contains 'commit-tier dirty PASS 明确范围' "$check_out" '只检查暂存区'
   expect_contains 'commit-tier dirty PASS 不构成 completion' "$check_out" '不构成'
   expect_contains 'commit-tier dirty PASS 报 untracked' "$check_out" 'untracked=1'
-  expect_eq 'commit-tier PASS 未生成 HEAD' "$(git -C "$FRAME/main" rev-parse HEAD)" "$(git -C "$FRAME/wt" rev-parse HEAD)"
+  expect_eq 'commit-tier PASS 未生成 HEAD' "$check_head" "$(git -C "$FRAME/wt" rev-parse HEAD)"
 else
   bad 'dirty + staged=0 的 commit-tier fixture 应按原语义返回 0'
 fi
