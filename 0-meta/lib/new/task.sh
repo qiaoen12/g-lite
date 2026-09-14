@@ -442,11 +442,12 @@ task_worktree_status_counts() {
 }
 
 # Developer/Fixer → Reviewer 的唯一完成态判断。
-# changed 要求 HEAD 相对 base 至少前进一个提交；no-change 只能在 clean HEAD
-# 上显式声明。这个函数只读 Git，不 add、commit、stash、清理或修改远端。
+# changed 要求 HEAD 相对 base 至少前进一个提交；no-change 要求 HEAD 正好
+# 停在有效基线。auto 仅供 wip adapter 根据同一份基线事实选择 changed/no-change。
+# 这个函数只读 Git，不 add、commit、stash、清理或修改远端。
 task_completion_gate() {
   local wt="$1" base="${2:-}" conclusion="${3:-changed}"
-  local head="" busy="" ahead=""
+  local head="" busy="" ahead="" base_oid=""
   TASK_COMPLETION_HEAD=""
   TASK_COMPLETION_CONCLUSION=""
   TASK_COMPLETION_AHEAD=0
@@ -476,23 +477,52 @@ task_completion_gate() {
   fi
 
   case "$conclusion" in
+    changed|no-change|auto) ;;
+    *)
+      err_code task.completion_conclusion_invalid \
+        "未完成 / BLOCKED：completion 结论非法：${conclusion}（只能是 changed、no-change 或内部 auto）"
+      return 1
+      ;;
+  esac
+
+  if [ -z "$base" ] || ! base_oid="$(git -C "$wt" rev-parse --verify "${base}^{commit}" 2>/dev/null)"; then
+    err_code task.completion_base_unreadable \
+      "未完成 / BLOCKED：无法读取交接基线 ${base:-空}，不能计算待审提交"
+    return 1
+  fi
+  if ! git -C "$wt" merge-base --is-ancestor "$base_oid" "$head" >/dev/null 2>&1; then
+    err_code task.completion_base_not_ancestor \
+      "未完成 / BLOCKED：交接基线 ${base} 不在 HEAD ${head} 历史中"
+    return 1
+  fi
+  if ! ahead="$(git -C "$wt" rev-list --count "${base_oid}..${head}" 2>/dev/null)" \
+     || ! [[ "$ahead" =~ ^[0-9]+$ ]]; then
+    err_code task.completion_ahead_unreadable \
+      "未完成 / BLOCKED：无法计算 HEAD ${head} 相对基线 ${base} 的提交数量"
+    return 1
+  fi
+
+  if [ "$conclusion" = auto ]; then
+    if [ "$ahead" = 0 ]; then
+      conclusion=no-change
+    else
+      conclusion=changed
+    fi
+  fi
+
+  case "$conclusion" in
     no-change)
+      if [ "$ahead" != 0 ]; then
+        err_code task.completion_no_change_commits \
+          "未完成 / BLOCKED：不能报告 no-change；HEAD=${head} 相对基线 ${base} 已有 ${ahead} 个提交"
+        return 1
+      fi
       TASK_COMPLETION_CONCLUSION=no-change
+      TASK_COMPLETION_AHEAD=0
       printf 'completion=no-change HEAD=%s untracked=0 unstaged=0 staged=0\n' "$head"
       return 0
       ;;
     changed)
-      if [ -z "$base" ] || ! git -C "$wt" rev-parse --verify "$base" >/dev/null 2>&1; then
-        err_code task.completion_base_unreadable \
-          "未完成 / BLOCKED：无法读取交接基线 ${base:-空}，不能计算待审提交"
-        return 1
-      fi
-      if ! git -C "$wt" merge-base --is-ancestor "$base" "$head" >/dev/null 2>&1; then
-        err_code task.completion_base_not_ancestor \
-          "未完成 / BLOCKED：交接基线 ${base} 不在 HEAD ${head} 历史中"
-        return 1
-      fi
-      ahead="$(git -C "$wt" rev-list --count "${base}..${head}" 2>/dev/null || true)"
       if ! [[ "$ahead" =~ ^[1-9][0-9]*$ ]]; then
         err_code task.completion_no_commit \
           "未完成 / BLOCKED：相对 ${base} 没有待审提交；HEAD=${head}；untracked=0；unstaged=0；staged=0"
@@ -504,12 +534,52 @@ task_completion_gate() {
         "$head" "$ahead"
       return 0
       ;;
+  esac
+}
+
+# Checkpoint writer 的 completion 入口。非 completion 的 claim/进行中记录不
+# 触发交接门禁；一旦声明 review-ready/no-change，就必须同时证明当前 Git 状态
+# 与 Checkpoint 的 HEAD 一致。这个函数只调用 task_completion_gate，不改变 Git。
+task_checkpoint_completion_gate() {
+  local body="$1" wt="${2:-}" base="${3:-}"
+  local state expected checkpoint_head
+
+  if [ "$(type -t contract_checkpoint_completion_validate 2>/dev/null)" != function ]; then
+    err_code task.checkpoint_completion_validator_missing \
+      "未完成 / BLOCKED：缺少 Checkpoint completion 字段校验器"
+    return 1
+  fi
+  contract_checkpoint_completion_validate "$body" || return 1
+  state="${CONTRACT_CHECKPOINT_STATE:-}"
+  case "$state" in
+    '') return 0 ;;
+    '未完成 / BLOCKED') return 0 ;;
+    review-ready) expected=changed ;;
+    no-change) expected=no-change ;;
     *)
-      err_code task.completion_conclusion_invalid \
-        "未完成 / BLOCKED：completion 结论非法：${conclusion}（只能是 changed 或 no-change）"
+      err_code task.checkpoint_completion_state \
+        "未完成 / BLOCKED：Checkpoint 交接状态不可用：${state:-空}"
       return 1
       ;;
   esac
+  [ -n "$wt" ] || {
+    err_code task.checkpoint_completion_worktree \
+      "未完成 / BLOCKED：Checkpoint completion 缺少当前工作树，不能交接"
+    return 1
+  }
+  [ -n "$base" ] || {
+    err_code task.checkpoint_completion_base \
+      "未完成 / BLOCKED：Checkpoint completion 缺少交接基线，不能交接"
+    return 1
+  }
+  task_completion_gate "$wt" "$base" "$expected" || return 1
+  checkpoint_head="${CONTRACT_CHECKPOINT_HEAD:-}"
+  if [ "$checkpoint_head" != "${TASK_COMPLETION_HEAD:-}" ]; then
+    err_code task.checkpoint_head_mismatch \
+      "未完成 / BLOCKED：Checkpoint HEAD（${checkpoint_head:-空}）不是当前门禁 HEAD（${TASK_COMPLETION_HEAD:-空}），不写入"
+    return 1
+  fi
+  return 0
 }
 
 # Orca 创建工作树时可能把 displayName 里的 / 拍成 -。只做正向映射，不反向猜。
@@ -983,7 +1053,9 @@ task_write_marked_comment() {
 }
 
 task_write_checkpoint() {
-  task_write_marked_comment "$1" "$2" "$3" "$TASK_CHECKPOINT_MARK" "Checkpoint" "$4"
+  local body="$4" write_wt="${5:-${wt:-${Z_WT:-}}}" write_base="${6:-${base_git:-${Z_BASE:-}}}"
+  task_checkpoint_completion_gate "$body" "$write_wt" "$write_base" || return 1
+  task_write_marked_comment "$1" "$2" "$3" "$TASK_CHECKPOINT_MARK" "Checkpoint" "$body"
 }
 
 task_write_review() {
@@ -1655,7 +1727,7 @@ claim_actor=${claim_actor}
 | 分支 | ${logical_br}（git: ${git_br}） |
 | 工作树 | \`${wt}\` |
 | 交付时间 | ${now_iso} |
-| 交付时 HEAD | \`${head}\` |
+| HEAD | \`${head}\` |
 | 工作区状态 | ${ws_status} |
 | 交接状态 | ${completion_state} |
 | HEAD 持久化 | ${completion_persistence} |

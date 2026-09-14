@@ -14,7 +14,6 @@ if ! task_worktree_status_counts "$Z_WT"; then
     "未完成 / BLOCKED：无法读取工作树状态，不能把持久化失败解释为 no-change"
   exit 1
 fi
-before_dirty="$TASK_WORKTREE_DIRTY"
 
 # z_wip_commit 的 die_code 会在其子 shell 中退出；父层补充统一 BLOCKED 归因，
 # 让 git commit / index 等失败不会只留下「提交失败」而被上层误当完成。
@@ -29,8 +28,6 @@ if [ "$commit_rc" -ne 0 ]; then
   exit "$commit_rc"
 fi
 
-if [ "$before_dirty" -eq 0 ]; then
-  task_completion_gate "$Z_WT" "${Z_BASE:-}" no-change
-else
-  task_completion_gate "$Z_WT" "${Z_BASE:-}" changed
-fi
+# 由同一 canonical gate 根据有效基线与 HEAD 的实际提交数量选择结论；
+# 不使用调用前 dirty 快照推断 no-change。
+task_completion_gate "$Z_WT" "${Z_BASE:-}" auto

@@ -805,6 +805,80 @@ contract_require_review_min_report() {
 
 contract_ckpt_field() { task_review_table_field "$1" "$2"; }
 
+# Checkpoint 的 completion 字段是成组出现的；没有交接状态表示仍是 claim/
+# 进行中记录，可以沿用旧格式。只要出现其中一个字段，就必须把整组写完整，
+# 并且 review-ready/no-change 只能声明 committed + clean HEAD。
+contract_checkpoint_completion_validate() {
+  local body="$1" state persistence classification
+  local untracked unstaged staged
+  CONTRACT_CHECKPOINT_STATE=""
+  CONTRACT_CHECKPOINT_PERSISTENCE=""
+  CONTRACT_CHECKPOINT_CLASSIFICATION=""
+  CONTRACT_CHECKPOINT_HEAD=""
+  CONTRACT_CHECKPOINT_UNTRACKED=""
+  CONTRACT_CHECKPOINT_UNSTAGED=""
+  CONTRACT_CHECKPOINT_STAGED=""
+
+  state="$(contract_ckpt_field "$body" "交接状态")"
+  persistence="$(contract_ckpt_field "$body" "HEAD 持久化")"
+  classification="$(contract_ckpt_field "$body" "工作树分类")"
+  CONTRACT_CHECKPOINT_HEAD="$(contract_ckpt_field "$body" HEAD)"
+  [ -n "$state" ] || [ -n "$persistence" ] || [ -n "$classification" ] || return 0
+
+  [ -n "$state" ] || {
+    contract_err contract.checkpoint_completion_field "Checkpoint completion 字段缺少：交接状态"
+    return 1
+  }
+  [ -n "$persistence" ] || {
+    contract_err contract.checkpoint_completion_field "Checkpoint completion 字段缺少：HEAD 持久化"
+    return 1
+  }
+  [ -n "$classification" ] || {
+    contract_err contract.checkpoint_completion_field "Checkpoint completion 字段缺少：工作树分类"
+    return 1
+  }
+
+  case "$state" in
+    review-ready|no-change|'未完成 / BLOCKED') ;;
+    *)
+      contract_err contract.checkpoint_completion_state "Checkpoint 交接状态非法：$state"
+      return 1
+      ;;
+  esac
+  if [[ "$classification" =~ ^untracked=([0-9]+)[[:space:]]*/[[:space:]]*unstaged=([0-9]+)[[:space:]]*/[[:space:]]*staged=([0-9]+)$ ]]; then
+    untracked="${BASH_REMATCH[1]}"
+    unstaged="${BASH_REMATCH[2]}"
+    staged="${BASH_REMATCH[3]}"
+  else
+    contract_err contract.checkpoint_completion_classification \
+      "Checkpoint 工作树分类格式非法：$classification"
+    return 1
+  fi
+
+  CONTRACT_CHECKPOINT_STATE="$state"
+  CONTRACT_CHECKPOINT_PERSISTENCE="$persistence"
+  CONTRACT_CHECKPOINT_CLASSIFICATION="$classification"
+  CONTRACT_CHECKPOINT_UNTRACKED="$untracked"
+  CONTRACT_CHECKPOINT_UNSTAGED="$unstaged"
+  CONTRACT_CHECKPOINT_STAGED="$staged"
+
+  case "$state" in
+    review-ready|no-change)
+      [ "$persistence" = 'committed + clean HEAD' ] || {
+        contract_err contract.checkpoint_completion_persistence \
+          "Checkpoint $state 必须声明 HEAD 持久化为 committed + clean HEAD"
+        return 1
+      }
+      if [ "$untracked" != 0 ] || [ "$unstaged" != 0 ] || [ "$staged" != 0 ]; then
+        contract_err contract.checkpoint_completion_dirty \
+          "Checkpoint $state 的工作树分类必须为 untracked=0 / unstaged=0 / staged=0"
+        return 1
+      fi
+      ;;
+  esac
+  return 0
+}
+
 contract_parse_status_table() {
   local body="$1" heading="$2"
   printf '%s\n' "$body" | tr -d '\r' | awk -v h="$heading" '
@@ -847,6 +921,7 @@ contract_checkpoint_validate() {
     || { contract_err contract.checkpoint_actor "Checkpoint 的 claim_actor 非法"; return 1; }
   [ "$(contract_ckpt_field "$body" "Contract")" = "$expect_blob" ] \
     || { contract_err contract.unclassified "Checkpoint Contract 与 origin/main 上的契约不一致"; return 1; }
+  contract_checkpoint_completion_validate "$body" || return 1
 
   local r_tbl a_tbl
   r_tbl="$(contract_parse_status_table "$body" "R 进度")"

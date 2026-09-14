@@ -131,6 +131,29 @@ else
   bad 'clean no-change 应通过'
 fi
 
+if out="$(task_completion_gate "$DIR/wt" does-not-exist no-change 2>&1)"; then
+  bad '无效基线不得 no-change'
+else
+  expect_contains '无效基线 no-change BLOCKED' "$out" 'BLOCKED'
+  expect_contains '无效基线 no-change 有明确原因' "$out" '无法读取交接基线'
+fi
+
+printf '%s\n' ahead-of-base > "$DIR/wt/file.txt"
+git -C "$DIR/wt" add file.txt
+git -C "$DIR/wt" commit -qm 'feat(meta): issue 13 no-change baseline fixture'
+if out="$(task_completion_gate "$DIR/wt" main no-change 2>&1)"; then
+  bad '相对基线已有提交不得 no-change'
+else
+  expect_contains '已有提交 no-change BLOCKED' "$out" 'BLOCKED'
+  expect_contains '已有提交 no-change 有明确数量' "$out" '已有 1 个提交'
+fi
+if out="$(task_completion_gate "$DIR/wt" main auto 2>&1)"; then
+  expect_contains 'auto 依据 HEAD 选择 changed' "$out" 'completion=changed'
+else
+  bad 'auto 应识别相对基线已有提交'
+fi
+reset_wt "$DIR"
+
 # ── A2：git add/index.lock 失败时，不得写完成 Checkpoint ─────────────
 reset_wt "$DIR"
 printf '%s\n' index-lock-failure > "$DIR/wt/index-lock.txt"
@@ -168,6 +191,54 @@ if out="$(task_completion_gate "$DIR/wt" main changed 2>&1)"; then
 else
   expect_contains 'git commit 失败后 BLOCKED' "$out" 'BLOCKED'
   expect_contains 'git commit 失败后 staged' "$out" 'staged=1'
+fi
+
+# A2：通用 Checkpoint writer 不能绕过 completion gate。
+writer_ck=0
+task_write_marked_comment() { writer_ck=$((writer_ck + 1)); return 0; }
+reset_wt "$DIR"
+printf '%s\n' writer-committed > "$DIR/wt/file.txt"
+git -C "$DIR/wt" add file.txt
+git -C "$DIR/wt" commit -qm 'feat(meta): checkpoint writer fixture'
+writer_head="$(git -C "$DIR/wt" rev-parse HEAD)"
+writer_body="$(printf '%s\n' \
+  "| HEAD | ${writer_head} |" \
+  '| 交接状态 | review-ready |' \
+  '| HEAD 持久化 | committed + clean HEAD |' \
+  '| 工作树分类 | untracked=0 / unstaged=0 / staged=0 |')"
+if task_write_checkpoint o r 13 "$writer_body" "$DIR/wt" main >/dev/null 2>&1; then
+  expect_eq 'clean completion Checkpoint writer 写入' 1 "$writer_ck"
+else
+  bad 'clean completion Checkpoint writer 应通过 canonical gate'
+fi
+writer_no_change_body="$(printf '%s\n' \
+  "| HEAD | ${writer_head} |" \
+  '| 交接状态 | no-change |' \
+  '| HEAD 持久化 | committed + clean HEAD |' \
+  '| 工作树分类 | untracked=0 / unstaged=0 / staged=0 |')"
+writer_ck=0
+set +e
+task_write_checkpoint o r 13 "$writer_no_change_body" "$DIR/wt" main >"$TDIR/writer-no-change.out" 2>&1
+writer_rc=$?
+set -e
+if [ "$writer_rc" = 0 ]; then
+  bad '相对基线已有提交的 no-change Checkpoint 不得写入'
+else
+  expect_eq '相对基线已有提交的 no-change 不写入' 0 "$writer_ck"
+  expect_contains 'no-change writer 基线 BLOCKED' "$(cat "$TDIR/writer-no-change.out")" '不能报告 no-change'
+fi
+printf '%s\n' writer-dirty > "$DIR/wt/writer-dirty.txt"
+writer_ck=0
+set +e
+task_write_checkpoint o r 13 "$writer_body" "$DIR/wt" main >"$TDIR/writer-dirty.out" 2>&1
+writer_rc=$?
+set -e
+if [ "$writer_rc" = 0 ]; then
+  bad 'dirty completion Checkpoint writer 不得写入'
+else
+  expect_eq 'dirty completion Checkpoint writer 不写入' 0 "$writer_ck"
+  expect_contains 'dirty completion Checkpoint writer BLOCKED' "$(cat "$TDIR/writer-dirty.out")" 'BLOCKED'
+  expect_contains 'dirty completion Checkpoint writer 报分类' "$(cat "$TDIR/writer-dirty.out")" 'untracked=1'
 fi
 
 # ── A2：实际交付入口在 gate 失败前不写 Checkpoint ───────────────────
@@ -235,6 +306,32 @@ if task_review_deliver >"$TDIR/delivery-dirty.out" 2>&1; then
 else
   expect_eq 'dirty delivery 不写 Checkpoint' 0 "$delivery_ck"
   expect_contains 'dirty delivery BLOCKED' "$(cat "$TDIR/delivery-dirty.out")" 'BLOCKED'
+fi
+
+# completion Checkpoint 的共享 writer 入口也必须复用同一 gate。
+expect_true 'zdev Checkpoint adapter 调用 canonical writer gate' \
+  'grep -Fq "task_checkpoint_completion_gate" "$ROOT/.agents/skills/zdev/scripts/write-checkpoint.sh"'
+reset_wt "$DIR"
+printf '%s\n' writer-committed > "$DIR/wt/file.txt"
+git -C "$DIR/wt" add file.txt
+git -C "$DIR/wt" commit -qm 'feat(meta): checkpoint writer fixture'
+writer_head="$(git -C "$DIR/wt" rev-parse HEAD)"
+writer_body="$(printf '%s\n' \
+  "| HEAD | ${writer_head} |" \
+  '| 交接状态 | review-ready |' \
+  '| HEAD 持久化 | committed + clean HEAD |' \
+  '| 工作树分类 | untracked=0 / unstaged=0 / staged=0 |')"
+if task_checkpoint_completion_gate "$writer_body" "$DIR/wt" main >/dev/null 2>&1; then
+  ok
+else
+  bad 'clean completion Checkpoint writer 应通过 canonical gate'
+fi
+printf '%s\n' writer-dirty > "$DIR/wt/writer-dirty.txt"
+if out="$(task_checkpoint_completion_gate "$writer_body" "$DIR/wt" main 2>&1)"; then
+  bad 'dirty completion Checkpoint writer 不得通过'
+else
+  expect_contains 'dirty completion Checkpoint writer BLOCKED' "$out" 'BLOCKED'
+  expect_contains 'dirty completion Checkpoint writer 报分类' "$out" 'untracked=1'
 fi
 
 # ── A3/A4：dirty review fail-closed，且 reviewer 不改工作树 ──────────
