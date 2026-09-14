@@ -234,6 +234,25 @@ claim_actor=alpha
 EOF
 expect_ok "首次 Checkpoint 尚未验证" contract_checkpoint_validate "$(cat "$CK")" "$JSON" "$BLOB"
 
+ck_ready="$(printf '%s\n' "$(cat "$CK")" | awk '
+  {print}
+  /\| 工作区状态 \|/ {
+    print "| 交接状态 | review-ready |"
+    print "| HEAD 持久化 | committed + clean HEAD |"
+    print "| 工作树分类 | untracked=0 / unstaged=0 / staged=0 |"
+  }
+')"
+expect_ok "completion 字段完整且 clean" contract_checkpoint_validate "$ck_ready" "$JSON" "$BLOB"
+
+ck_completion_missing="$(printf '%s\n' "$ck_ready" | grep -v '工作树分类')"
+expect_fail "completion 字段不完整" contract_checkpoint_validate "$ck_completion_missing" "$JSON" "$BLOB"
+
+ck_completion_dirty="$(printf '%s\n' "$ck_ready" | sed 's/untracked=0 \/ unstaged=0 \/ staged=0/untracked=1 \/ unstaged=0 \/ staged=0/')"
+expect_fail "review-ready dirty 分类" contract_checkpoint_validate "$ck_completion_dirty" "$JSON" "$BLOB"
+
+ck_completion_bad_state="$(printf '%s\n' "$ck_ready" | sed 's/| 交接状态 | review-ready |/| 交接状态 | finished |/')"
+expect_fail "completion 状态非法" contract_checkpoint_validate "$ck_completion_bad_state" "$JSON" "$BLOB"
+
 ck_bad="$(printf '%s\n' "$(cat "$CK")" | awk '!/\| Contract \|/')"
 expect_fail "删 Contract" contract_checkpoint_validate "$ck_bad" "$JSON" "$BLOB"
 

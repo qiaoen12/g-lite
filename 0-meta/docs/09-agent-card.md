@@ -21,3 +21,7 @@ Skill 是入口说明，不是第二套 runtime。每张核心 Skill 只说明�
 `prompt_budget` 在 `policy.yaml` 声明根/局部 AGENTS、agent-card、start card、Skill 字节与行数、`z-workflow` 的上限；`new plan --apply` 将规则写入 `derived.lock`，`new check --tier commit` 实测并在超限时指出对象。预算是防回归门禁，不以删除必要安全边界为代价。
 
 本任务不改变 Contract、claim、derive、Review、merge、Guard 或 #42 metrics 的业务语义。
+
+## Developer/Fixer 完成态
+
+开发与修复共用 canonical completion gate。只有最终待审实现已经进入明确 Git HEAD，且 `untracked=0`、`unstaged=0`、`staged=0`，才能报告「开发完成」「修复完成」或 `review-ready`。`git add`、index.lock、宿主权限或 `git commit` 等持久化步骤失败时必须报告「未完成 / BLOCKED」，不得以 working tree 内容或 commit-tier PASS 代替；合法 no-change 必须明确写出 `no-change` 并保持 clean。Reviewer 只读固定 clean HEAD。

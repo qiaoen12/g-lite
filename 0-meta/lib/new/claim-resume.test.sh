@@ -499,6 +499,9 @@ expect_true "A12 重交付漂移警告" 'printf "%s\n" "$out" | grep -q "推导�
 A13="$TDIR/a13"
 make_pair "$A13"
 git -C "$A13/wt" checkout -b "meta/a13-99" >/dev/null 2>&1
+printf '%s\n' a13 > "$A13/wt/a13.txt"
+git -C "$A13/wt" add a13.txt
+git -C "$A13/wt" commit -qm 'feat(meta): a13 delivery fixture'
 git -C "$A13/wt" remote set-url origin "https://github.com/o/r.git"
 A13_ITEM='{"id":"I1","project":{"id":"P1"},"fieldValueByName":{"field":{"id":"F1","options":[{"id":"opt-p","name":"In progress"},{"id":"opt-r","name":"In review"}]},"name":"In progress"}}'
 A13_HAVE_ITEM=1

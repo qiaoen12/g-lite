@@ -12,6 +12,9 @@ claim_actor=ACTOR_ID
 | 工作树 | `/path` |
 | HEAD | `full-sha` |
 | 工作区状态 | 干净 |
+| 交接状态 | `review-ready` / `no-change` / `未完成 / BLOCKED` |
+| HEAD 持久化 | `committed + clean HEAD` |
+| 工作树分类 | `untracked=N / unstaged=N / staged=N` |
 | 允许范围 | path path |
 | Project | Tasks #1 Status=In progress |
 | PR | 无 |
@@ -39,3 +42,5 @@ claim_actor=ACTOR_ID
 ```
 尚未验证
 ```
+
+Developer/Fixer 只有在最终实现进入明确 HEAD 且三类 dirty 数量均为 0 时才能填写 `review-ready`；无改动必须明确填写 `no-change`。`git add`、index.lock 或 `git commit` 失败时填写 `未完成 / BLOCKED`，不能用 working tree 或 `new check --tier commit` 的 PASS 代替完成态。

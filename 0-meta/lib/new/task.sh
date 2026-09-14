@@ -396,6 +396,7 @@ task_git_busy() {
     *) gd="$(cd "$wt" && cd "$gd" && pwd -P)" ;;
   esac
   if [ -f "$gd/MERGE_HEAD" ]; then echo "merge 进行中"; return 0; fi
+  if [ -f "$gd/index.lock" ]; then echo "index.lock 存在"; return 0; fi
   if [ -d "$gd/rebase-merge" ] || [ -d "$gd/rebase-apply" ]; then
     echo "rebase 进行中"; return 0
   fi
@@ -407,6 +408,178 @@ task_git_busy() {
     return 0
   fi
   return 1
+}
+
+# 读取一次 Git porcelain 状态，给交接门禁提供唯一的 dirty 分类口径。
+# X 是 index，Y 是 worktree；每条状态记录只计一次，但冲突会同时计入两类。
+# 失败必须向上返回，不能把「读不到状态」解释成 clean。
+task_worktree_status_counts() {
+  local wt="$1" status line x y
+  TASK_WORKTREE_STATUS=""
+  TASK_WORKTREE_DIRTY=0
+  TASK_WORKTREE_UNTRACKED=0
+  TASK_WORKTREE_UNSTAGED=0
+  TASK_WORKTREE_STAGED=0
+  if ! status="$(git -C "$wt" -c core.quotePath=false status --porcelain=v1 --untracked-files=all 2>/dev/null)"; then
+    return 1
+  fi
+  TASK_WORKTREE_STATUS="$status"
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -n "$line" ] || continue
+    x="${line:0:1}"
+    y="${line:1:1}"
+    case "${x}${y}" in
+      '!!') continue ;;
+      '??') TASK_WORKTREE_UNTRACKED=$((TASK_WORKTREE_UNTRACKED + 1)) ;;
+      *)
+        [ "$x" = ' ' ] || TASK_WORKTREE_STAGED=$((TASK_WORKTREE_STAGED + 1))
+        [ "$y" = ' ' ] || TASK_WORKTREE_UNSTAGED=$((TASK_WORKTREE_UNSTAGED + 1))
+        ;;
+    esac
+    TASK_WORKTREE_DIRTY=$((TASK_WORKTREE_DIRTY + 1))
+  done <<< "$status"
+  return 0
+}
+
+# Developer/Fixer → Reviewer 的唯一完成态判断。
+# changed 要求 HEAD 相对 base 至少前进一个提交；no-change 要求 HEAD 正好
+# 停在有效基线。auto 仅供 wip adapter 根据同一份基线事实选择 changed/no-change。
+# 这个函数只读 Git，不 add、commit、stash、清理或修改远端。
+task_completion_gate() {
+  local wt="$1" base="${2:-}" conclusion="${3:-changed}"
+  local head="" busy="" ahead="" base_oid=""
+  TASK_COMPLETION_HEAD=""
+  TASK_COMPLETION_CONCLUSION=""
+  TASK_COMPLETION_AHEAD=0
+
+  head="$(git -C "$wt" rev-parse --verify HEAD 2>/dev/null || true)"
+  if [ -z "$head" ]; then
+    err_code task.completion_head_unreadable \
+      "未完成 / BLOCKED：无法读取待审实现 HEAD，不能交接"
+    return 1
+  fi
+  TASK_COMPLETION_HEAD="$head"
+
+  if busy="$(task_git_busy "$wt")"; then
+    err_code task.completion_git_busy \
+      "未完成 / BLOCKED：Git 持久化状态异常（${busy}）；不能交接"
+    return 1
+  fi
+  if ! task_worktree_status_counts "$wt"; then
+    err_code task.completion_status_unreadable \
+      "未完成 / BLOCKED：无法读取工作树状态，不能把它解释为 clean"
+    return 1
+  fi
+  if [ "$TASK_WORKTREE_DIRTY" -ne 0 ]; then
+    err_code task.completion_dirty \
+      "未完成 / BLOCKED：待审实现未形成 clean HEAD；HEAD=${head}；untracked=${TASK_WORKTREE_UNTRACKED}；unstaged=${TASK_WORKTREE_UNSTAGED}；staged=${TASK_WORKTREE_STAGED}"
+    return 1
+  fi
+
+  case "$conclusion" in
+    changed|no-change|auto) ;;
+    *)
+      err_code task.completion_conclusion_invalid \
+        "未完成 / BLOCKED：completion 结论非法：${conclusion}（只能是 changed、no-change 或内部 auto）"
+      return 1
+      ;;
+  esac
+
+  if [ -z "$base" ] || ! base_oid="$(git -C "$wt" rev-parse --verify "${base}^{commit}" 2>/dev/null)"; then
+    err_code task.completion_base_unreadable \
+      "未完成 / BLOCKED：无法读取交接基线 ${base:-空}，不能计算待审提交"
+    return 1
+  fi
+  if ! git -C "$wt" merge-base --is-ancestor "$base_oid" "$head" >/dev/null 2>&1; then
+    err_code task.completion_base_not_ancestor \
+      "未完成 / BLOCKED：交接基线 ${base} 不在 HEAD ${head} 历史中"
+    return 1
+  fi
+  if ! ahead="$(git -C "$wt" rev-list --count "${base_oid}..${head}" 2>/dev/null)" \
+     || ! [[ "$ahead" =~ ^[0-9]+$ ]]; then
+    err_code task.completion_ahead_unreadable \
+      "未完成 / BLOCKED：无法计算 HEAD ${head} 相对基线 ${base} 的提交数量"
+    return 1
+  fi
+
+  if [ "$conclusion" = auto ]; then
+    if [ "$ahead" = 0 ]; then
+      conclusion=no-change
+    else
+      conclusion=changed
+    fi
+  fi
+
+  case "$conclusion" in
+    no-change)
+      if [ "$ahead" != 0 ]; then
+        err_code task.completion_no_change_commits \
+          "未完成 / BLOCKED：不能报告 no-change；HEAD=${head} 相对基线 ${base} 已有 ${ahead} 个提交"
+        return 1
+      fi
+      TASK_COMPLETION_CONCLUSION=no-change
+      TASK_COMPLETION_AHEAD=0
+      printf 'completion=no-change HEAD=%s untracked=0 unstaged=0 staged=0\n' "$head"
+      return 0
+      ;;
+    changed)
+      if ! [[ "$ahead" =~ ^[1-9][0-9]*$ ]]; then
+        err_code task.completion_no_commit \
+          "未完成 / BLOCKED：相对 ${base} 没有待审提交；HEAD=${head}；untracked=0；unstaged=0；staged=0"
+        return 1
+      fi
+      TASK_COMPLETION_CONCLUSION=changed
+      TASK_COMPLETION_AHEAD="$ahead"
+      printf 'completion=changed HEAD=%s untracked=0 unstaged=0 staged=0 committed_ahead=%s\n' \
+        "$head" "$ahead"
+      return 0
+      ;;
+  esac
+}
+
+# Checkpoint writer 的 completion 入口。非 completion 的 claim/进行中记录不
+# 触发交接门禁；一旦声明 review-ready/no-change，就必须同时证明当前 Git 状态
+# 与 Checkpoint 的 HEAD 一致。这个函数只调用 task_completion_gate，不改变 Git。
+task_checkpoint_completion_gate() {
+  local body="$1" wt="${2:-}" base="${3:-}"
+  local state expected checkpoint_head
+
+  if [ "$(type -t contract_checkpoint_completion_validate 2>/dev/null)" != function ]; then
+    err_code task.checkpoint_completion_validator_missing \
+      "未完成 / BLOCKED：缺少 Checkpoint completion 字段校验器"
+    return 1
+  fi
+  contract_checkpoint_completion_validate "$body" || return 1
+  state="${CONTRACT_CHECKPOINT_STATE:-}"
+  case "$state" in
+    '') return 0 ;;
+    '未完成 / BLOCKED') return 0 ;;
+    review-ready) expected=changed ;;
+    no-change) expected=no-change ;;
+    *)
+      err_code task.checkpoint_completion_state \
+        "未完成 / BLOCKED：Checkpoint 交接状态不可用：${state:-空}"
+      return 1
+      ;;
+  esac
+  [ -n "$wt" ] || {
+    err_code task.checkpoint_completion_worktree \
+      "未完成 / BLOCKED：Checkpoint completion 缺少当前工作树，不能交接"
+    return 1
+  }
+  [ -n "$base" ] || {
+    err_code task.checkpoint_completion_base \
+      "未完成 / BLOCKED：Checkpoint completion 缺少交接基线，不能交接"
+    return 1
+  }
+  task_completion_gate "$wt" "$base" "$expected" || return 1
+  checkpoint_head="${CONTRACT_CHECKPOINT_HEAD:-}"
+  if [ "$checkpoint_head" != "${TASK_COMPLETION_HEAD:-}" ]; then
+    err_code task.checkpoint_head_mismatch \
+      "未完成 / BLOCKED：Checkpoint HEAD（${checkpoint_head:-空}）不是当前门禁 HEAD（${TASK_COMPLETION_HEAD:-空}），不写入"
+    return 1
+  fi
+  return 0
 }
 
 # Orca 创建工作树时可能把 displayName 里的 / 拍成 -。只做正向映射，不反向猜。
@@ -880,7 +1053,9 @@ task_write_marked_comment() {
 }
 
 task_write_checkpoint() {
-  task_write_marked_comment "$1" "$2" "$3" "$TASK_CHECKPOINT_MARK" "Checkpoint" "$4"
+  local body="$4" write_wt="${5:-${wt:-${Z_WT:-}}}" write_base="${6:-${base_git:-${Z_BASE:-}}}"
+  task_checkpoint_completion_gate "$body" "$write_wt" "$write_base" || return 1
+  task_write_marked_comment "$1" "$2" "$3" "$TASK_CHECKPOINT_MARK" "Checkpoint" "$body"
 }
 
 task_write_review() {
@@ -1321,6 +1496,7 @@ task_review_deliver() {
   local item_id project_id field_id from_id to_id now_iso ck_body new_status
   local claim_actor claim_body
   local redeliver=0 allow_create=1 exist_pr exist_js ck_project ck_next
+  local completion_state completion_persistence completion_classification
 
   case "${derived_status:-}" in
     "$TASK_STATUS_PROGRESS") ;;
@@ -1333,6 +1509,22 @@ task_review_deliver() {
       return 1
       ;;
   esac
+
+  # 交付的唯一完成态：最终待审实现必须已经在明确 HEAD，且工作树 clean。
+  # 这里先门禁，确保 git add / commit / index.lock 等持久化失败不会进入
+  # gh、PR 或 Checkpoint 写入路径；Checkpoint 前还会再次复读。
+  if ! task_completion_gate "$wt" "${base_git:-}" changed; then
+    return 1
+  fi
+  if [ -n "${head:-}" ] && [ "$TASK_COMPLETION_HEAD" != "$head" ]; then
+    err_code review.head_changed \
+      "未完成 / BLOCKED：交付入口看到的 HEAD 已变化（${head} → ${TASK_COMPLETION_HEAD}），拒绝继续"
+    return 1
+  fi
+  head="$TASK_COMPLETION_HEAD"
+  completion_state=review-ready
+  completion_persistence='committed + clean HEAD'
+  completion_classification='untracked=0 / unstaged=0 / staged=0'
 
   # 在任何 push / PR 写入前先证明领取 provenance；交付阶段末尾会再次复读，
   # 防止 Checkpoint 在远端并发变化后仍覆盖成一条无 actor 的记录。
@@ -1495,6 +1687,17 @@ task_review_deliver() {
   evidence="${evidence}PR ${pr_url}"$'\n'
 
   echo "── 10. Checkpoint ──────────────────────────"
+  if ! task_completion_gate "$wt" "${base_git:-}" changed; then
+    err_code review.completion_not_persisted \
+      "未完成 / BLOCKED：PR 已存在但当前 HEAD/worktree 未保持 completion；不写完成 Checkpoint"
+    return 1
+  fi
+  if [ "$TASK_COMPLETION_HEAD" != "$head" ]; then
+    err_code review.head_changed \
+      "未完成 / BLOCKED：写 Checkpoint 前 HEAD 已变化（${head} → ${TASK_COMPLETION_HEAD}）；不写完成 Checkpoint"
+    return 1
+  fi
+  evidence="${evidence}completion=changed HEAD=${head}；committed + clean HEAD；${completion_classification}；相对 ${base_git} 有 ${TASK_COMPLETION_AHEAD} 个待审提交"$'\n'
   now_iso="$(date +%Y-%m-%dT%H:%M:%S%z)"
   claim_body="$(task_checkpoint_body "$owner" "$repo" "$number" || true)"
   [ "$(task_machine_field_count "$claim_body" claim_actor)" = 1 ] \
@@ -1524,8 +1727,11 @@ claim_actor=${claim_actor}
 | 分支 | ${logical_br}（git: ${git_br}） |
 | 工作树 | \`${wt}\` |
 | 交付时间 | ${now_iso} |
-| 交付时 HEAD | \`${head}\` |
+| HEAD | \`${head}\` |
 | 工作区状态 | ${ws_status} |
+| 交接状态 | ${completion_state} |
+| HEAD 持久化 | ${completion_persistence} |
+| 工作树分类 | ${completion_classification} |
 | 允许范围 | $(task_scope_oneline "$scope") |
 | PR | ${pr_url} |
 | PR head → base | ${git_br} → ${main} |
@@ -2118,7 +2324,7 @@ cmd_task() {
   if [ -z "$head" ]; then
     err_code task.head_unreadable "    ✗ 读不到 HEAD"; fail=1
   fi
-  local busy
+  local busy="" dirty_status_ok=1 n_dirty=0
   if busy="$(task_git_busy "$wt")"; then
     if [ "$mode" = review ]; then
       err_code review.git_busy "    ✗ 不能交付：${busy}"
@@ -2127,25 +2333,35 @@ cmd_task() {
     fi
     fail=1
   fi
-  local dirty n_dirty
-  dirty="$(git -C "$wt" -c core.quotePath=false status --porcelain 2>/dev/null || true)"
-  n_dirty="$(printf '%s' "$dirty" | grep -c . || true)"
-  if [ -n "$dirty" ]; then
+  if ! task_worktree_status_counts "$wt"; then
+    dirty_status_ok=0
     if [ "$mode" = review ]; then
-      ws_status="有未提交改动 ${n_dirty} 处"
-      err_code review.dirty_worktree "    ✗ 工作区不干净，拒绝交付（${ws_status}）"
-      printf '%s\n' "$dirty" | head -8 | sed 's/^/      /'
-      [ "$n_dirty" -gt 8 ] && echo "      …"
-      fail=1
+      err_code review.status_unreadable "    ✗ 无法读取工作树状态，拒绝交付（不猜测为 clean）"
     else
+      err_code task.status_unreadable "    ✗ 无法读取工作树状态，拒绝开工"
+    fi
+    fail=1
+  else
+    n_dirty="$TASK_WORKTREE_DIRTY"
+    if [ "$mode" = review ]; then
+      if [ "$n_dirty" -ne 0 ]; then
+        ws_status="待交接门禁（untracked=${TASK_WORKTREE_UNTRACKED}；unstaged=${TASK_WORKTREE_UNSTAGED}；staged=${TASK_WORKTREE_STAGED}）"
+        c_warn "    ⚠ ${ws_status}；等待 committed + clean HEAD 门禁"
+        printf '%s\n' "$TASK_WORKTREE_STATUS" | head -8 | sed 's/^/      /'
+        [ "$n_dirty" -gt 8 ] && echo "      …"
+      else
+        ws_status="待交接门禁（当前表面 clean）"
+        c_ok "    ✓ 当前表面 clean；继续核验 committed + clean HEAD"
+      fi
+    elif [ "$n_dirty" -ne 0 ]; then
       ws_status="有未提交改动 ${n_dirty} 处（允许开工，Checkpoint 会记下）"
       c_ok "    ✓ ${ws_status}"
-      printf '%s\n' "$dirty" | head -8 | sed 's/^/      /'
+      printf '%s\n' "$TASK_WORKTREE_STATUS" | head -8 | sed 's/^/      /'
       [ "$n_dirty" -gt 8 ] && echo "      …"
+    else
+      ws_status="干净"
+      c_ok "    ✓ 干净，无进行中的 git 操作"
     fi
-  else
-    ws_status="干净"
-    c_ok "    ✓ 干净，无进行中的 git 操作"
   fi
   evidence="${evidence}HEAD ${head}；工作区 ${ws_status}"$'\n'
 
@@ -2155,14 +2371,15 @@ cmd_task() {
       fail=1
     else
       base_git="origin/${main}"
-      local n_ahead
-      n_ahead="$(git -C "$wt" rev-list --count "${base_git}..HEAD" 2>/dev/null || true)"
-      if ! [[ "$n_ahead" =~ ^[1-9][0-9]*$ ]]; then
-        err_code review.no_commits "    ✗ 相对 ${base_git} 没有待交付提交"
+      if [ "$dirty_status_ok" != 1 ]; then
         fail=1
+      elif task_completion_gate "$wt" "$base_git" changed; then
+        ws_status="committed + clean HEAD"
+        c_ok "    ✓ 已通过 committed + clean HEAD 交接门禁（HEAD=${TASK_COMPLETION_HEAD}；${TASK_COMPLETION_AHEAD} 个待审提交）"
+        evidence="${evidence}completion=changed HEAD=${TASK_COMPLETION_HEAD}；untracked=0；unstaged=0；staged=0；${TASK_COMPLETION_AHEAD} 个待审提交（${base_git}..HEAD）"$'\n'
       else
-        c_ok "    ✓ 相对 ${base_git} 有 ${n_ahead} 个待交付提交"
-        evidence="${evidence}待交付 ${n_ahead} 个提交（${base_git}..HEAD）"$'\n'
+        ws_status="未完成 / BLOCKED"
+        fail=1
       fi
     fi
   fi

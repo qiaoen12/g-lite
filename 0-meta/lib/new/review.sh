@@ -415,7 +415,7 @@ review_claim_actor() {
 review_publish() {
   local input="" actor_candidate="" actor_explicit=0 allow_self=0 arg
   local claim_actor review_actor self_review human_merge=0
-  local checkpoint parsed results effective diff_paths rendered
+  local checkpoint parsed results effective diff_paths rendered completion_base
 
   while [ "$#" -gt 0 ]; do
     arg="$1"
@@ -465,8 +465,16 @@ review_publish() {
     return 1
   }
 
-  z_require_clean
   z_require_current_main
+  completion_base="${Z_BASE:-origin/${Z_MAIN}}"
+  if ! task_completion_gate "$Z_WT" "$completion_base" changed; then
+    return 1
+  fi
+  if [ "${TASK_COMPLETION_HEAD:-}" != "${Z_HEAD:-}" ]; then
+    review_reject review.head_changed \
+      "未完成 / BLOCKED：Review 预检后 HEAD 已变化（${Z_HEAD:-空} → ${TASK_COMPLETION_HEAD:-空}），拒绝写 Review"
+    return 1
+  fi
   z_require_dev_status
 
   checkpoint="$(review_claim_actor "$Z_OWNER" "$Z_REPO" "$Z_NUMBER")" || return 1
