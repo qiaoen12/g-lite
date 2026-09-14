@@ -119,6 +119,16 @@ guard_transport_value_kind() {
   fi
 }
 
+guard_transport_value_count() {
+  local values="${1:-}" line count=0
+  [ -n "$values" ] || { printf '0\n'; return 0; }
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    count=$((count + 1))
+  done <<< "$values"
+  printf '%s\n' "$count"
+}
+
 # origin.url 的正常值就是 fetch URL，不能拿 staging path 当 expected
 # 直接复用上面的 kind：这里额外把「一个普通 URL」与「多值/指向 staging」
 # 区分开，避免 ambiguous remote 被误当成 clean。
@@ -270,11 +280,11 @@ guard_validate_staging_source_identity() {
 # canonical、legacy、custom、mixed、ambiguous；GUARD_CLAIM_DETAIL 保留具体
 # key/层级，便于拒绝时不覆盖用户配置。
 guard_claim_transport_classify() {
-  local wt="$1" common enabled origin_values want
+  local wt="$1" common enabled worktree_cfg origin_values want
   local shared_url shared_push shared_receive local_url local_push local_receive
   local url_values push_values receive_values url_kind push_kind receive_kind
   local shared_url_kind shared_push_kind shared_receive_kind
-  local has_shared=0 state=custom detail=""
+  local has_shared=0 has_worktree=0 state=custom detail=""
   common="$(guard_common_config_file "$wt" 2>/dev/null || true)"
   [ -n "$common" ] || { GUARD_CLAIM_STATE=ambiguous; GUARD_CLAIM_DETAIL='shared config unreadable'; printf '%s\n' ambiguous; return 0; }
   origin_values="$(env -u GIT_DIR -u GIT_WORK_TREE git -C "$wt" \
@@ -293,16 +303,32 @@ guard_claim_transport_classify() {
   [ -z "$shared_url$shared_push$shared_receive" ] || has_shared=1
 
   enabled="$(git config --file "$common" --bool --get extensions.worktreeConfig 2>/dev/null || true)"
-  if [ "$enabled" = true ]; then
-    local_url="$(env -u GIT_DIR -u GIT_WORK_TREE git -C "$wt" config --worktree \
-      --get-all remote.claim.url 2>/dev/null || true)"
-    local_push="$(env -u GIT_DIR -u GIT_WORK_TREE git -C "$wt" config --worktree \
-      --get-all remote.claim.pushurl 2>/dev/null || true)"
-    local_receive="$(env -u GIT_DIR -u GIT_WORK_TREE git -C "$wt" config --worktree \
-      --get-all remote.claim.receivepack 2>/dev/null || true)"
+  worktree_cfg="$(guard_worktree_config_file "$wt" 2>/dev/null || true)"
+  if [ -f "$worktree_cfg" ]; then
+    local_url="$(git config --file "$worktree_cfg" --get-all remote.claim.url 2>/dev/null || true)"
+    local_push="$(git config --file "$worktree_cfg" --get-all remote.claim.pushurl 2>/dev/null || true)"
+    local_receive="$(git config --file "$worktree_cfg" --get-all remote.claim.receivepack 2>/dev/null || true)"
   else
     local_url=""; local_push=""; local_receive=""
   fi
+  [ -z "$local_url$local_push$local_receive" ] || has_worktree=1
+
+  # Keep layer provenance separate from the effective-value result.  A
+  # same-value shared URL plus worktree pushurl is still two active writers;
+  # enabling worktreeConfig later could change which value Git uses.  It is
+  # therefore mixed/ambiguous and must never be normalized by claim.
+  GUARD_CLAIM_SHARED_URL_VALUES="$shared_url"
+  GUARD_CLAIM_SHARED_PUSHURL_VALUES="$shared_push"
+  GUARD_CLAIM_SHARED_RECEIVEPACK_VALUES="$shared_receive"
+  GUARD_CLAIM_WORKTREE_URL_VALUES="$local_url"
+  GUARD_CLAIM_WORKTREE_PUSHURL_VALUES="$local_push"
+  GUARD_CLAIM_WORKTREE_RECEIVEPACK_VALUES="$local_receive"
+  GUARD_CLAIM_SHARED_URL_COUNT="$(guard_transport_value_count "$shared_url")"
+  GUARD_CLAIM_SHARED_PUSHURL_COUNT="$(guard_transport_value_count "$shared_push")"
+  GUARD_CLAIM_SHARED_RECEIVEPACK_COUNT="$(guard_transport_value_count "$shared_receive")"
+  GUARD_CLAIM_WORKTREE_URL_COUNT="$(guard_transport_value_count "$local_url")"
+  GUARD_CLAIM_WORKTREE_PUSHURL_COUNT="$(guard_transport_value_count "$local_push")"
+  GUARD_CLAIM_WORKTREE_RECEIVEPACK_COUNT="$(guard_transport_value_count "$local_receive")"
 
   url_values="$(env -u GIT_DIR -u GIT_WORK_TREE git -C "$wt" config \
     --get-all remote.claim.url 2>/dev/null || true)"
@@ -314,7 +340,13 @@ guard_claim_transport_classify() {
   push_kind="$(guard_transport_value_kind "$push_values" "$want")"
   receive_kind="$(guard_transport_value_kind "$receive_values" '__no_claim_receivepack__')"
 
-  if [ "$url_kind" = absent ] && [ "$push_kind" = absent ] && [ "$receive_kind" = absent ]; then
+  if [ "$has_shared" = 1 ] && [ "$has_worktree" = 1 ]; then
+    state=mixed
+    detail="claim transport 同时存在 shared 与 worktree-local 层（即使 value 相同也拒绝）"
+  elif [ "$has_worktree" = 1 ] && [ "$enabled" != true ]; then
+    state=ambiguous
+    detail='worktree claim transport 存在但 extensions.worktreeConfig 未启用'
+  elif [ "$url_kind" = absent ] && [ "$push_kind" = absent ] && [ "$receive_kind" = absent ]; then
     if [ "$has_shared" = 1 ]; then
       state=custom
       detail='shared claim transport 与 effective claim 不一致'
@@ -340,7 +372,8 @@ guard_claim_transport_classify() {
   shared_url_kind="$(guard_transport_value_kind "$shared_url" "$want")"
   shared_push_kind="$(guard_transport_value_kind "$shared_push" "$want")"
   shared_receive_kind="$(guard_transport_value_kind "$shared_receive" '__no_claim_receivepack__')"
-  if [ "$has_shared" = 1 ] && [ "$shared_url_kind" = expected ] \
+  if [ "$state" != mixed ] && [ "$state" != ambiguous ] \
+      && [ "$has_shared" = 1 ] && [ "$shared_url_kind" = expected ] \
       && [ "$shared_push_kind" = absent ] && [ "$shared_receive_kind" = absent ] \
       && [ -z "$local_url$local_push$local_receive" ]; then
     state=legacy
@@ -670,20 +703,42 @@ guard_transaction_consistency() {
   [ -z "$errors" ]
 }
 
+guard_transaction_fingerprint() {
+  local state="$1" root file rel
+  root="$state/transactions"
+  [ -d "$root" ] || { printf 'none\n'; return 0; }
+  {
+    find "$root" -type f -print | LC_ALL=C sort | while IFS= read -r file; do
+      rel="${file#"$root"/}"
+      printf 'path=%s\n' "$rel"
+      cat "$file"
+      printf '\0\n'
+    done
+  } | if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | awk '{print $1}'
+  else
+    sha256sum | awk '{print $1}'
+  fi
+}
+
 # merge gate 只验证当前 task 与同一 staging 的关系，不更新任何 ref。
 # relation=stale-ok 仅供 refresh 前使用；synced 是 retry/final merge 的门槛。
 guard_merge_gate_validate() {
   local wt="$1" main="${2:-main}" relation="${3:-synced}"
-  local staging snapshot_main staging_main
+  local staging snapshot_main staging_main tx_fingerprint stable_refs push rp claim snap
   staging="$(guard_staging_git)"
-  [ -d "$staging" ] || return 0
+  if [ ! -d "$staging" ]; then
+    GUARD_MERGE_GATE_FINGERPRINT=none
+    return 0
+  fi
   guard_require_wired "$wt" || return 1
   guard_validate_staging_source_identity "$wt" "$staging" || return 1
+  snap="${GUARD_SNAP:-refs/guard/github}"
   guard_transaction_consistency "$staging/git-guard" || {
     guard_error "merge gate blocked: transaction/lease facts 不一致（${GUARD_TRANSACTION_ERROR:-unknown}）"
     return 1
   }
-  snapshot_main="$(guard_ref_oid "$staging" "refs/guard/github/heads/${main}")"
+  snapshot_main="$(guard_ref_oid "$staging" "${snap}/heads/${main}")"
   staging_main="$(guard_ref_oid "$staging" "refs/heads/${main}")"
   [ -n "$snapshot_main" ] && [ -n "$staging_main" ] || {
     guard_error "merge gate blocked: staging/snapshot 缺少 ${main}，拒绝猜测 mirror relation"
@@ -700,6 +755,29 @@ guard_merge_gate_validate() {
       return 1
     }
   fi
+  tx_fingerprint="$(guard_transaction_fingerprint "$staging/git-guard")" || {
+    guard_error "merge gate blocked: 无法读取 transaction fingerprint"
+    return 1
+  }
+  stable_refs="$({
+    git --git-dir="$staging" for-each-ref --format='%(refname) %(objectname)' refs/heads |
+      awk -v main="refs/heads/${main}" '$1 != main { print }'
+    git --git-dir="$staging" for-each-ref --format='%(refname) %(objectname)' "${snap}/heads" |
+      awk -v main="${snap}/heads/${main}" '$1 != main { print }'
+  } | LC_ALL=C sort)"
+  push="$(git -C "$wt" remote get-url --push origin 2>/dev/null || true)"
+  rp="$(git -C "$wt" config --get-all remote.origin.receivepack 2>/dev/null || true)"
+  claim="$(git -C "$wt" remote get-url claim 2>/dev/null || true)"
+  GUARD_MERGE_GATE_FINGERPRINT="$({
+    printf 'identity=%s/%s\n' "$GUARD_CANDIDATE_REPO_IDENTITY" "$GUARD_STAGING_REPO_IDENTITY"
+    printf 'transaction=%s\n' "$tx_fingerprint"
+    printf 'stable-refs=%s\n' "$stable_refs"
+    printf 'push=%s\nreceivepack=%s\nclaim=%s\n' "$push" "$rp" "$claim"
+  } | if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | awk '{print $1}'
+  else
+    sha256sum | awk '{print $1}'
+  fi)"
   return 0
 }
 
@@ -785,14 +863,14 @@ guard_classify_push_failure() {
   if printf '%s\n' "$output" | grep -Eiq \
       'non-fast-forward|fetch first|tip of your current branch is behind|updates were rejected because the remote contains work'; then
     domain=non-fast-forward
-  elif printf '%s\n' "$output" | grep -Eiq 'authentication failed|could not read Username|permission denied|access denied|permission to .* denied|repository not found|could not read from remote repository|invalid username|bad credentials|403|401'; then
-    domain=authentication
-  elif printf '%s\n' "$output" | grep -Eiq 'could not resolve host|name or service not known|network is unreachable|connection timed out|connection refused|connection reset|failed to connect|unable to access'; then
-    domain=network
-  elif printf '%s\n' "$output" | grep -Eiq '陈旧 contract|staging.*(陈旧|未同步)|GitHub main 已前进|main 已前进.*staging'; then
-    domain=guard-staging
   elif printf '%s\n' "$output" | grep -Eiq 'pre-receive hook declined|update hook declined|remote rejected.*(hook|declined)|hook declined'; then
     domain=guard-route
+  elif printf '%s\n' "$output" | grep -Eiq 'could not resolve host|name or service not known|network is unreachable|connection timed out|operation timed out|connection refused|connection reset|failed to connect|unable to access'; then
+    domain=network
+  elif printf '%s\n' "$output" | grep -Eiq 'authentication failed|could not read Username|permission denied \(publickey\)|access denied|permission to .* denied|repository not found|invalid username|bad credentials|(^|[^0-9])(403|401)([^0-9]|$)'; then
+    domain=authentication
+  elif printf '%s\n' "$output" | grep -Eiq '陈旧 contract|staging.*(陈旧|未同步)|GitHub main 已前进|main 已前进.*staging'; then
+    domain=guard-staging
   elif guard_effective_guard_route "$wt" "$staging" \
       || printf '%s\n' "$output" | grep -Eiq 'git-guard|Guard.*(Binding|wrapper|staging)'; then
     domain=guard-route

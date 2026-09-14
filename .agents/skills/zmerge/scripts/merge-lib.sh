@@ -188,13 +188,11 @@ zmerge_decide_action() {
   ZMERGE_ACTION=merge
 }
 
-# 所有 merge gates 的唯一复读入口。保持 z_load 时的 Z_HEAD 不变，任何
-# candidate HEAD 改变都必须走新的 Review；relation=stale-ok 只允许 R3 在
-# refresh 前暂时接受 main mirror stale，synced 才能用于 retry/final merge。
-zmerge_reread_all_merge_gates() {
-  local relation="${1:-synced}" derived project pr pr_num js head_oid cur_blob
-  local issue_state pr_body labels
-
+# 这些小门禁共享一套 reread 实现；pre-push recovery 只组合不依赖 PR 的
+# 门禁，full merge recovery/final merge 再组合 PR/checks。保持 z_load 时的
+# Z_HEAD 不变，任何 candidate HEAD 改变都必须走新的 Review。
+zmerge_reread_head_branch_main_gates() {
+  local head_oid
   if [ -z "${Z_HEAD:-}" ]; then
     err_code task.head_unreadable "没有 zmerge 初始 candidate HEAD，拒绝猜测"
     return 1
@@ -211,19 +209,108 @@ zmerge_reread_all_merge_gates() {
 如果同步导致 HEAD 改变，旧 Review 将失效，需重新 zreview。"
     return 1
   fi
+}
 
-  # Review 与 auto-merge 资格本身是远端 durable gates；先复读它们，再把
-  # 当前 origin/main Contract 与旧授权做等价性核对。
-  z_require_passing_review || return 1
-  z_require_auto_merge_safe_review || return 1
+zmerge_reread_branch_gate() {
+  local current_branch
+  current_branch="$(git -C "$Z_WT" symbolic-ref --short HEAD 2>/dev/null || true)"
+  [ -n "${Z_GIT_BR:-}" ] && [ "$current_branch" = "$Z_GIT_BR" ] || {
+    err_code z.branch_changed "candidate branch 已改变（${current_branch:-游离} ≠ ${Z_GIT_BR:-空}），拒绝 recovery"
+    return 1
+  }
+  task_branch_pushable "$Z_GIT_BR" "$Z_MAIN" || {
+    err_code z.branch_not_pushable "candidate branch 不可交付：${Z_GIT_BR:-空}"
+    return 1
+  }
+}
+
+zmerge_reread_contract_gate() {
+  local cur_blob
   contract_fetch_main "$Z_WT" "$Z_MAIN" \
     || { err_code contract.fetch_main_failed "无法 fetch origin/${Z_MAIN}，不使用本地陈旧副本"; return 1; }
   cur_blob="$(contract_main_blob "$Z_WT" "$Z_NUMBER" "$Z_MAIN")" \
-    || { err_code contract.missing "origin/${Z_MAIN} 上没有契约，拒绝 merge"; return 1; }
-  if contract_stale "$Z_CONTRACT_BLOB" "$cur_blob" "合并前复读"; then
-    err_code contract.stale "契约已重新批准，拒绝 merge。重新 zreview 后再试。"
+    || { err_code contract.missing "origin/${Z_MAIN} 上没有契约，拒绝继续"; return 1; }
+  ZMERGE_CURRENT_CONTRACT_BLOB="$cur_blob"
+  if contract_stale "$Z_CONTRACT_BLOB" "$cur_blob" "merge gate reread"; then
+    err_code contract.stale "契约已重新批准，拒绝继续。重新 zreview 后再试。"
     return 1
   fi
+}
+
+zmerge_reread_diff_gate() {
+  contract_require_diff_in_scope "$Z_WT" "$Z_BASE" "$Z_HEAD" "$Z_SCOPE" \
+    || { err_code z.diff_out_of_scope "真实 diff 越界，拒绝 merge"; return 1; }
+}
+
+zmerge_reread_issue_gates() {
+  local issue_state labels derived project
+  if ! task_fetch_issue "$Z_OWNER" "$Z_REPO" "$Z_NUMBER" "$Z_ISSUE_JSON"; then
+    err_code task.issue_fetch_failed "无法读取 Issue / Project 状态"
+    return 1
+  fi
+  issue_state="$(jq -r '.data.repository.issue.state // empty' "$Z_ISSUE_JSON" 2>/dev/null || true)"
+  [ "$issue_state" = OPEN ] || {
+    err_code z.issue_state "Issue 状态不可继续（${issue_state:-unknown}）"
+    return 1
+  }
+  labels="$(task_issue_labels "$Z_ISSUE_JSON")"
+  if printf '%s' "$labels" | jq -e --arg want human-merge 'index($want) != null' >/dev/null 2>&1; then
+    err_code z.human_merge "Issue 有 human-merge 标签，zmerge 拒绝。需要人用 zpr 送 PR。"
+    return 1
+  fi
+  derived="$(derive_task_state "$Z_NUMBER")" \
+    || { err_code z.derive_failed "无法推导任务状态"; return 1; }
+  project="$(task_read_status_name "$Z_ISSUE_JSON" || true)"
+  Z_STATUS="$project"
+  Z_DERIVED="$derived"
+  ZMERGE_ISSUE_DIGEST="$(jq -cS . "$Z_ISSUE_JSON" 2>/dev/null | zmerge_digest_text 2>/dev/null || true)"
+  [ -n "$ZMERGE_ISSUE_DIGEST" ] || {
+    err_code z.issue_unreadable "Issue reread 不是可解析的 JSON，拒绝继续"
+    return 1
+  }
+  z_warn_if_status_drift "$derived" "$project"
+  case "$derived" in
+    "$TASK_STATUS_PROGRESS"|"$TASK_STATUS_REVIEW") ;;
+    *)
+      err_code z.wrong_dev_status "推导状态不是 ${TASK_STATUS_PROGRESS} 或 ${TASK_STATUS_REVIEW}（当前：${derived:-空}）。"
+      return 1
+      ;;
+  esac
+}
+
+zmerge_reread_guard_gate() {
+  local relation="${1:-synced}"
+  if [ "$(type -t guard_merge_gate_validate 2>/dev/null)" = function ]; then
+    guard_merge_gate_validate "$Z_WT" "$Z_MAIN" "$relation" || return 1
+  fi
+}
+
+# 首次 push 尚无 PR 时的唯一 recovery gate。它重读 candidate/branch/main、
+# 当前 Contract、独立 Review 授权、Issue/labels、真实 diff 和 Guard durable
+# facts，但绝不读取 PR head/checks/PR Review。
+zmerge_reread_pre_push_gates() {
+  local relation="${1:-stale-ok}"
+  zmerge_reread_head_branch_main_gates || return 1
+  zmerge_reread_branch_gate || return 1
+  z_require_passing_review || return 1
+  z_require_auto_merge_safe_review || return 1
+  zmerge_reread_contract_gate || return 1
+  zmerge_reread_diff_gate || return 1
+  zmerge_reread_issue_gates || return 1
+  zmerge_reread_guard_gate "$relation" || return 1
+  ZMERGE_RECOVERY_STAGE=pre-push
+}
+
+# 所有 merge gates 的唯一复读入口。PR 已存在时使用这里；relation=stale-ok
+# 只允许 R3 在 refresh 前暂时接受 main mirror stale，synced 才能用于 retry
+# 或最终 merge。required checks 等 PR facts 每次都从 provider 重新读取。
+zmerge_reread_all_merge_gates() {
+  local relation="${1:-synced}" pr pr_num js head_oid pr_body
+
+  zmerge_reread_head_branch_main_gates || return 1
+  z_require_passing_review || return 1
+  z_require_auto_merge_safe_review || return 1
+  zmerge_reread_contract_gate || return 1
 
   pr="$(task_find_matching_pr "$Z_OWNER" "$Z_REPO" "$Z_GIT_BR" "$Z_MAIN")" \
     || { err_code z.pr_ambiguous "找不到唯一匹配 PR（不唯一则停止）"; return 1; }
@@ -246,49 +333,48 @@ zmerge_reread_all_merge_gates() {
     return 1
   }
 
-  # required checks 是远端 merge gate，也必须在每次 refresh 后及最终 merge 前
-  # 重新查询；读取失败不能被解释成「没有 checks」。
   if ! z_required_contexts; then
     err_code z.required_checks_unknown "required checks 状态未知${Z_REQUIRED_ERR:+：${Z_REQUIRED_ERR}}。不合并，不把 Checkpoint 写成「无 required checks」。"
     return 1
   fi
   z_pr_checks_ok "$pr_num" || return 1
-
-  # 本地真实 diff 也属于现有 zmerge 门禁。复读时重新计算，避免 refresh
-  # 前后工作树事实被错误复用。
-  contract_require_diff_in_scope "$Z_WT" "$Z_BASE" "$Z_HEAD" "$Z_SCOPE" \
-    || { err_code z.diff_out_of_scope "真实 diff 越界，拒绝 merge"; return 1; }
-
-  if ! task_fetch_issue "$Z_OWNER" "$Z_REPO" "$Z_NUMBER" "$Z_ISSUE_JSON"; then
-    err_code task.issue_fetch_failed "无法读取 Issue / Project 状态"
-    return 1
-  fi
-  issue_state="$(jq -r '.data.repository.issue.state // empty' "$Z_ISSUE_JSON" 2>/dev/null || true)"
-  [ "$issue_state" = OPEN ] || {
-    err_code z.issue_state "Issue 状态不可合并（${issue_state:-unknown}）"
-    return 1
-  }
-  labels="$(task_issue_labels "$Z_ISSUE_JSON")"
-  if printf '%s' "$labels" | jq -e --arg want human-merge 'index($want) != null' >/dev/null 2>&1; then
-    err_code z.human_merge "Issue 有 human-merge 标签，zmerge 拒绝。需要人用 zpr 送 PR。"
-    return 1
-  fi
-  derived="$(derive_task_state "$Z_NUMBER")" \
-    || { err_code z.derive_failed "无法推导任务状态"; return 1; }
-  project="$(task_read_status_name "$Z_ISSUE_JSON" || true)"
-  z_warn_if_status_drift "$derived" "$project"
-  case "$derived" in
-    "$TASK_STATUS_PROGRESS"|"$TASK_STATUS_REVIEW") ;;
-    *)
-      err_code z.wrong_dev_status "推导状态不是 ${TASK_STATUS_PROGRESS} 或 ${TASK_STATUS_REVIEW}（当前：${derived:-空}）。"
-      return 1
-      ;;
-  esac
-  if [ "$(type -t guard_merge_gate_validate 2>/dev/null)" = function ]; then
-    guard_merge_gate_validate "$Z_WT" "$Z_MAIN" "$relation" || return 1
-  fi
+  zmerge_reread_diff_gate || return 1
+  zmerge_reread_issue_gates || return 1
+  zmerge_reread_guard_gate "$relation" || return 1
   ZMERGE_PR_NUM="$pr_num"
   ZMERGE_PR_JSON="$js"
+  ZMERGE_RECOVERY_STAGE=full-merge
+}
+
+zmerge_digest_text() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | awk '{print $1}'
+  else
+    sha256sum | awk '{print $1}'
+  fi
+}
+
+# recovery 两次 gate reread 之间只允许发生本次 scoped mirror refresh；其它
+# authorization/durable fact 的变化一律停止。Guard fingerprint 已排除目标
+# main mirror 的预期 stale→synced OID，但包含 transaction/lease、routing 和
+# unrelated refs。
+zmerge_gate_snapshot() {
+  local main_oid review_digest pr_digest
+  main_oid="$(git -C "$Z_WT" rev-parse -q --verify "origin/${Z_MAIN}" 2>/dev/null || true)"
+  review_digest="$(printf '%s\n' "${Z_SQUASH_TITLE:-}" "${Z_SELF_REVIEW:-}" \
+    "${Z_REVIEW_BODY:-}" | zmerge_digest_text)" || return 1
+  pr_digest="$(printf '%s' "${ZMERGE_PR_JSON:-no-pr}" | zmerge_digest_text)" || return 1
+  {
+    printf 'stage=%s\n' "${ZMERGE_RECOVERY_STAGE:-unknown}"
+    printf 'head=%s\nbranch=%s\nmain=%s\n' \
+      "${Z_HEAD:-}" "${Z_GIT_BR:-}" "$main_oid"
+    printf 'contract=%s\nreview=%s\nissue=%s\nderived=%s\nstatus=%s\n' \
+      "${ZMERGE_CURRENT_CONTRACT_BLOB:-}" "$review_digest" \
+      "${ZMERGE_ISSUE_DIGEST:-}" "${Z_DERIVED:-}" "${Z_STATUS:-}"
+    printf 'pr=%s\nchecks=%s/%s/%s\n' "$pr_digest" \
+      "${Z_REQUIRED_OK:-}" "${Z_REQUIRED_CONTEXTS:-}" "${Z_CHECKS_NOTE:-}"
+    printf 'guard=%s\n' "${GUARD_MERGE_GATE_FINGERPRINT:-none}"
+  } | zmerge_digest_text
 }
 
 # 持锁后最后复读。放行看 derive_task_state；Project Status 只警告。
@@ -491,15 +577,42 @@ zmerge_deliver_review() {
   "$ROOT/0-meta/bin/new" task review
 }
 
-# R3 的重试只允许由一次 Guard staging-main stale 失败触发。refresh 前后
-# 都调用同一个完整 merge-gate reread；真正 gh pr merge 前仍再次调用它。
+# R3 的重试只允许由一次 Guard staging-main stale 失败触发。先读取 PR
+# 是否已经存在，再明确选择 pre-push 或 full-merge gate；两者都是真实
+# production reader，不把「PR missing」当成忽略全部 PR 错误。
 zmerge_guard_recovery_preflight() {
-  zmerge_reread_all_merge_gates stale-ok
+  local pr snapshot
+  pr="$(task_find_matching_pr "$Z_OWNER" "$Z_REPO" "$Z_GIT_BR" "$Z_MAIN")" \
+    || { err_code z.pr_lookup_failed "无法确认 recovery 所处阶段（PR 查询失败/歧义），fail-closed"; return 1; }
+  ZMERGE_PR_JSON=""
+  ZMERGE_PR_NUM=""
+  if [ -n "$pr" ]; then
+    if ! zmerge_reread_all_merge_gates stale-ok; then
+      return 1
+    fi
+    ZMERGE_RECOVERY_STAGE=full-merge
+  else
+    if ! zmerge_reread_pre_push_gates stale-ok; then
+      return 1
+    fi
+    ZMERGE_RECOVERY_STAGE=pre-push
+  fi
+  snapshot="$(zmerge_gate_snapshot)" || {
+    err_code z.recovery_gate_unknown "无法建立 recovery gate snapshot，fail-closed"
+    return 1
+  }
+  if [ -n "${ZMERGE_RECOVERY_GATE_SNAPSHOT:-}" ] \
+      && [ "$snapshot" != "$ZMERGE_RECOVERY_GATE_SNAPSHOT" ]; then
+    err_code z.recovery_gate_changed "refresh 前后 merge gate durable facts 改变，停止，不重试 task review"
+    return 1
+  fi
+  ZMERGE_RECOVERY_GATE_SNAPSHOT="$snapshot"
 }
 
 zmerge_deliver_review_with_guard_recovery() {
   local out retry_out refresh_out domain rc=0 retry_rc=0
   ZMERGE_DELIVER_FAILURE_CLASSIFIED=0
+  ZMERGE_RECOVERY_GATE_SNAPSHOT=""
   out="$(zmerge_deliver_review 2>&1)" || rc=$?
   if [ "$rc" -eq 0 ]; then
     [ -z "$out" ] || printf '%s\n' "$out"

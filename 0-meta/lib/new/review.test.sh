@@ -302,6 +302,14 @@ Z_MAIN=main
 Z_OWNER=o
 Z_REPO=r
 Z_NUMBER=29
+# zmerge gate reader 的输入必须模拟真实 z_load：review-render 使用的固定
+# HEAD 不等于当前测试仓 HEAD，这里在进入 merge gate 前切回真实 durable facts。
+Z_RENDER_HEAD="$Z_HEAD"
+Z_RENDER_GIT_BR="${Z_GIT_BR-}"
+Z_RENDER_GIT_BR_SET=0
+[ -n "${Z_GIT_BR-}" ] && Z_RENDER_GIT_BR_SET=1
+Z_HEAD="$(git -C "$Z_WT" rev-parse HEAD)"
+Z_GIT_BR="$(git -C "$Z_WT" symbolic-ref --short HEAD)"
 z_require_passing_review() { Z_SELF_REVIEW=yes; return 0; }
 z_fetch_origin_main() { return 0; }
 z_main_is_current() { return 0; }
@@ -317,6 +325,12 @@ for zmerge_entry in zmerge_reread_before_merge zmerge_do_merge; do
       || bad "A5 ${zmerge_entry} reason code"
   fi
 done
+Z_HEAD="$Z_RENDER_HEAD"
+if [ "$Z_RENDER_GIT_BR_SET" = 1 ]; then
+  Z_GIT_BR="$Z_RENDER_GIT_BR"
+else
+  unset Z_GIT_BR
+fi
 
 cmp_render="$TDIR/rendered-2.md"
 review_render "$EFFECTIVE" "$RESULTS" "$cmp_render" beta alpha no $'0-meta/lib/new/review.sh\n0-meta/lib/new/task.sh'

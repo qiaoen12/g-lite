@@ -109,9 +109,58 @@ expect_true 'R1 main guard require 是 no-op' 'guard_require_wired "$R_MAIN"'
 expect_eq 'R1 main 未绑定 task' '' "$(task_bind_read "$R_MAIN")"
 expect_true 'R1 main wire 是 no-op' 'guard_wire_worktree "$R_MAIN"'
 
+# claim transport 必须来自唯一的 canonical layer；即使 shared/worktree 的
+# value 相同，来源混合也会让后续 effective wiring 依赖配置开关，必须阻断。
+CLAIM_CUSTOM="$TDIR/custom-claim.git"
+expect_eq 'R1 canonical claim 是单层 canonical' canonical \
+  "$(guard_claim_transport_classify "$R_A")"
+git config --file "$COMMON" remote.claim.url "$R_ORIGIN"
+git -C "$R_A" config --worktree remote.claim.pushurl "$R_ORIGIN"
+MIXED_SAME_SHARED_BEFORE="$(git config --file "$COMMON" --get-all remote.claim.url)"
+MIXED_SAME_WORKTREE_BEFORE="$(git -C "$R_A" config --worktree --get-all remote.claim.pushurl)"
+expect_eq 'R1 shared/worktree same-value 仍是 mixed' mixed \
+  "$(guard_claim_transport_classify "$R_A")"
+run_fail R1_MIXED_SAME_OUT task_ensure_claim_remote "$R_A"
+expect_true 'R1 shared/worktree same-value fail-closed' \
+  'printf "%s\n" "$R1_MIXED_SAME_OUT" | grep -Eq "混合|mixed|transport"'
+expect_eq 'R1 same-value shared transport 不被覆盖' "$MIXED_SAME_SHARED_BEFORE" \
+  "$(git config --file "$COMMON" --get-all remote.claim.url)"
+expect_eq 'R1 same-value worktree transport 不被覆盖' "$MIXED_SAME_WORKTREE_BEFORE" \
+  "$(git -C "$R_A" config --worktree --get-all remote.claim.pushurl)"
+git config --file "$COMMON" --unset-all remote.claim.url
+git -C "$R_A" config --worktree --unset-all remote.claim.pushurl
+
+git config --file "$COMMON" remote.claim.url "$R_ORIGIN"
+git -C "$R_A" config --worktree remote.claim.pushurl "$CLAIM_CUSTOM"
+MIXED_DIFF_SHARED_BEFORE="$(git config --file "$COMMON" --get-all remote.claim.url)"
+MIXED_DIFF_WORKTREE_BEFORE="$(git -C "$R_A" config --worktree --get-all remote.claim.pushurl)"
+expect_eq 'R1 shared/worktree different-value 仍是 mixed' mixed \
+  "$(guard_claim_transport_classify "$R_A")"
+run_fail R1_MIXED_DIFF_OUT task_ensure_claim_remote "$R_A"
+expect_true 'R1 shared/worktree different-value fail-closed' \
+  'printf "%s\n" "$R1_MIXED_DIFF_OUT" | grep -Eq "混合|mixed|transport"'
+expect_eq 'R1 different-value shared transport 不被覆盖' "$MIXED_DIFF_SHARED_BEFORE" \
+  "$(git config --file "$COMMON" --get-all remote.claim.url)"
+expect_eq 'R1 different-value worktree transport 不被覆盖' "$MIXED_DIFF_WORKTREE_BEFORE" \
+  "$(git -C "$R_A" config --worktree --get-all remote.claim.pushurl)"
+git config --file "$COMMON" --unset-all remote.claim.url
+git -C "$R_A" config --worktree --unset-all remote.claim.pushurl
+
+# shared receivepack + worktree url 也属于混合来源；custom receivepack 不能
+# 被 claim 修复路径抹掉。pushurl 的 custom 与多值覆盖另外两种 effective wiring。
+git config --file "$COMMON" remote.claim.receivepack "$R_ST/hooks/guard-receive-pack"
+MIXED_RECEIVE_BEFORE="$(git config --file "$COMMON" --get-all remote.claim.receivepack)"
+expect_eq 'R1 shared receivepack/worktree url 是 mixed' mixed \
+  "$(guard_claim_transport_classify "$R_A")"
+run_fail R1_MIXED_RECEIVE_OUT task_ensure_claim_remote "$R_A"
+expect_true 'R1 shared receivepack/worktree url fail-closed' \
+  'printf "%s\n" "$R1_MIXED_RECEIVE_OUT" | grep -Eq "混合|mixed|transport"'
+expect_eq 'R1 shared receivepack 不被覆盖' "$MIXED_RECEIVE_BEFORE" \
+  "$(git config --file "$COMMON" --get-all remote.claim.receivepack)"
+git config --file "$COMMON" --unset-all remote.claim.receivepack
+
 # claim 的 pushurl 会覆盖 claim.url；必须以 effective config 判定，不能只
 # grep remote.claim.url。custom 与多值都保留原值并 fail-closed。
-CLAIM_CUSTOM="$TDIR/custom-claim.git"
 git -C "$R_A" config --worktree remote.claim.pushurl "$CLAIM_CUSTOM"
 CLAIM_CUSTOM_BEFORE="$(git -C "$R_A" config --worktree --get-all remote.claim.pushurl)"
 run_fail R1_CLAIM_CUSTOM_OUT task_ensure_claim_remote "$R_A"
@@ -129,6 +178,15 @@ expect_true 'R1 multi-value claim.pushurl fail-closed' \
 expect_eq 'R1 multi-value claim.pushurl 不被覆盖' "$CLAIM_MULTI_BEFORE" \
   "$(git -C "$R_A" config --worktree --get-all remote.claim.pushurl)"
 git -C "$R_A" config --worktree --unset-all remote.claim.pushurl
+CLAIM_RECEIVE_CUSTOM="$TDIR/custom-claim-receivepack"
+git -C "$R_A" config --worktree remote.claim.receivepack "$CLAIM_RECEIVE_CUSTOM"
+CLAIM_RECEIVE_CUSTOM_BEFORE="$(git -C "$R_A" config --worktree --get-all remote.claim.receivepack)"
+run_fail R1_CLAIM_RECEIVE_CUSTOM_OUT task_ensure_claim_remote "$R_A"
+expect_true 'R1 custom claim.receivepack fail-closed' \
+  'printf "%s\n" "$R1_CLAIM_RECEIVE_CUSTOM_OUT" | grep -Eq "用户自定义|custom|transport"'
+expect_eq 'R1 custom claim.receivepack 不被覆盖' "$CLAIM_RECEIVE_CUSTOM_BEFORE" \
+  "$(git -C "$R_A" config --worktree --get-all remote.claim.receivepack)"
+git -C "$R_A" config --worktree --unset-all remote.claim.receivepack
 
 A_PUSH_BEFORE="$(git -C "$R_A" remote get-url --push origin)"
 B_PUSH_BEFORE="$(git -C "$R_B" remote get-url --push origin)"
@@ -358,12 +416,32 @@ git --git-dir="$R_ST" update-ref -d refs/heads/unrelated
 NFF_OUT=$'To github.com:o/r.git\n ! [rejected] task -> task (non-fast-forward)\nerror: failed to push some refs'
 FETCH_FIRST_OUT=$' ! [rejected] task -> task (fetch first)\nerror: failed to push some refs'
 HOOK_OUT=$' ! [remote rejected] task -> task (pre-receive hook declined)\nerror: failed to push some refs'
+DNS_COMBO_OUT=$'ssh: Could not resolve hostname github.com: nodename nor servname provided\nfatal: Could not read from remote repository.'
+REFUSED_COMBO_OUT=$'ssh: connect to host github.com port 22: Connection refused\nfatal: Could not read from remote repository.'
+TIMEOUT_COMBO_OUT=$'ssh: connect to host github.com port 22: Connection timed out\nfatal: Could not read from remote repository.'
+OPERATION_TIMEOUT_COMBO_OUT=$'ssh: connect to host github.com port 22: Operation timed out\nfatal: Could not read from remote repository.'
+PUBLICKEY_COMBO_OUT=$'Permission denied (publickey).\nfatal: Could not read from remote repository.'
+AUTH_FAILED_COMBO_OUT=$'remote: Authentication failed\nfatal: Could not read from remote repository.'
 expect_eq 'R2 failure domain explicit non-fast-forward' non-fast-forward \
   "$(guard_classify_push_failure "$R_MAIN" "$NFF_OUT" 1)"
 expect_eq 'R2 failure domain fetch first' non-fast-forward \
   "$(guard_classify_push_failure "$R_MAIN" "$FETCH_FIRST_OUT" 1)"
 expect_eq 'R2 hook rejection 是 Guard route' guard-route \
   "$(guard_classify_push_failure "$R_MAIN" "$HOOK_OUT" 1)"
+expect_eq 'R2 DNS 根因优先于 generic remote message' network \
+  "$(guard_classify_push_failure "$R_MAIN" "$DNS_COMBO_OUT" 1)"
+expect_eq 'R2 connection refused 是 network' network \
+  "$(guard_classify_push_failure "$R_MAIN" "$REFUSED_COMBO_OUT" 1)"
+expect_eq 'R2 connection timeout 是 network' network \
+  "$(guard_classify_push_failure "$R_MAIN" "$TIMEOUT_COMBO_OUT" 1)"
+expect_eq 'R2 operation timeout 是 network' network \
+  "$(guard_classify_push_failure "$R_MAIN" "$OPERATION_TIMEOUT_COMBO_OUT" 1)"
+expect_eq 'R2 publickey 是 authentication' authentication \
+  "$(guard_classify_push_failure "$R_MAIN" "$PUBLICKEY_COMBO_OUT" 1)"
+expect_eq 'R2 Authentication failed 是 authentication' authentication \
+  "$(guard_classify_push_failure "$R_MAIN" "$AUTH_FAILED_COMBO_OUT" 1)"
+expect_true 'R2 generic remote message 不单独判 authentication' \
+  '[ "$(guard_classify_push_failure "$R_MAIN" "fatal: Could not read from remote repository." 1)" != authentication ]'
 expect_true 'R2 remote rejected 本身不判 NFF' \
   '[ "$(guard_classify_push_failure "$R_MAIN" "! [remote rejected] task -> task" 1)" != non-fast-forward ]'
 expect_eq 'R2 failure domain authentication' authentication \
