@@ -25,6 +25,10 @@ run_fail() {
   printf -v "$__outvar" '%s' "$out"
   [ "$rc" -ne 0 ]
 }
+proof_field() {
+  local proof="$1" key="$2"
+  printf '%s\n' "$proof" | awk -F= -v want="$key" '$1 == want { print substr($0, index($0, "=") + 1); exit }'
+}
 
 TDIR=""
 tmp_mkd TDIR guard-issue14
@@ -280,6 +284,24 @@ install_stage_remote "$R_ST" "$R_ORIGIN"
 guard_wire_worktree "$R_A"
 COMMON="$(guard_common_config_file "$R_MAIN")"
 
+# actual push boundary 必须重新读取 effective transport。先证明 canonical
+# wiring 可过，再在真正 task push 前改成 custom bare repo；custom repo 不得
+# 收到任何 ref。
+expect_true 'R1 actual push boundary canonical PASS' 'guard_actual_push_transport_preflight "$R_A"'
+ACTUAL_PUSH_REPO="$TDIR/r1-actual-custom.git"
+git init -q --bare "$ACTUAL_PUSH_REPO"
+ACTUAL_PUSH_BRANCH="$(git -C "$R_A" symbolic-ref --short HEAD)"
+printf 'actual-push-boundary\n' >> "$R_A/README"
+git -C "$R_A" add README
+git -C "$R_A" commit -qm 'fixture: actual push boundary'
+git -C "$R_A" config --worktree remote.origin.pushurl "$ACTUAL_PUSH_REPO"
+run_fail R1_ACTUAL_PUSH_OUT task_push_task_branch "$R_A" "$ACTUAL_PUSH_BRANCH" main
+expect_true 'R1 actual push boundary custom transport BLOCK' \
+  'printf "%s\n" "$R1_ACTUAL_PUSH_OUT" | grep -Eiq "custom|canonical|transport|BLOCK"'
+expect_true 'R1 custom bare repo 无写入' \
+  '! git --git-dir="$ACTUAL_PUSH_REPO" show-ref --verify --quiet "refs/heads/$ACTUAL_PUSH_BRANCH"'
+git -C "$R_A" config --worktree remote.origin.pushurl "$R_ST"
+
 # origin transport 的安全判定必须覆盖全部 effective destination 与全部
 # config layer；这里每一项都直接调用 production guard gate，而不是只测
 # parser 或 grep 配置文件。
@@ -287,7 +309,7 @@ expect_eq 'R1 origin canonical transport 是单层 canonical' canonical \
   "$(guard_origin_transport_classify "$R_A")"
 expect_true 'R1 canonical origin require_wired PASS' 'guard_require_wired "$R_A"'
 expect_true 'R1 canonical origin merge gate PASS' \
-  'guard_merge_gate_validate "$R_A" main synced'
+  'guard_recovery_post_refresh_preflight "$R_A" main'
 
 ORIGIN_CUSTOM="$TDIR/custom-origin.git"
 git -C "$R_A" config --worktree --add remote.origin.pushurl "$ORIGIN_CUSTOM"
@@ -296,7 +318,7 @@ expect_eq 'R1 origin canonical+custom 是 ambiguous' ambiguous \
 run_fail R1_ORIGIN_MIXED_OUT guard_require_wired "$R_A"
 expect_true 'R1 origin canonical+custom require_wired BLOCK' \
   'printf "%s\n" "$R1_ORIGIN_MIXED_OUT" | grep -Eiq "多值|混合|歧义|ambiguous|transport"'
-run_fail R1_ORIGIN_MIXED_GATE_OUT guard_merge_gate_validate "$R_A" main synced
+run_fail R1_ORIGIN_MIXED_GATE_OUT guard_recovery_post_refresh_preflight "$R_A" main
 expect_true 'R1 origin canonical+custom merge gate BLOCK' \
   'printf "%s\n" "$R1_ORIGIN_MIXED_GATE_OUT" | grep -Eiq "多值|混合|歧义|ambiguous|transport"'
 expect_eq 'R1 origin canonical+custom effective values 全保留' 2 \
@@ -331,7 +353,7 @@ expect_eq 'R1 origin shared/worktree same-value 是 mixed' mixed \
 run_fail R1_ORIGIN_LAYER_OUT guard_require_wired "$R_A"
 expect_true 'R1 origin shared/worktree mixed require_wired BLOCK' \
   'printf "%s\n" "$R1_ORIGIN_LAYER_OUT" | grep -Eiq "legacy|混合|歧义|transport"'
-run_fail R1_ORIGIN_LAYER_GATE_OUT guard_merge_gate_validate "$R_A" main synced
+run_fail R1_ORIGIN_LAYER_GATE_OUT guard_recovery_post_refresh_preflight "$R_A" main
 expect_true 'R1 origin shared/worktree mixed merge gate BLOCK' \
   'printf "%s\n" "$R1_ORIGIN_LAYER_GATE_OUT" | grep -Eiq "legacy|混合|歧义|transport"'
 git config --file "$COMMON" --unset-all remote.origin.pushurl
@@ -350,7 +372,7 @@ git -C "$R_A" config --worktree remote.origin.receivepack "$R_ST/hooks/guard-rec
 git -C "$R_A" config --worktree --add remote.origin.receivepack "$ORIGIN_RECEIVE_CUSTOM"
 expect_eq 'R1 origin receivepack canonical+custom 是 ambiguous' ambiguous \
   "$(guard_origin_transport_classify "$R_A")"
-run_fail R1_ORIGIN_RECEIVE_MULTI_OUT guard_merge_gate_validate "$R_A" main synced
+run_fail R1_ORIGIN_RECEIVE_MULTI_OUT guard_recovery_post_refresh_preflight "$R_A" main
 expect_true 'R1 origin receivepack 多值 merge gate BLOCK' \
   'printf "%s\n" "$R1_ORIGIN_RECEIVE_MULTI_OUT" | grep -Eiq "多值|混合|歧义|ambiguous|transport"'
 git -C "$R_A" config --worktree --unset-all remote.origin.receivepack
@@ -360,6 +382,22 @@ R3_OLD="$(git --git-dir="$R_ST" rev-parse refs/heads/main)"
 git --git-dir="$R_ST" update-ref refs/heads/unrelated "$R3_OLD"
 git --git-dir="$R_ST" update-ref refs/guard/github/heads/unrelated "$R3_OLD"
 R3_UNRELATED_SENTINEL="$R3_OLD"
+
+for invalid_relation in banana stale foo ''; do
+  run_fail R3_INVALID_RELATION_OUT guard_recovery_relation_validate "$invalid_relation"
+  expect_true "R3 invalid relation [$invalid_relation] fail-closed" \
+    'printf "%s\n" "$R3_INVALID_RELATION_OUT" | grep -Eiq "unknown|未知|fail-closed"'
+done
+
+# Guard disabled 是显式第三态：普通允许“不使用 Guard”的 final 生命周期可以
+# 记录 guard-disabled，但 active recovery 的 POST_REFRESH 不能把它解释成 synced。
+TEST_STAGING="$TDIR/guard-disabled.git"
+expect_true 'R3 guard-disabled final 显式接受' \
+  'guard_final_merge_preflight "$R_A" main && [ "$GUARD_RECOVERY_RELATION" = guard-disabled ]'
+run_fail R3_DISABLED_OUT guard_recovery_post_refresh_preflight "$R_A" main
+expect_true 'R3 active recovery guard-disabled BLOCK' \
+  'printf "%s\n" "$R3_DISABLED_OUT" | grep -Eiq "disabled|Guard.*禁用|synced"'
+TEST_STAGING="$R_ST"
 
 # refresh 前必须证明 candidate 与 staging source 是同一个 repository；换成
 # repo B 后即使 refs 形状相同也不得返回 refreshed。
@@ -390,15 +428,56 @@ git -C "$R_MAIN" commit -qm 'fixture: advance main'
 git -C "$R_MAIN" push -q origin main
 R3_NEW="$(git --git-dir="$R_ORIGIN" rev-parse refs/heads/main)"
 R3_TASK_BEFORE="$(git --git-dir="$R_ST" rev-parse refs/heads/r3-a)"
+git --git-dir="$R_ST" fetch -q github \
+  "refs/heads/main:refs/guard/github/heads/main"
+expect_true 'R3 pre-refresh stale gate PASS' \
+  'guard_recovery_pre_refresh_preflight "$R_A" main'
 R3_RESULT="$(guard_refresh_staging_for_merge "$R_A" main)"
-expect_eq 'R3 stale main scoped refresh' refreshed "$R3_RESULT"
+expect_eq 'R3 stale main scoped refresh result' refreshed "$(proof_field "$R3_RESULT" result)"
+expect_eq 'R3 refresh proof target snapshot' "$R3_NEW" "$(proof_field "$R3_RESULT" target_snapshot_oid)"
+expect_eq 'R3 refresh proof target staging' "$R3_NEW" "$(proof_field "$R3_RESULT" target_staging_oid)"
+expect_true 'R3 refresh proof contains fingerprints' \
+  '[ -n "$(proof_field "$R3_RESULT" transaction_fingerprint)" ] && [ -n "$(proof_field "$R3_RESULT" route_identity_fingerprint)" ] && [ -n "$(proof_field "$R3_RESULT" unrelated_ref_fingerprint)" ]'
 expect_eq 'R3 refresh 后 staging main 是 snapshot' "$R3_NEW" "$(git --git-dir="$R_ST" rev-parse refs/heads/main)"
 expect_eq 'R3 refresh 不改 task ref' "$R3_TASK_BEFORE" "$(git --git-dir="$R_ST" rev-parse refs/heads/r3-a)"
 expect_eq 'R3 refresh 不改 unrelated staging sentinel' "$R3_UNRELATED_SENTINEL" \
   "$(git --git-dir="$R_ST" rev-parse refs/heads/unrelated)"
 expect_eq 'R3 refresh 不改 unrelated snapshot sentinel' "$R3_UNRELATED_SENTINEL" \
   "$(git --git-dir="$R_ST" rev-parse refs/guard/github/heads/unrelated)"
-expect_eq 'R3 第二次 refresh no-op' noop "$(guard_refresh_staging_for_merge "$R_A" main)"
+R3_NOOP_RESULT="$(guard_refresh_staging_for_merge "$R_A" main)"
+expect_eq 'R3 第二次 refresh no-op' noop "$(proof_field "$R3_NOOP_RESULT" result)"
+expect_true 'R3 post-refresh exact synced gate PASS' 'guard_recovery_post_refresh_preflight "$R_A" main'
+
+# refresh 后 relation 不能再回落为 pre-refresh-stale：ahead、diverged、missing 和
+# unknown 均在 phase gate 处停止。unknown 由封闭 relation dispatcher 直接
+# 覆盖，不能通过任何自由字符串 fallback。
+R3_AHEAD="$(printf 'r3-ahead\n' | GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t \
+  GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+  git -C "$R_MAIN" commit-tree "$(git --git-dir="$R_ST" rev-parse refs/guard/github/heads/main^{tree})" \
+  -p "$R3_NEW")"
+git --git-dir="$R_ST" fetch -q "$R_MAIN" "$R3_AHEAD"
+git --git-dir="$R_ST" update-ref refs/heads/main "$R3_AHEAD" "$R3_NEW"
+run_fail R3_AHEAD_OUT guard_recovery_post_refresh_preflight "$R_A" main
+expect_true 'R3 post-refresh ahead BLOCK' 'printf "%s\n" "$R3_AHEAD_OUT" | grep -Eiq "ahead|前进|phase|BLOCK"'
+git --git-dir="$R_ST" update-ref refs/heads/main "$R3_NEW" "$R3_AHEAD"
+
+R3_DIVERGED="$(printf 'r3-diverged\n' | GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t \
+  GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+  git -C "$R_MAIN" commit-tree "$(git --git-dir="$R_ST" rev-parse refs/guard/github/heads/main^{tree})" \
+  -p "$R3_OLD")"
+git --git-dir="$R_ST" fetch -q "$R_MAIN" "$R3_DIVERGED"
+git --git-dir="$R_ST" update-ref refs/heads/main "$R3_DIVERGED" "$R3_NEW"
+run_fail R3_DIVERGED_OUT guard_recovery_post_refresh_preflight "$R_A" main
+expect_true 'R3 post-refresh diverged BLOCK' 'printf "%s\n" "$R3_DIVERGED_OUT" | grep -Eiq "diverged|分叉|phase|BLOCK"'
+git --git-dir="$R_ST" update-ref refs/heads/main "$R3_NEW" "$R3_DIVERGED"
+
+git --git-dir="$R_ST" update-ref -d refs/guard/github/heads/main
+run_fail R3_MISSING_OUT guard_recovery_post_refresh_preflight "$R_A" main
+expect_true 'R3 post-refresh missing BLOCK' 'printf "%s\n" "$R3_MISSING_OUT" | grep -Eiq "missing|缺少|phase|BLOCK"'
+git --git-dir="$R_ST" update-ref refs/guard/github/heads/main "$R3_NEW"
+run_fail R3_UNKNOWN_RELATION_OUT guard_recovery_relation_blocked POST_REFRESH unknown main
+expect_true 'R3 post-refresh unknown BLOCK' \
+  'printf "%s\n" "$R3_UNKNOWN_RELATION_OUT" | grep -Eiq "unknown|未知|fail-closed"'
 
 git --git-dir="$R_ST" update-ref refs/heads/main "$R3_OLD" "$R3_NEW"
 TX_ROOT="$R_ST/git-guard/transactions"
@@ -409,7 +488,7 @@ mkdir -p "$TX_ROOT/noop-clean"
 printf 'noop\n' > "$TX_ROOT/noop-clean/receive-status"
 printf 'noop\n' > "$TX_ROOT/noop-clean/forward-status"
 R3_NOOP_RESULT="$(guard_refresh_staging_for_merge "$R_A" main)"
-expect_eq 'R3 noop clean evidence 可继续' refreshed "$R3_NOOP_RESULT"
+expect_eq 'R3 noop clean evidence 可继续' refreshed "$(proof_field "$R3_NOOP_RESULT" result)"
 rm -rf "$TX_ROOT/noop-clean"
 git --git-dir="$R_ST" update-ref refs/heads/main "$R3_OLD" "$R3_NEW"
 
@@ -418,7 +497,7 @@ printf 'noop\n' > "$TX_ROOT/noop-plan/receive-status"
 printf 'noop\n' > "$TX_ROOT/noop-plan/forward-status"
 : > "$TX_ROOT/noop-plan/forward-plan"
 run_fail R3_NOOP_PLAN_OUT guard_refresh_staging_for_merge "$R_A" main
-expect_true 'R3 noop + forward-plan BLOCK' 'printf "%s\n" "$R3_NOOP_PLAN_OUT" | grep -Fq "write evidence"'
+expect_true 'R3 noop + forward-plan BLOCK' 'printf "%s\n" "$R3_NOOP_PLAN_OUT" | grep -Eiq "write evidence|transaction|lease"'
 expect_eq 'R3 noop + forward-plan 不 refresh' "$R3_OLD" "$(git --git-dir="$R_ST" rev-parse refs/heads/main)"
 rm -rf "$TX_ROOT/noop-plan"
 
@@ -427,7 +506,7 @@ printf 'noop\n' > "$TX_ROOT/noop-incoming/receive-status"
 printf 'noop\n' > "$TX_ROOT/noop-incoming/forward-status"
 : > "$TX_ROOT/noop-incoming/incoming"
 run_fail R3_NOOP_INCOMING_OUT guard_refresh_staging_for_merge "$R_A" main
-expect_true 'R3 noop + incoming BLOCK' 'printf "%s\n" "$R3_NOOP_INCOMING_OUT" | grep -Fq "write evidence"'
+expect_true 'R3 noop + incoming BLOCK' 'printf "%s\n" "$R3_NOOP_INCOMING_OUT" | grep -Eiq "write evidence|transaction|lease"'
 rm -rf "$TX_ROOT/noop-incoming"
 
 mkdir -p "$TX_ROOT/noop-intent"
@@ -436,7 +515,7 @@ printf 'noop\n' > "$TX_ROOT/noop-intent/forward-status"
 : > "$TX_ROOT/noop-intent/write-intent"
 run_fail R3_NOOP_INTENT_OUT guard_refresh_staging_for_merge "$R_A" main
 expect_true 'R3 noop + write intent BLOCK' \
-  'printf "%s\n" "$R3_NOOP_INTENT_OUT" | grep -Fq "unknown write evidence"'
+  'printf "%s\n" "$R3_NOOP_INTENT_OUT" | grep -Eiq "unknown write evidence|transaction|lease"'
 rm -rf "$TX_ROOT/noop-intent"
 
 mkdir -p "$TX_ROOT/accepted-clean"
@@ -445,7 +524,7 @@ printf 'ok\n' > "$TX_ROOT/accepted-clean/forward-status"
 : > "$TX_ROOT/accepted-clean/incoming"
 : > "$TX_ROOT/accepted-clean/forward-plan"
 R3_ACCEPTED_RESULT="$(guard_refresh_staging_for_merge "$R_A" main)"
-expect_eq 'R3 accepted + coherent evidence 可继续' refreshed "$R3_ACCEPTED_RESULT"
+expect_eq 'R3 accepted + coherent evidence 可继续' refreshed "$(proof_field "$R3_ACCEPTED_RESULT" result)"
 rm -rf "$TX_ROOT/accepted-clean"
 git --git-dir="$R_ST" update-ref refs/heads/main "$R3_OLD" "$R3_NEW"
 
@@ -453,35 +532,38 @@ mkdir -p "$TX_ROOT/accepted-contradictory"
 printf 'accepted\n' > "$TX_ROOT/accepted-contradictory/receive-status"
 printf 'noop\n' > "$TX_ROOT/accepted-contradictory/forward-status"
 : > "$TX_ROOT/accepted-contradictory/incoming"
-run_fail R3_ACCEPTED_BAD_OUT guard_refresh_staging_for_merge "$R_A" main
+expect_true 'R3 accepted + contradictory fixture exists' '[ -d "$TX_ROOT/accepted-contradictory" ] && [ -f "$TX_ROOT/accepted-contradictory/receive-status" ]'
+expect_true 'R3 accepted + contradictory direct validator BLOCK' \
+  '! guard_transaction_consistency "$R_ST/git-guard"'
+run_fail R3_ACCEPTED_BAD_OUT guard_recovery_pre_refresh_preflight "$R_A" main
 expect_true 'R3 accepted + contradictory BLOCK' \
-  'printf "%s\n" "$R3_ACCEPTED_BAD_OUT" | grep -Fq "contradictory"'
+  'printf "%s\n" "$R3_ACCEPTED_BAD_OUT" | grep -Eiq "contradictory|transaction|lease"'
 rm -rf "$TX_ROOT/accepted-contradictory"
 
 mkdir -p "$TX_ROOT/pending"
 printf 'pending\n' > "$TX_ROOT/pending/receive-status"
-run_fail R3_PENDING_OUT guard_refresh_staging_for_merge "$R_A" main
-expect_true 'R3 pending transaction fail-closed' 'printf "%s\n" "$R3_PENDING_OUT" | grep -Fq "transaction/lease"'
+run_fail R3_PENDING_OUT guard_recovery_pre_refresh_preflight "$R_A" main
+expect_true 'R3 pending transaction fail-closed' 'printf "%s\n" "$R3_PENDING_OUT" | grep -Eiq "transaction/lease|transaction|lease"'
 expect_eq 'R3 pending 不偷偷 refresh' "$R3_OLD" "$(git --git-dir="$R_ST" rev-parse refs/heads/main)"
 rm -rf "$TX_ROOT/pending"
 
 mkdir -p "$TX_ROOT/failed"
 printf 'accepted\n' > "$TX_ROOT/failed/receive-status"
 printf 'fail\n' > "$TX_ROOT/failed/forward-status"
-run_fail R3_FAILED_OUT guard_refresh_staging_for_merge "$R_A" main
-expect_true 'R3 failed transaction 不自动 replay' 'printf "%s\n" "$R3_FAILED_OUT" | grep -Fq "transaction/lease"'
+run_fail R3_FAILED_OUT guard_recovery_pre_refresh_preflight "$R_A" main
+expect_true 'R3 failed transaction 不自动 replay' 'printf "%s\n" "$R3_FAILED_OUT" | grep -Eiq "transaction/lease|transaction|lease"'
 rm -rf "$TX_ROOT/failed"
 
 mkdir -p "$TX_ROOT/unknown"
-run_fail R3_UNKNOWN_OUT guard_refresh_staging_for_merge "$R_A" main
-expect_true 'R3 unknown transaction fail-closed' 'printf "%s\n" "$R3_UNKNOWN_OUT" | grep -Fq "transaction/lease"'
+run_fail R3_UNKNOWN_OUT guard_recovery_pre_refresh_preflight "$R_A" main
+expect_true 'R3 unknown transaction fail-closed' 'printf "%s\n" "$R3_UNKNOWN_OUT" | grep -Eiq "transaction/lease|transaction|lease"'
 rm -rf "$TX_ROOT/unknown"
 
 mkdir -p "$TX_ROOT/lease-ambiguous"
 printf 'rejected\n' > "$TX_ROOT/lease-ambiguous/receive-status"
 printf 'ambiguous\n' > "$TX_ROOT/lease-ambiguous/lease-status"
-run_fail R3_LEASE_OUT guard_refresh_staging_for_merge "$R_A" main
-expect_true 'R3 lease ambiguity fail-closed' 'printf "%s\n" "$R3_LEASE_OUT" | grep -Fq "transaction/lease"'
+run_fail R3_LEASE_OUT guard_recovery_pre_refresh_preflight "$R_A" main
+expect_true 'R3 lease ambiguity fail-closed' 'printf "%s\n" "$R3_LEASE_OUT" | grep -Eiq "transaction/lease|transaction|lease"'
 rm -rf "$TX_ROOT/lease-ambiguous"
 
 # 现在故意制造 unrelated staging write；scoped refresh 必须停在 main 之外，

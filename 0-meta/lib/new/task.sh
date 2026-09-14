@@ -1172,6 +1172,12 @@ task_push_task_branch() {
     err_code review.head_mismatch "    ✗ HEAD 是 ${cur:-游离}，不是 ${br}，拒绝 push"
     return 1
   fi
+  # transport 入口检查不是 push 边界证明；Guard 可能在此期间被改写。
+  # 实际 git push 前重新读取全部 effective transport，任何 custom/mixed/
+  # multi-value 或 Guard wiring 变化都必须在 mutation 前 fail-closed。
+  if [ "$(type -t guard_actual_push_transport_preflight 2>/dev/null)" = function ]; then
+    guard_actual_push_transport_preflight "$wt" || return 1
+  fi
   push_out="$(GIT_TERMINAL_PROMPT=0 git -C "$wt" push -u origin -- \
     "refs/heads/${br}:refs/heads/${br}" 2>&1)" || push_rc=$?
   if [ "$push_rc" -ne 0 ]; then

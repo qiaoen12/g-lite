@@ -893,92 +893,282 @@ guard_refresh_staging_after_snapshot() {
   :
 }
 
-# merge gate 只验证当前 task 与同一 staging 的关系，不更新任何 ref。
-# relation=stale-ok 仅供 refresh 前使用；synced 是 retry/final merge 的门槛。
-guard_merge_gate_validate() {
-  local wt="$1" main="${2:-main}" relation="${3:-synced}"
-  local staging snapshot_main staging_main tx_fingerprint stable_refs push rp claim snap
-  staging="$(guard_staging_git)"
-  if [ ! -d "$staging" ]; then
-    GUARD_MERGE_GATE_FINGERPRINT=none
-    return 0
-  fi
-  guard_require_wired "$wt" || return 1
-  guard_validate_staging_source_identity "$wt" "$staging" || return 1
-  snap="${GUARD_SNAP:-refs/guard/github}"
-  guard_transaction_consistency "$staging/git-guard" || {
-    guard_error "merge gate blocked: transaction/lease facts 不一致（${GUARD_TRANSACTION_ERROR:-unknown}）"
-    return 1
-  }
-  snapshot_main="$(guard_ref_oid "$staging" "${snap}/heads/${main}")"
-  staging_main="$(guard_ref_oid "$staging" "refs/heads/${main}")"
-  [ -n "$snapshot_main" ] && [ -n "$staging_main" ] || {
-    guard_error "merge gate blocked: staging/snapshot 缺少 ${main}，拒绝猜测 mirror relation"
-    return 1
-  }
-  if [ "$relation" = synced ]; then
-    [ "$staging_main" = "$snapshot_main" ] || {
-      guard_error "merge gate blocked: staging ${main} 仍未与 Guard snapshot 对齐"
+# 仅供 refresh race/provider 在 Guard lock 已取得、lock-in reread 前注入 durable
+# 事实变化；生产默认 no-op。任何变化都会由 lock-in preflight 重新读取并阻断。
+guard_refresh_staging_after_lock() {
+  :
+}
+
+# ─────────────────────────────────────────────── recovery phase facts
+#
+# Recovery relation 是封闭集合。phase gate 只能从这里读取事实并用 exhaustive
+# case 决定是否放行；未知输入永远不能落入 ancestor/stale semantics。
+guard_recovery_relation_validate() {
+  local relation="${1:-}"
+  case "$relation" in
+    pre-refresh-stale|synced|guard-disabled|post-refresh-ahead|post-refresh-diverged|missing|unknown)
+      return 0
+      ;;
+    *)
+      err_code guard.relation_unknown "recovery relation 未知（${relation:-empty}），fail-closed"
       return 1
-    }
-  else
-    git --git-dir="$staging" merge-base --is-ancestor "$staging_main" "$snapshot_main" || {
-      guard_error "merge gate blocked: staging ${main} 不是 Guard snapshot 的祖先"
-      return 1
-    }
-  fi
-  tx_fingerprint="$(guard_transaction_fingerprint "$staging/git-guard")" || {
-    guard_error "merge gate blocked: 无法读取 transaction fingerprint"
-    return 1
-  }
-  stable_refs="$({
-    git --git-dir="$staging" for-each-ref --format='%(refname) %(objectname)' refs/heads |
-      awk -v main="refs/heads/${main}" '$1 != main { print }'
-    git --git-dir="$staging" for-each-ref --format='%(refname) %(objectname)' "${snap}/heads" |
-      awk -v main="${snap}/heads/${main}" '$1 != main { print }'
-  } | LC_ALL=C sort)"
-  push="${GUARD_ORIGIN_EFFECTIVE_PUSH_VALUES:-}"
-  rp="${GUARD_ORIGIN_EFFECTIVE_RECEIVEPACK_VALUES:-}"
-  claim="$( {
-    printf 'url(shared)=%s\n' "${GUARD_CLAIM_SHARED_URL_VALUES:-}"
-    printf 'pushurl(shared)=%s\n' "${GUARD_CLAIM_SHARED_PUSHURL_VALUES:-}"
-    printf 'receivepack(shared)=%s\n' "${GUARD_CLAIM_SHARED_RECEIVEPACK_VALUES:-}"
-    printf 'url(worktree)=%s\n' "${GUARD_CLAIM_WORKTREE_URL_VALUES:-}"
-    printf 'pushurl(worktree)=%s\n' "${GUARD_CLAIM_WORKTREE_PUSHURL_VALUES:-}"
-    printf 'receivepack(worktree)=%s\n' "${GUARD_CLAIM_WORKTREE_RECEIVEPACK_VALUES:-}"
-  } )"
-  GUARD_MERGE_GATE_FINGERPRINT="$({
-    printf 'identity=%s/%s\n' "$GUARD_CANDIDATE_REPO_IDENTITY" "$GUARD_STAGING_REPO_IDENTITY"
-    printf 'transaction=%s\n' "$tx_fingerprint"
-    printf 'stable-refs=%s\n' "$stable_refs"
-    printf 'push=%s\nreceivepack=%s\nclaim=%s\n' "$push" "$rp" "$claim"
-  } | if command -v shasum >/dev/null 2>&1; then
+      ;;
+  esac
+}
+
+guard_recovery_hash() {
+  if command -v shasum >/dev/null 2>&1; then
     shasum -a 256 | awk '{print $1}'
   else
     sha256sum | awk '{print $1}'
-  fi)"
+  fi
+}
+
+guard_recovery_relation_from_refs() {
+  local staging="$1" main="$2" snap="$3" snapshot_main staging_main
+  snapshot_main="$(guard_ref_oid "$staging" "${snap}/heads/${main}")"
+  staging_main="$(guard_ref_oid "$staging" "refs/heads/${main}")"
+  if [ -z "$snapshot_main" ] || [ -z "$staging_main" ]; then
+    printf 'missing\n'
+    return 0
+  fi
+  if [ "$staging_main" = "$snapshot_main" ]; then
+    printf 'synced\n'
+  elif git --git-dir="$staging" merge-base --is-ancestor "$staging_main" "$snapshot_main"; then
+    printf 'pre-refresh-stale\n'
+  elif git --git-dir="$staging" merge-base --is-ancestor "$snapshot_main" "$staging_main"; then
+    printf 'post-refresh-ahead\n'
+  else
+    printf 'post-refresh-diverged\n'
+  fi
+}
+
+guard_recovery_unrelated_ref_fingerprint() {
+  local staging="$1" main="$2" snap="$3"
+  {
+    git --git-dir="$staging" for-each-ref --format='staging %(refname) %(objectname)' refs/heads |
+      awk -v main="refs/heads/${main}" '$2 != main { print }'
+    git --git-dir="$staging" for-each-ref --format='snapshot %(refname) %(objectname)' "${snap}/heads" |
+      awk -v main="${snap}/heads/${main}" '$2 != main { print }'
+  } | LC_ALL=C sort | guard_recovery_hash
+}
+
+guard_recovery_unrelated_refs_consistent() {
+  local staging="$1" main="$2" snap="$3"
+  if diff -u \
+      <(git --git-dir="$staging" for-each-ref \
+          --format='%(refname) %(objectname)' refs/heads |
+        awk -v main="refs/heads/${main}" '$1 != main { sub("^refs/heads/", "'"${snap}"'/heads/", $1); print }' |
+        LC_ALL=C sort) \
+      <(git --git-dir="$staging" for-each-ref \
+          --format='%(refname) %(objectname)' "${snap}/heads" |
+        awk -v main="${snap}/heads/${main}" '$1 != main { print }' |
+        LC_ALL=C sort) >/dev/null 2>&1; then
+    return 0
+  fi
+  guard_error "merge recovery blocked: unrelated staging refs 与同一 snapshot 不一致"
+  return 1
+}
+
+guard_recovery_route_identity_fingerprint() {
+  {
+    printf 'candidate-id=%s\n' "${GUARD_CANDIDATE_REPO_IDENTITY:-}"
+    printf 'staging-id=%s\n' "${GUARD_STAGING_REPO_IDENTITY:-}"
+    printf 'origin-state=%s\n' "${GUARD_ORIGIN_STATE:-}"
+    printf 'origin-detail=%s\n' "${GUARD_ORIGIN_DETAIL:-}"
+    printf 'claim-state=%s\n' "${GUARD_CLAIM_STATE:-}"
+    printf 'claim-detail=%s\n' "${GUARD_CLAIM_DETAIL:-}"
+    printf 'origin-shared-url=%s\n' "${GUARD_ORIGIN_SHARED_URL_VALUES:-}"
+    printf 'origin-shared-pushurl=%s\n' "${GUARD_ORIGIN_SHARED_PUSHURL_VALUES:-}"
+    printf 'origin-shared-receivepack=%s\n' "${GUARD_ORIGIN_SHARED_RECEIVEPACK_VALUES:-}"
+    printf 'origin-worktree-url=%s\n' "${GUARD_ORIGIN_WORKTREE_URL_VALUES:-}"
+    printf 'origin-worktree-pushurl=%s\n' "${GUARD_ORIGIN_WORKTREE_PUSHURL_VALUES:-}"
+    printf 'origin-worktree-receivepack=%s\n' "${GUARD_ORIGIN_WORKTREE_RECEIVEPACK_VALUES:-}"
+    printf 'origin-effective-fetch=%s\n' "${GUARD_ORIGIN_EFFECTIVE_FETCH_VALUES:-}"
+    printf 'origin-effective-push=%s\n' "${GUARD_ORIGIN_EFFECTIVE_PUSH_VALUES:-}"
+    printf 'origin-effective-receivepack=%s\n' "${GUARD_ORIGIN_EFFECTIVE_RECEIVEPACK_VALUES:-}"
+    printf 'claim-shared-url=%s\n' "${GUARD_CLAIM_SHARED_URL_VALUES:-}"
+    printf 'claim-shared-pushurl=%s\n' "${GUARD_CLAIM_SHARED_PUSHURL_VALUES:-}"
+    printf 'claim-shared-receivepack=%s\n' "${GUARD_CLAIM_SHARED_RECEIVEPACK_VALUES:-}"
+    printf 'claim-worktree-url=%s\n' "${GUARD_CLAIM_WORKTREE_URL_VALUES:-}"
+    printf 'claim-worktree-pushurl=%s\n' "${GUARD_CLAIM_WORKTREE_PUSHURL_VALUES:-}"
+    printf 'claim-worktree-receivepack=%s\n' "${GUARD_CLAIM_WORKTREE_RECEIVEPACK_VALUES:-}"
+  } | guard_redact_transport | guard_recovery_hash
+}
+
+guard_recovery_record_facts() {
+  local staging="$1" main="$2" snap="$3" tx_fingerprint unrelated route relation
+  relation="${GUARD_RECOVERY_RELATION:-unknown}"
+  tx_fingerprint="$(guard_transaction_fingerprint "$staging/git-guard")" || return 1
+  unrelated="$(guard_recovery_unrelated_ref_fingerprint "$staging" "$main" "$snap")" || return 1
+  route="$(guard_recovery_route_identity_fingerprint)" || return 1
+  GUARD_RECOVERY_TRANSACTION_FINGERPRINT="$tx_fingerprint"
+  GUARD_RECOVERY_UNRELATED_REF_FINGERPRINT="$unrelated"
+  GUARD_RECOVERY_ROUTE_IDENTITY_FINGERPRINT="$route"
+  GUARD_RECOVERY_NON_TARGET_FINGERPRINT="$({
+    printf 'identity=%s/%s\n' "${GUARD_CANDIDATE_REPO_IDENTITY:-}" "${GUARD_STAGING_REPO_IDENTITY:-}"
+    printf 'transaction=%s\nroute=%s\nunrelated=%s\n' "$tx_fingerprint" "$route" "$unrelated"
+  } | guard_recovery_hash)"
+  GUARD_RECOVERY_FACTS_FINGERPRINT="$({
+    printf 'relation=%s\n' "$relation"
+    printf 'snapshot=%s\nstaging=%s\n' "${GUARD_RECOVERY_TARGET_SNAPSHOT_OID:-}" "${GUARD_RECOVERY_TARGET_STAGING_OID:-}"
+    printf 'non-target=%s\n' "$GUARD_RECOVERY_NON_TARGET_FINGERPRINT"
+  } | guard_recovery_hash)"
+  GUARD_MERGE_GATE_FINGERPRINT="$GUARD_RECOVERY_FACTS_FINGERPRINT"
+}
+
+# 读取完整 durable tuple，但不决定当前 phase 是否允许继续。
+guard_recovery_common_preflight() {
+  local wt="$1" main="${2:-main}" staging snap relation
+  staging="$(guard_staging_git)"
+  snap="${GUARD_SNAP:-refs/guard/github}"
+  GUARD_RECOVERY_SNAPSHOT_NAMESPACE="$snap"
+  GUARD_RECOVERY_RELATION=unknown
+  GUARD_RECOVERY_ERROR=""
+  GUARD_RECOVERY_TARGET_SNAPSHOT_OID=""
+  GUARD_RECOVERY_TARGET_STAGING_OID=""
+  GUARD_RECOVERY_TRANSACTION_FINGERPRINT=""
+  GUARD_RECOVERY_ROUTE_IDENTITY_FINGERPRINT=""
+  GUARD_RECOVERY_UNRELATED_REF_FINGERPRINT=""
+  GUARD_RECOVERY_NON_TARGET_FINGERPRINT=""
+  GUARD_RECOVERY_FACTS_FINGERPRINT=""
+  GUARD_MERGE_GATE_FINGERPRINT=none
+  if [ ! -d "$staging" ]; then
+    GUARD_RECOVERY_RELATION=guard-disabled
+    GUARD_RECOVERY_FACTS_FINGERPRINT=none
+    GUARD_MERGE_GATE_FINGERPRINT=none
+    GUARD_RECOVERY_ERROR='staging 不存在；Guard disabled 不是 synced'
+    guard_error "merge recovery blocked: ${GUARD_RECOVERY_ERROR}"
+    return 1
+  fi
+  [ -f "$staging/hooks/git-guard-lib.sh" ] || {
+    GUARD_RECOVERY_RELATION=unknown
+    GUARD_RECOVERY_ERROR='staging hook library 缺失'
+    guard_error "merge recovery blocked: ${GUARD_RECOVERY_ERROR}"
+    return 1
+  }
+  guard_require_wired "$wt" || return 1
+  guard_validate_staging_source_identity "$wt" "$staging" || return 1
+  guard_transaction_consistency "$staging/git-guard" || {
+    GUARD_RECOVERY_ERROR="transaction/lease facts 不一致（${GUARD_TRANSACTION_ERROR:-unknown}）"
+    guard_error "merge recovery blocked: ${GUARD_RECOVERY_ERROR}"
+    return 1
+  }
+  guard_recovery_unrelated_refs_consistent "$staging" "$main" "$snap" || return 1
+  relation="$(guard_recovery_relation_from_refs "$staging" "$main" "$snap")"
+  guard_recovery_relation_validate "$relation" || return 1
+  GUARD_RECOVERY_RELATION="$relation"
+  GUARD_RECOVERY_TARGET_SNAPSHOT_OID="$(guard_ref_oid "$staging" "${snap}/heads/${main}")"
+  GUARD_RECOVERY_TARGET_STAGING_OID="$(guard_ref_oid "$staging" "refs/heads/${main}")"
+  guard_recovery_record_facts "$staging" "$main" "$snap" || {
+    GUARD_RECOVERY_ERROR='无法建立 recovery durable facts fingerprint'
+    return 1
+  }
   return 0
 }
 
-# R3：merge 前只修复「同一 staging 的 main mirror 落后」这一种可证明场景。
-# 这是一个 refresh，不是 guard sync：不调用 guard_forward_plan，不读取或
-# 重放任何旧 transaction 的 lease，也不碰 unrelated refs。
+guard_recovery_relation_blocked() {
+  local phase="$1" relation="$2" main="$3"
+  case "$relation" in
+    synced)
+      err_code guard.phase_relation "${phase} 不接受 synced/stale policy；当前 ${main} 已 synced"
+      ;;
+    pre-refresh-stale)
+      err_code guard.phase_relation "${phase} 只能使用 synced，拒绝 stale relation"
+      ;;
+    post-refresh-ahead)
+      err_code guard.relation_ahead "${phase} blocked：staging ${main} ahead of snapshot"
+      ;;
+    post-refresh-diverged)
+      err_code guard.relation_diverged "${phase} blocked：staging ${main} diverged from snapshot"
+      ;;
+    missing)
+      err_code guard.relation_missing "${phase} blocked：staging/snapshot 缺少 ${main}"
+      ;;
+    guard-disabled)
+      err_code guard.disabled "${phase} blocked：Guard disabled，不能伪装成 synced"
+      ;;
+    unknown)
+      err_code guard.relation_unknown "${phase} blocked：relation unknown，fail-closed"
+      ;;
+    *)
+      guard_recovery_relation_validate "$relation" || return 1
+      err_code guard.relation_unknown "${phase} blocked：relation=${relation:-empty}"
+      ;;
+  esac
+  return 1
+}
+
+# PRE_REFRESH 是唯一允许 staging 落后的 phase；若 stale 已被另一条安全
+# 路径提前收敛为 synced，也允许建立 recovery proof，refresh 随后返回 noop。
+guard_recovery_pre_refresh_preflight() {
+  local wt="$1" main="${2:-main}"
+  guard_recovery_common_preflight "$wt" "$main" || return 1
+  case "${GUARD_RECOVERY_RELATION:-unknown}" in
+    pre-refresh-stale|synced) return 0 ;;
+    *) guard_recovery_relation_blocked PRE_REFRESH "$GUARD_RECOVERY_RELATION" "$main"; return 1 ;;
+  esac
+}
+
+# POST_REFRESH 固定要求 staging main == snapshot main；ahead、diverged、
+# missing、unknown 和 disabled 都是 BLOCK。
+guard_recovery_post_refresh_preflight() {
+  local wt="$1" main="${2:-main}"
+  guard_recovery_common_preflight "$wt" "$main" || return 1
+  case "${GUARD_RECOVERY_RELATION:-unknown}" in
+    synced) return 0 ;;
+    *) guard_recovery_relation_blocked POST_REFRESH "$GUARD_RECOVERY_RELATION" "$main"; return 1 ;
+  esac
+}
+
+# 普通 final merge 可以明确接受未安装 Guard，但必须显式记录 disabled；
+# 活跃 R3 recovery 永远先走 post-refresh，不会从这里绕过 synced gate。
+guard_final_merge_preflight() {
+  local wt="$1" main="${2:-main}" staging
+  staging="$(guard_staging_git)"
+  if [ ! -d "$staging" ]; then
+    GUARD_RECOVERY_RELATION=guard-disabled
+    GUARD_RECOVERY_FACTS_FINGERPRINT=none
+    GUARD_MERGE_GATE_FINGERPRINT=none
+    return 0
+  fi
+  guard_recovery_post_refresh_preflight "$wt" "$main"
+}
+
+# refresh-return race 的 provider seam。生产默认 no-op；proof 在调用它前
+# 固化，POST_REFRESH 会重新读取 durable staging ref。
+guard_refresh_staging_after_update() {
+  :
+}
+
+# R3 scoped refresh：锁外与锁内复读完整 tuple，update-ref 前再次确认
+# candidate/staging identity、route、claim、transaction、target refs、
+# unrelated refs 和 relation。成功 stdout 是 structured proof；它不能替代
+# refresh 返回后的 post-refresh reread。
 guard_refresh_staging_for_merge() (
-  local wt="$1" main="${2:-main}" staging state snapshot_main staging_main tx
+  local wt="$1" main="${2:-main}" staging state snapshot_main staging_main
+  local initial_relation outside_facts outside_non_target outside_staging
+  local tx_fingerprint route_fingerprint unrelated_fingerprint target_staging_oid
   local GUARD_REFRESH_LOCK_STATE
 
   staging="$(guard_staging_git)"
-  [ -d "$staging" ] || { guard_error "merge refresh blocked: staging 不存在"; return 1; }
+  [ -d "$staging" ] || { guard_error "merge refresh blocked: Guard disabled"; return 1; }
   [ -f "$staging/hooks/git-guard-lib.sh" ] || {
     guard_error "merge refresh blocked: staging hook library 不存在"; return 1;
   }
-  guard_merge_gate_validate "$wt" "$main" stale-ok || return 1
+
+  guard_recovery_common_preflight "$wt" "$main" || return 1
+  initial_relation="$GUARD_RECOVERY_RELATION"
+  case "$initial_relation" in
+    pre-refresh-stale|synced) ;;
+    *) guard_recovery_relation_blocked REFRESH "$initial_relation" "$main"; return 1 ;;
+  esac
+  outside_facts="$GUARD_RECOVERY_FACTS_FINGERPRINT"
+  outside_non_target="$GUARD_RECOVERY_NON_TARGET_FINGERPRINT"
+  outside_staging="$GUARD_RECOVERY_TARGET_STAGING_OID"
+
   state="$staging/git-guard"
   mkdir -p "$state/transactions"
-
-  # 隔离 hook 定义与 GIT_DIR；调用者（zmerge）后续仍在 task worktree。
-  local GIT_DIR="$staging"
-  export GIT_DIR
   # shellcheck source=/dev/null
   . "$staging/hooks/git-guard-lib.sh"
   GUARD_REFRESH_LOCK_STATE="$state"
@@ -987,51 +1177,71 @@ guard_refresh_staging_for_merge() (
   }
   trap 'guard_lock_release "$GUARD_REFRESH_LOCK_STATE"' EXIT
 
-  # 互斥内再次核对 durable facts；pending/failed/unknown 不能连 snapshot
-  # 都盲目刷新，防止把这次 merge 的无关 refresh 变成隐式 replay。
-  if ! guard_transaction_consistency "$state"; then
-    guard_err "merge refresh blocked: transaction/lease facts 不明确（${GUARD_TRANSACTION_ERROR:-unknown}）；请显式 new guard sync 核对"
-    return 1
+  guard_refresh_staging_after_lock "$wt" "$main" "$staging" || {
+    guard_err "merge refresh blocked: lock provider mutation failed"; return 1;
+  }
+
+  if [ "$initial_relation" = synced ]; then
+    guard_recovery_post_refresh_preflight "$wt" "$main" || return 1
+  else
+    guard_recovery_pre_refresh_preflight "$wt" "$main" || return 1
+  fi
+  [ "$GUARD_RECOVERY_FACTS_FINGERPRINT" = "$outside_facts" ] || {
+    guard_err "merge refresh blocked: lock 外到锁内 recovery facts 改变，未产生 refresh 副作用"; return 1;
+  }
+
+  if [ "$initial_relation" = synced ]; then
+    printf 'phase=REFRESH\nresult=noop\ntarget_snapshot_oid=%s\ntarget_staging_oid=%s\ntransaction_fingerprint=%s\nroute_identity_fingerprint=%s\nunrelated_ref_fingerprint=%s\n' \
+      "$GUARD_RECOVERY_TARGET_SNAPSHOT_OID" "$GUARD_RECOVERY_TARGET_STAGING_OID" \
+      "$GUARD_RECOVERY_TRANSACTION_FINGERPRINT" "$GUARD_RECOVERY_ROUTE_IDENTITY_FINGERPRINT" \
+      "$GUARD_RECOVERY_UNRELATED_REF_FINGERPRINT"
+    return 0
   fi
 
-  # durable facts 已明确后，只更新目标 main snapshot，不重放任何 transaction。
   if ! guard_snapshot_github "$staging" "refs/heads/${main}"; then
-    guard_err "merge refresh blocked: GitHub snapshot 刷新失败"; return 1
+    guard_err "merge refresh blocked: GitHub snapshot 刷新失败"; return 1;
   fi
   guard_refresh_staging_after_snapshot "$wt" "$main" "$staging" || {
     guard_err "merge refresh blocked: refresh provider mutation failed"; return 1;
   }
 
-  snapshot_main="$(guard_rev "$staging" "${GUARD_SNAP}/heads/${main}")"
-  staging_main="$(guard_rev "$staging" "refs/heads/${main}")"
-  [ -n "$snapshot_main" ] || { guard_err "merge refresh blocked: GitHub snapshot 没有 ${main}"; return 1; }
-  [ -n "$staging_main" ] || { guard_err "merge refresh blocked: staging 没有 ${main}"; return 1; }
+  # 真正 update-ref 前的最后一轮锁内 pre-refresh validation。snapshot main
+  # 可以被 scoped fetch 更新，staging main 与非 target facts 不得变化。
+  guard_recovery_pre_refresh_preflight "$wt" "$main" || return 1
+  [ "$GUARD_RECOVERY_NON_TARGET_FINGERPRINT" = "$outside_non_target" ] || {
+    guard_err "merge refresh blocked: lock 内 route/identity/transaction/unrelated facts 改变"; return 1;
+  }
+  [ "$GUARD_RECOVERY_TARGET_STAGING_OID" = "$outside_staging" ] || {
+    guard_err "merge refresh blocked: lock 内 staging ${main} 已改变，拒绝 update-ref"; return 1;
+  }
 
-  # 除 main 外所有 staging heads 都必须已与同一 snapshot 相等；这使得
-  # update-ref 的影响域可证明只有 main，不会夹带 unrelated write。
-  if ! diff -u \
-      <(git --git-dir="$staging" for-each-ref --format='%(refname) %(objectname)' refs/heads |
-          awk -v main="refs/heads/${main}" '$1 != main { sub("^refs/heads/", "refs/guard/github/heads/", $1); print }' |
-          LC_ALL=C sort) \
-      <(git --git-dir="$staging" for-each-ref --format='%(refname) %(objectname)' "${GUARD_SNAP}/heads" |
-          awk -v main="${GUARD_SNAP}/heads/${main}" '$1 != main { print }' |
-          LC_ALL=C sort) >/dev/null 2>&1; then
-    guard_err "merge refresh blocked: unrelated staging refs 与 snapshot 不一致"; return 1
-  fi
-  if [ "$staging_main" = "$snapshot_main" ]; then
-    printf 'noop\n'
-    return 0
-  fi
+  snapshot_main="$GUARD_RECOVERY_TARGET_SNAPSHOT_OID"
+  staging_main="$GUARD_RECOVERY_TARGET_STAGING_OID"
+  [ -n "$snapshot_main" ] && [ -n "$staging_main" ] || {
+    guard_err "merge refresh blocked: refresh target refs 缺失"; return 1;
+  }
   git --git-dir="$staging" merge-base --is-ancestor "$staging_main" "$snapshot_main" || {
-    guard_err "merge refresh blocked: staging ${main} 不是 snapshot 的祖先（非单向 stale）"; return 1;
+    guard_err "merge refresh blocked: staging ${main} 不是 snapshot 的祖先"; return 1;
+  }
+  [ "$staging_main" != "$snapshot_main" ] || {
+    guard_err "merge refresh blocked: update target 已经 synced，拒绝猜测 noop"; return 1;
   }
   git --git-dir="$staging" update-ref "refs/heads/${main}" "$snapshot_main" "$staging_main" || {
     guard_err "merge refresh blocked: scoped update-ref ${main} 失败"; return 1;
   }
-  [ "$(guard_rev "$staging" "refs/heads/${main}")" = "$snapshot_main" ] || {
-    guard_err "merge refresh blocked: refresh 后 ${main} 仍未与 snapshot 对齐"; return 1;
+  target_staging_oid="$(guard_rev "$staging" "refs/heads/${main}")"
+  [ "$target_staging_oid" = "$snapshot_main" ] || {
+    guard_err "merge refresh blocked: update-ref 未产生目标 staging OID"; return 1;
   }
-  printf 'refreshed\n'
+
+  tx_fingerprint="$(guard_transaction_fingerprint "$staging/git-guard")" || return 1
+  route_fingerprint="$(guard_recovery_route_identity_fingerprint)" || return 1
+  unrelated_fingerprint="$(guard_recovery_unrelated_ref_fingerprint "$staging" "$main" "${GUARD_SNAP:-refs/guard/github}")" || return 1
+  guard_refresh_staging_after_update "$wt" "$main" "$staging" || {
+    guard_err "merge refresh blocked: post-update provider mutation failed"; return 1;
+  }
+  printf 'phase=REFRESH\nresult=refreshed\ntarget_snapshot_oid=%s\ntarget_staging_oid=%s\ntransaction_fingerprint=%s\nroute_identity_fingerprint=%s\nunrelated_ref_fingerprint=%s\n' \
+    "$snapshot_main" "$target_staging_oid" "$tx_fingerprint" "$route_fingerprint" "$unrelated_fingerprint"
 )
 
 # push/receivepack 失败的唯一归因入口。输出只报告故障域，不回显可能含凭据
@@ -1333,6 +1543,45 @@ guard_require_wired() {
     err_code guard.not_wired "    ✗ origin receivepack 必须是 guard wrapper"
     return 1
   fi
+  return 0
+}
+
+# 这是实际 task push 的最后一道 transport boundary。入口 preflight 通过后，
+# caller 仍可能改写 config.worktree；这里重新读取全部 layer/value/multiplicity、
+# canonical destination、receivepack、claim provenance 与 repo identity，任何
+# 变化都必须发生在 git push 之前。
+guard_actual_push_transport_preflight() {
+  local wt="$1" staging state
+  GUARD_ACTUAL_PUSH_STATE=""
+  if task_is_main_worktree "$wt"; then
+    GUARD_ACTUAL_PUSH_STATE=guard-disabled
+    return 0
+  fi
+  staging="$(guard_staging_git)"
+  if [ ! -d "$staging" ]; then
+    GUARD_ACTUAL_PUSH_STATE=guard-disabled
+    return 0
+  fi
+  guard_require_wired "$wt" || return 1
+  state="$(guard_origin_transport_classify "$wt")"
+  case "$state" in
+    canonical) ;;
+    *) err_code guard.push_transport "actual push boundary transport 非 canonical（${state:-unknown}），BLOCK"; return 1 ;;
+  esac
+  guard_claim_transport_validate "$wt" || return 1
+  guard_validate_staging_source_identity "$wt" "$staging" || return 1
+  guard_effective_guard_route "$wt" "$staging" || {
+    err_code guard.push_route "actual push boundary 未指向 canonical Guard route，BLOCK"
+    return 1
+  }
+  [ "${GUARD_ORIGIN_SHARED_URL_COUNT:-0}" = 1 ] \
+    && [ "${GUARD_ORIGIN_EFFECTIVE_FETCH_COUNT:-0}" = 1 ] \
+    && [ "${GUARD_ORIGIN_EFFECTIVE_PUSH_COUNT:-0}" = 1 ] \
+    && [ "${GUARD_ORIGIN_EFFECTIVE_RECEIVEPACK_COUNT:-0}" = 1 ] || {
+      err_code guard.push_transport "actual push boundary transport multiplicity 不明确，BLOCK"
+      return 1
+    }
+  GUARD_ACTUAL_PUSH_STATE=canonical
   return 0
 }
 
