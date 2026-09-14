@@ -214,6 +214,7 @@ make_repo r1-unbound
 TEST_STAGING="$R_ST"
 install_stage_remote "$R_ST" "$R_ORIGIN"
 guard_wire_worktree "$R_A"
+COMMON="$(guard_common_config_file "$R_MAIN")"
 printf 'unbound\n' >> "$R_A/README"
 git -C "$R_A" add README
 git -C "$R_A" commit -qm 'fixture: unbound push'
@@ -277,6 +278,84 @@ make_repo r3
 TEST_STAGING="$R_ST"
 install_stage_remote "$R_ST" "$R_ORIGIN"
 guard_wire_worktree "$R_A"
+COMMON="$(guard_common_config_file "$R_MAIN")"
+
+# origin transport 的安全判定必须覆盖全部 effective destination 与全部
+# config layer；这里每一项都直接调用 production guard gate，而不是只测
+# parser 或 grep 配置文件。
+expect_eq 'R1 origin canonical transport 是单层 canonical' canonical \
+  "$(guard_origin_transport_classify "$R_A")"
+expect_true 'R1 canonical origin require_wired PASS' 'guard_require_wired "$R_A"'
+expect_true 'R1 canonical origin merge gate PASS' \
+  'guard_merge_gate_validate "$R_A" main synced'
+
+ORIGIN_CUSTOM="$TDIR/custom-origin.git"
+git -C "$R_A" config --worktree --add remote.origin.pushurl "$ORIGIN_CUSTOM"
+expect_eq 'R1 origin canonical+custom 是 ambiguous' ambiguous \
+  "$(guard_origin_transport_classify "$R_A")"
+run_fail R1_ORIGIN_MIXED_OUT guard_require_wired "$R_A"
+expect_true 'R1 origin canonical+custom require_wired BLOCK' \
+  'printf "%s\n" "$R1_ORIGIN_MIXED_OUT" | grep -Eiq "多值|混合|歧义|ambiguous|transport"'
+run_fail R1_ORIGIN_MIXED_GATE_OUT guard_merge_gate_validate "$R_A" main synced
+expect_true 'R1 origin canonical+custom merge gate BLOCK' \
+  'printf "%s\n" "$R1_ORIGIN_MIXED_GATE_OUT" | grep -Eiq "多值|混合|歧义|ambiguous|transport"'
+expect_eq 'R1 origin canonical+custom effective values 全保留' 2 \
+  "$(git -C "$R_A" remote get-url --all --push origin | wc -l | tr -d ' ')"
+git -C "$R_A" config --worktree --unset-all remote.origin.pushurl
+git -C "$R_A" config --worktree remote.origin.pushurl "$R_ST"
+
+git -C "$R_A" config --worktree --add remote.origin.pushurl "$R_ST"
+expect_eq 'R1 origin 两个 canonical pushurl 仍 ambiguous' ambiguous \
+  "$(guard_origin_transport_classify "$R_A")"
+run_fail R1_ORIGIN_DUP_OUT guard_require_wired "$R_A"
+expect_true 'R1 origin 两个 canonical pushurl require_wired BLOCK' \
+  'printf "%s\n" "$R1_ORIGIN_DUP_OUT" | grep -Eiq "多值|歧义|ambiguous|transport"'
+git -C "$R_A" config --worktree --unset-all remote.origin.pushurl
+git -C "$R_A" config --worktree remote.origin.pushurl "$R_ST"
+
+git -C "$R_A" config --worktree --unset-all remote.origin.pushurl
+git -C "$R_A" config --worktree remote.origin.pushurl "$ORIGIN_CUSTOM"
+expect_eq 'R1 origin custom-only 是 mixed' mixed \
+  "$(guard_origin_transport_classify "$R_A")"
+run_fail R1_ORIGIN_CUSTOM_OUT guard_require_wired "$R_A"
+expect_true 'R1 origin custom-only require_wired BLOCK' \
+  'printf "%s\n" "$R1_ORIGIN_CUSTOM_OUT" | grep -Eiq "自定义|custom|transport"'
+git -C "$R_A" config --worktree --unset-all remote.origin.pushurl
+git -C "$R_A" config --worktree remote.origin.pushurl "$R_ST"
+
+# 同值也不能跨层：shared origin.pushurl 与 worktree-local canonical 同时
+# 存在时，不能因为 effective destination 最后相同就放行。
+git config --file "$COMMON" remote.origin.pushurl "$R_ST"
+expect_eq 'R1 origin shared/worktree same-value 是 mixed' mixed \
+  "$(guard_origin_transport_classify "$R_A")"
+run_fail R1_ORIGIN_LAYER_OUT guard_require_wired "$R_A"
+expect_true 'R1 origin shared/worktree mixed require_wired BLOCK' \
+  'printf "%s\n" "$R1_ORIGIN_LAYER_OUT" | grep -Eiq "legacy|混合|歧义|transport"'
+run_fail R1_ORIGIN_LAYER_GATE_OUT guard_merge_gate_validate "$R_A" main synced
+expect_true 'R1 origin shared/worktree mixed merge gate BLOCK' \
+  'printf "%s\n" "$R1_ORIGIN_LAYER_GATE_OUT" | grep -Eiq "legacy|混合|歧义|transport"'
+git config --file "$COMMON" --unset-all remote.origin.pushurl
+
+ORIGIN_RECEIVE_CUSTOM="$TDIR/custom-origin-receivepack"
+git -C "$R_A" config --worktree --unset-all remote.origin.receivepack
+git -C "$R_A" config --worktree remote.origin.receivepack "$ORIGIN_RECEIVE_CUSTOM"
+expect_eq 'R1 origin custom receivepack 是 mixed' mixed \
+  "$(guard_origin_transport_classify "$R_A")"
+run_fail R1_ORIGIN_RECEIVE_CUSTOM_OUT guard_require_wired "$R_A"
+expect_true 'R1 origin custom receivepack require_wired BLOCK' \
+  'printf "%s\n" "$R1_ORIGIN_RECEIVE_CUSTOM_OUT" | grep -Eiq "自定义|custom|transport"'
+git -C "$R_A" config --worktree --unset-all remote.origin.receivepack
+git -C "$R_A" config --worktree remote.origin.receivepack "$R_ST/hooks/guard-receive-pack"
+
+git -C "$R_A" config --worktree --add remote.origin.receivepack "$ORIGIN_RECEIVE_CUSTOM"
+expect_eq 'R1 origin receivepack canonical+custom 是 ambiguous' ambiguous \
+  "$(guard_origin_transport_classify "$R_A")"
+run_fail R1_ORIGIN_RECEIVE_MULTI_OUT guard_merge_gate_validate "$R_A" main synced
+expect_true 'R1 origin receivepack 多值 merge gate BLOCK' \
+  'printf "%s\n" "$R1_ORIGIN_RECEIVE_MULTI_OUT" | grep -Eiq "多值|混合|歧义|ambiguous|transport"'
+git -C "$R_A" config --worktree --unset-all remote.origin.receivepack
+git -C "$R_A" config --worktree remote.origin.receivepack "$R_ST/hooks/guard-receive-pack"
+
 R3_OLD="$(git --git-dir="$R_ST" rev-parse refs/heads/main)"
 git --git-dir="$R_ST" update-ref refs/heads/unrelated "$R3_OLD"
 git --git-dir="$R_ST" update-ref refs/guard/github/heads/unrelated "$R3_OLD"

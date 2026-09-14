@@ -308,6 +308,7 @@ zmerge_reread_all_merge_gates() {
   local relation="${1:-synced}" pr pr_num js head_oid pr_body
 
   zmerge_reread_head_branch_main_gates || return 1
+  zmerge_reread_branch_gate || return 1
   z_require_passing_review || return 1
   z_require_auto_merge_safe_review || return 1
   zmerge_reread_contract_gate || return 1

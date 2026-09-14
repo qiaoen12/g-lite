@@ -149,6 +149,161 @@ guard_origin_value_kind() {
   fi
 }
 
+# 当前 task origin transport 的完整事实。canonical layout 是：
+#   shared:    remote.origin.url（恰好一个）
+#   worktree:  remote.origin.pushurl=staging（恰好一个）
+#              remote.origin.receivepack=guard wrapper（恰好一个）
+# 同一个 key 不得跨 shared/worktree 重复；effective push/receivepack 也必须
+# 恰好只有一个值。不能只用 `remote get-url --push` 或 `config --get` 的第一项。
+# 输出状态：absent|canonical|custom|mixed|ambiguous；所有层和值另存到
+# GUARD_ORIGIN_*，供 wire、require_wired、merge gate 共享同一判定。
+guard_origin_transport_classify() {
+  local wt="$1" common worktree_cfg staging wrapper enabled
+  local shared_url shared_push shared_receive local_url local_push local_receive
+  local effective_fetch effective_push effective_receive
+  local shared_url_n shared_push_n shared_receive_n local_url_n local_push_n local_receive_n
+  local effective_fetch_n effective_push_n effective_receive_n
+  local push_kind receive_kind state=custom detail=""
+
+  common="$(guard_common_config_file "$wt" 2>/dev/null || true)"
+  [ -n "$common" ] || {
+    GUARD_ORIGIN_STATE=ambiguous
+    GUARD_ORIGIN_DETAIL='shared config unreadable'
+    printf 'ambiguous\n'
+    return 0
+  }
+  staging="$(guard_staging_git)"
+  wrapper="$staging/hooks/guard-receive-pack"
+  worktree_cfg="$(guard_worktree_config_file "$wt" 2>/dev/null || true)"
+  enabled="$(git config --file "$common" --bool --get extensions.worktreeConfig 2>/dev/null || true)"
+
+  shared_url="$(git config --file "$common" --get-all remote.origin.url 2>/dev/null || true)"
+  shared_push="$(git config --file "$common" --get-all remote.origin.pushurl 2>/dev/null || true)"
+  shared_receive="$(git config --file "$common" --get-all remote.origin.receivepack 2>/dev/null || true)"
+  if [ -f "$worktree_cfg" ]; then
+    local_url="$(git config --file "$worktree_cfg" --get-all remote.origin.url 2>/dev/null || true)"
+    local_push="$(git config --file "$worktree_cfg" --get-all remote.origin.pushurl 2>/dev/null || true)"
+    local_receive="$(git config --file "$worktree_cfg" --get-all remote.origin.receivepack 2>/dev/null || true)"
+  else
+    local_url=""
+    local_push=""
+    local_receive=""
+  fi
+
+  effective_fetch="$(env -u GIT_DIR -u GIT_WORK_TREE git -C "$wt" config \
+    --get-all remote.origin.url 2>/dev/null || true)"
+  effective_push="$(env -u GIT_DIR -u GIT_WORK_TREE git -C "$wt" \
+    remote get-url --all --push origin 2>/dev/null || true)"
+  effective_receive="$(env -u GIT_DIR -u GIT_WORK_TREE git -C "$wt" config \
+    --get-all remote.origin.receivepack 2>/dev/null || true)"
+
+  shared_url_n="$(guard_transport_value_count "$shared_url")"
+  shared_push_n="$(guard_transport_value_count "$shared_push")"
+  shared_receive_n="$(guard_transport_value_count "$shared_receive")"
+  local_url_n="$(guard_transport_value_count "$local_url")"
+  local_push_n="$(guard_transport_value_count "$local_push")"
+  local_receive_n="$(guard_transport_value_count "$local_receive")"
+  effective_fetch_n="$(guard_transport_value_count "$effective_fetch")"
+  effective_push_n="$(guard_transport_value_count "$effective_push")"
+  effective_receive_n="$(guard_transport_value_count "$effective_receive")"
+
+  GUARD_ORIGIN_SHARED_URL_VALUES="$shared_url"
+  GUARD_ORIGIN_SHARED_PUSHURL_VALUES="$shared_push"
+  GUARD_ORIGIN_SHARED_RECEIVEPACK_VALUES="$shared_receive"
+  GUARD_ORIGIN_WORKTREE_URL_VALUES="$local_url"
+  GUARD_ORIGIN_WORKTREE_PUSHURL_VALUES="$local_push"
+  GUARD_ORIGIN_WORKTREE_RECEIVEPACK_VALUES="$local_receive"
+  GUARD_ORIGIN_EFFECTIVE_FETCH_VALUES="$effective_fetch"
+  GUARD_ORIGIN_EFFECTIVE_PUSH_VALUES="$effective_push"
+  GUARD_ORIGIN_EFFECTIVE_RECEIVEPACK_VALUES="$effective_receive"
+  GUARD_ORIGIN_SHARED_URL_COUNT="$shared_url_n"
+  GUARD_ORIGIN_SHARED_PUSHURL_COUNT="$shared_push_n"
+  GUARD_ORIGIN_SHARED_RECEIVEPACK_COUNT="$shared_receive_n"
+  GUARD_ORIGIN_WORKTREE_URL_COUNT="$local_url_n"
+  GUARD_ORIGIN_WORKTREE_PUSHURL_COUNT="$local_push_n"
+  GUARD_ORIGIN_WORKTREE_RECEIVEPACK_COUNT="$local_receive_n"
+  GUARD_ORIGIN_EFFECTIVE_FETCH_COUNT="$effective_fetch_n"
+  GUARD_ORIGIN_EFFECTIVE_PUSH_COUNT="$effective_push_n"
+  GUARD_ORIGIN_EFFECTIVE_RECEIVEPACK_COUNT="$effective_receive_n"
+
+  if [ "$shared_url_n" != 1 ]; then
+    state=ambiguous
+    detail="shared remote.origin.url 必须恰好一个（${shared_url_n} 个）"
+  elif [ "$local_url_n" != 0 ]; then
+    state=mixed
+    detail="remote.origin.url 同时存在 shared/worktree-local 层"
+  elif [ "$shared_push_n" != 0 ] || [ "$shared_receive_n" != 0 ]; then
+    state=mixed
+    detail="origin push/receivepack 同时存在 shared 层；task transport 必须只在 worktree-local"
+  elif [ "$enabled" != true ] && { [ "$local_push_n" != 0 ] || [ "$local_receive_n" != 0 ]; }; then
+    state=ambiguous
+    detail='worktree-local origin transport 存在但 extensions.worktreeConfig 未启用'
+  else
+    push_kind="$(guard_transport_value_kind "$local_push" "$staging")"
+    receive_kind="$(guard_transport_value_kind "$local_receive" "$wrapper")"
+    if [ "$push_kind" = expected ] && [ "$receive_kind" = expected ]; then
+      state=canonical
+      detail='origin url/pushurl/receivepack effective transport canonical'
+    elif [ "$push_kind" = absent ] && [ "$receive_kind" = absent ]; then
+      state=absent
+      detail='task-local origin push/receivepack absent'
+    elif [ "$push_kind" = ambiguous ] || [ "$receive_kind" = ambiguous ]; then
+      state=ambiguous
+      detail='origin push/receivepack multi-value or ambiguous'
+    elif { [ "$push_kind" = expected ] || [ "$receive_kind" = expected ]; } \
+        && { [ "$push_kind" = custom ] || [ "$receive_kind" = custom ]; }; then
+      state=mixed
+      detail='origin push/receivepack canonical and custom values mixed'
+    else
+      state=custom
+      detail='origin task transport custom or incomplete'
+    fi
+  fi
+
+  # raw layer 看似 canonical 仍不够；Git 实际生效的 destination 也必须是
+  # 单值且精确命中，防止第一项正确、第二项隐藏在 effective config 中。
+  if [ "$state" = canonical ]; then
+    if [ "$effective_fetch_n" != 1 ] || [ "$effective_push_n" != 1 ] \
+        || [ "$effective_receive_n" != 1 ]; then
+      state=ambiguous
+      detail="effective origin transport 不是单值（fetch=${effective_fetch_n}, push=${effective_push_n}, receivepack=${effective_receive_n}）"
+    elif [ "$(guard_transport_value_kind "$effective_push" "$staging")" != expected ] \
+        || [ "$(guard_transport_value_kind "$effective_receive" "$wrapper")" != expected ]; then
+      state=ambiguous
+      detail='effective origin push/receivepack 未精确命中 Guard staging/wrapper'
+    fi
+  fi
+
+  GUARD_ORIGIN_STATE="$state"
+  GUARD_ORIGIN_DETAIL="$detail"
+  printf '%s\n' "$state"
+}
+
+guard_origin_transport_preflight() {
+  local wt="$1" state
+  guard_origin_transport_classify "$wt" >/dev/null || return 1
+  state="$GUARD_ORIGIN_STATE"
+  case "$state" in
+    canonical) return 0 ;;
+    absent)
+      err_code guard.not_wired "    ✗ task origin transport 未完整接线（${GUARD_ORIGIN_DETAIL:-absent}）"
+      return 1
+      ;;
+    custom)
+      err_code guard.custom_transport "    ✗ task origin transport 含用户自定义值（${GUARD_ORIGIN_DETAIL:-custom}），fail-closed"
+      return 1
+      ;;
+    mixed|ambiguous)
+      err_code guard.transport_ambiguous "    ✗ task origin transport 有混合、多值或歧义（${GUARD_ORIGIN_DETAIL:-$state}），fail-closed"
+      return 1
+      ;;
+    *)
+      err_code guard.transport_ambiguous "    ✗ task origin transport 状态未知（${state:-unknown}），fail-closed"
+      return 1
+      ;;
+  esac
+}
+
 # 从一组 config 值中取且仅取一个值。返回失败时不猜测是缺失还是多值，
 # 由调用方读取 GUARD_CONFIG_VALUE_COUNT 给出 fail-closed 诊断。
 guard_config_one_value() {
@@ -460,11 +615,12 @@ guard_common_transport_classify() {
 }
 
 guard_effective_guard_route() {
-  local wt="$1" staging="$2" push rp line
-  push="$(git -C "$wt" remote get-url --push origin 2>/dev/null || true)"
-  if guard_transport_value_matches "$push" "$staging"; then
-    return 0
-  fi
+  local wt="$1" staging="$2" push_values rp line
+  push_values="$(git -C "$wt" remote get-url --all --push origin 2>/dev/null || true)"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    guard_transport_value_matches "$line" "$staging" && return 0
+  done <<< "$push_values"
   rp="$(git -C "$wt" config --get-all remote.origin.receivepack 2>/dev/null || true)"
   while IFS= read -r line; do
     [ -n "$line" ] || continue
@@ -474,14 +630,17 @@ guard_effective_guard_route() {
 }
 
 guard_effective_custom_transport() {
-  local wt="$1" staging="$2" fetch push rp line
+  local wt="$1" staging="$2" fetch push_values rp line
   fetch="$(task_origin_fetch_url "$wt")"
   staging="${staging:-$(guard_staging_git)}"
-  push="$(git -C "$wt" remote get-url --push origin 2>/dev/null || true)"
-  if [ -n "$push" ] && [ "$push" != "$fetch" ] \
-      && ! guard_transport_value_matches "$push" "$staging"; then
-    return 0
-  fi
+  push_values="$(git -C "$wt" remote get-url --all --push origin 2>/dev/null || true)"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    if [ "$line" != "$fetch" ] \
+        && ! guard_transport_value_matches "$line" "$staging"; then
+      return 0
+    fi
+  done <<< "$push_values"
   rp="$(git -C "$wt" config --get-all remote.origin.receivepack 2>/dev/null || true)"
   while IFS= read -r line; do
     [ -n "$line" ] || continue
@@ -512,7 +671,7 @@ guard_print_transport_config() {
       | guard_redact_transport || true
   fi
   echo "effective fetch $(git -C "$wt" remote get-url origin 2>/dev/null | guard_redact_transport || true)"
-  echo "effective push  $(git -C "$wt" remote get-url --push origin 2>/dev/null | guard_redact_transport || true)"
+  echo "effective push  $(git -C "$wt" remote get-url --all --push origin 2>/dev/null | guard_redact_transport || true)"
   echo "effective receivepack $(git -C "$wt" config --get-all remote.origin.receivepack 2>/dev/null | guard_redact_transport || true)"
 }
 
@@ -707,6 +866,13 @@ guard_transaction_fingerprint() {
   local state="$1" root file rel
   root="$state/transactions"
   [ -d "$root" ] || { printf 'none\n'; return 0; }
+  # refresh 会为互斥生命周期创建空 transactions 目录；空容器没有任何
+  # durable transaction fact，必须与目录尚不存在保持同一 fingerprint，
+  # 否则 recovery 自己的准备动作会被误报成 TOCTOU 变化。
+  [ -n "$(find "$root" -type f -print -quit 2>/dev/null || true)" ] || {
+    printf 'none\n'
+    return 0
+  }
   {
     find "$root" -type f -print | LC_ALL=C sort | while IFS= read -r file; do
       rel="${file#"$root"/}"
@@ -719,6 +885,12 @@ guard_transaction_fingerprint() {
   else
     sha256sum | awk '{print $1}'
   fi
+}
+
+# 仅供测试/外部 refresh provider 在 scoped fetch 完成后注入可观察的
+# durable-state mutation；生产默认 no-op，不承担任何放行判断。
+guard_refresh_staging_after_snapshot() {
+  :
 }
 
 # merge gate 只验证当前 task 与同一 staging 的关系，不更新任何 ref。
@@ -765,9 +937,16 @@ guard_merge_gate_validate() {
     git --git-dir="$staging" for-each-ref --format='%(refname) %(objectname)' "${snap}/heads" |
       awk -v main="${snap}/heads/${main}" '$1 != main { print }'
   } | LC_ALL=C sort)"
-  push="$(git -C "$wt" remote get-url --push origin 2>/dev/null || true)"
-  rp="$(git -C "$wt" config --get-all remote.origin.receivepack 2>/dev/null || true)"
-  claim="$(git -C "$wt" remote get-url claim 2>/dev/null || true)"
+  push="${GUARD_ORIGIN_EFFECTIVE_PUSH_VALUES:-}"
+  rp="${GUARD_ORIGIN_EFFECTIVE_RECEIVEPACK_VALUES:-}"
+  claim="$( {
+    printf 'url(shared)=%s\n' "${GUARD_CLAIM_SHARED_URL_VALUES:-}"
+    printf 'pushurl(shared)=%s\n' "${GUARD_CLAIM_SHARED_PUSHURL_VALUES:-}"
+    printf 'receivepack(shared)=%s\n' "${GUARD_CLAIM_SHARED_RECEIVEPACK_VALUES:-}"
+    printf 'url(worktree)=%s\n' "${GUARD_CLAIM_WORKTREE_URL_VALUES:-}"
+    printf 'pushurl(worktree)=%s\n' "${GUARD_CLAIM_WORKTREE_PUSHURL_VALUES:-}"
+    printf 'receivepack(worktree)=%s\n' "${GUARD_CLAIM_WORKTREE_RECEIVEPACK_VALUES:-}"
+  } )"
   GUARD_MERGE_GATE_FINGERPRINT="$({
     printf 'identity=%s/%s\n' "$GUARD_CANDIDATE_REPO_IDENTITY" "$GUARD_STAGING_REPO_IDENTITY"
     printf 'transaction=%s\n' "$tx_fingerprint"
@@ -819,6 +998,9 @@ guard_refresh_staging_for_merge() (
   if ! guard_snapshot_github "$staging" "refs/heads/${main}"; then
     guard_err "merge refresh blocked: GitHub snapshot 刷新失败"; return 1
   fi
+  guard_refresh_staging_after_snapshot "$wt" "$main" "$staging" || {
+    guard_err "merge refresh blocked: refresh provider mutation failed"; return 1;
+  }
 
   snapshot_main="$(guard_rev "$staging" "${GUARD_SNAP}/heads/${main}")"
   staging_main="$(guard_rev "$staging" "refs/heads/${main}")"
@@ -1089,9 +1271,10 @@ guard_wire_worktree() {
     *) err_code guard.custom_transport "    ✗ task-local origin receivepack 有自定义或多值，拒绝覆盖"; return 1 ;;
   esac
   task_ensure_claim_remote "$wt" || return 1
-  push="$(git -C "$wt" remote get-url --push origin 2>/dev/null || true)"
+  guard_origin_transport_preflight "$wt" || return 1
+  push="${GUARD_ORIGIN_EFFECTIVE_PUSH_VALUES:-}"
   now_claim="$(git -C "$wt" remote get-url claim 2>/dev/null || true)"
-  if [ "$push" != "$staging" ]; then
+  if ! guard_transport_value_matches "$push" "$staging"; then
     err_code guard.wire_push "    ✗ origin push URL 不是 staging"; return 1
   fi
   if [ "$now_claim" != "$fetch" ]; then
@@ -1129,9 +1312,10 @@ guard_require_wired() {
     err_code guard.not_worktree_local "    ✗ task transport 未启用 worktree-local config，fail-closed；请重新 new task bind <n>"; return 1;
   }
   fetch="$(task_origin_fetch_url "$wt")"
-  push="$(git -C "$wt" remote get-url --push origin 2>/dev/null || true)"
+  guard_origin_transport_preflight "$wt" || return 1
+  push="${GUARD_ORIGIN_EFFECTIVE_PUSH_VALUES:-}"
   now_claim="$(git -C "$wt" remote get-url claim 2>/dev/null || true)"
-  if [ "$push" != "$staging" ]; then
+  if ! guard_transport_value_matches "$push" "$staging"; then
     err_code guard.not_wired "    ✗ origin push URL 必须是 staging，不得直达 GitHub"
     echo "      修复：new task bind <n>"
     return 1
@@ -1144,7 +1328,7 @@ guard_require_wired() {
     err_code guard.wire_claim "    ✗ claim remote 必须等于 origin fetch URL"
     return 1
   fi
-  rp="$(git -C "$wt" config --get remote.origin.receivepack 2>/dev/null || true)"
+  rp="${GUARD_ORIGIN_EFFECTIVE_RECEIVEPACK_VALUES:-}"
   if [ "$rp" != "$staging/hooks/guard-receive-pack" ]; then
     err_code guard.not_wired "    ✗ origin receivepack 必须是 guard wrapper"
     return 1
