@@ -23,6 +23,10 @@ canonical CLI 读取 binding + origin/main Contract，执行状态与范围门�
 
 原样返回 canonical CLI 的 Issue、Contract、branch、derived state、scope、HEAD、下一步和验证结果；失败也返回 reason code 与下一条命令。
 
+## 完成态
+
+开发交接只能发生在最终实现已进入明确 Git HEAD 且 worktree clean：untracked=0、unstaged=0、staged=0。`git add`、index.lock 或 `git commit` 失败时报告「未完成 / BLOCKED」，不写完成 Checkpoint；`new check --tier commit` 只证明暂存区检查，不证明 completion。无改动时必须明确报告 `no-change` 并保持 clean。
+
 ## 不做
 
 不读取或复制 claim、scope、Review、validator、merge 算法；不 push、建 PR、改 Project、合并、关闭 Issue、删除工作树或本地分支。

@@ -19,6 +19,8 @@ user-invocable: true
 new z review [--actor <id>] [--allow-self] <review-input>
 ```
 
+写 Review 前 canonical runtime 会只读核验 committed + clean HEAD，并报告固定 HEAD 及 untracked/unstaged/staged 分类；任一 dirty、持久化异常或基线/提交证据缺失都 fail-closed。Reviewer 不得自动 add、commit、stash 或删除 untracked。
+
 ## 返回用户
 
 原样返回 canonical CLI 写入的 Verdict、reviewed HEAD、Contract 对照、Squash-Title、验证证据与下一步。

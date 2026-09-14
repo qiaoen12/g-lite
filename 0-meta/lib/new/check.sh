@@ -344,9 +344,30 @@ verdict() {
   local tier="$1" fail="$2"
   if [ "$fail" != 0 ]; then c_err "${tier} 档发现硬失败项"; exit 1; fi
   if [ "$WARN_N" = 0 ]; then
-    c_ok "${tier} 档通过（外部检查脚本的告警不计入本行，见上方输出）"
+    if [ "$tier" = commit ]; then
+      c_ok "commit 档暂存区通过（只检查暂存区；不构成开发完成、修复完成或 review-ready）"
+    else
+      c_ok "${tier} 档通过（外部检查脚本的告警不计入本行，见上方输出）"
+    fi
   else
-    c_warn "${tier} 档无硬失败，但有 ${WARN_N} 项告警未处理（不含外部检查脚本自己打的）"
+    if [ "$tier" = commit ]; then
+      c_warn "commit 档暂存区无硬失败，但有 ${WARN_N} 项告警未处理；不构成开发完成、修复完成或 review-ready"
+    else
+      c_warn "${tier} 档无硬失败，但有 ${WARN_N} 项告警未处理（不含外部检查脚本自己打的）"
+    fi
+  fi
+}
+
+# commit 档故意只看 index；同时展示当前工作树事实，避免空 staged set 的 PASS
+# 被误读成当前实现已经完成。这个提示不改变 commit 档原有的返回码口径。
+commit_tier_completion_note() {
+  local head
+  head="$(git -C "$ROOT" rev-parse --verify HEAD 2>/dev/null || true)"
+  if task_worktree_status_counts "$ROOT"; then
+    printf '    说明：commit 档只检查暂存区；HEAD=%s；untracked=%s；unstaged=%s；staged=%s。即使本档返回 PASS，也不构成开发完成、修复完成或 review-ready；必须形成 committed + clean HEAD。\n' \
+      "${head:-空}" "$TASK_WORKTREE_UNTRACKED" "$TASK_WORKTREE_UNSTAGED" "$TASK_WORKTREE_STAGED"
+  else
+    printf '    说明：commit 档只检查暂存区；无法读取当前工作树状态，不构成开发完成、修复完成或 review-ready 证据。\n'
   fi
 }
 
@@ -372,6 +393,7 @@ cmd_check() {
 
   local fail=0
   [ "$tier" = commit ] && echo "（commit 档：只看暂存区）"
+  [ "$tier" = commit ] && commit_tier_completion_note
 
   echo "── plan_staleness  derived.lock 是否与 policy 同步"
   if [ ! -f "$LOCK" ]; then

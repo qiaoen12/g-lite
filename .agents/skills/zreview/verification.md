@@ -3,8 +3,10 @@
 仓库级 `zreview` 共同规则。Grok `/zreview` 与 Codex `$zreview` 读同一份。
 不要用 Agent 私有 `verification` 配置替代本文件。
 
-`zreview` 只读：不修改工作树、不 commit、不修代码。发现问题写 `Verdict=不通过`，交给 `zfix`。
+`zreview` 只读：不修改工作树、不 commit、不修代码。写入 Review 前必须面对 canonical completion gate 的 committed + clean HEAD；输出固定 HEAD 与 `untracked/unstaged/staged` 数量。发现问题写 `Verdict=不通过`，交给 `zfix`。
 不改变 `zmerge` 的机械合并门禁与显式触发语义。
+
+Reviewer 不得为了通过门禁自动 `git add`、`git commit`、`git stash` 或删除 untracked；dirty、index.lock、无法读取状态或提交证据不足都必须 fail-closed。
 
 开始语义审查前必须先通过最新 main 门禁（`git fetch origin main` 后 `git merge-base --is-ancestor origin/main HEAD`）。落后则立即停止，不写通过 Review，提示显式 `zsync`。本文件不负责同步。
 
