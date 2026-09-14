@@ -704,7 +704,7 @@ task_fetch_issue() {
     -f query='query($owner:String!, $name:String!, $number:Int!) {
       repository(owner:$owner, name:$name) {
         issue(number:$number) {
-          id title url body
+          id title url body state
           labels(first: 20) { nodes { name } }
           projectItems(first: 20) {
             nodes {

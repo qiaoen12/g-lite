@@ -109,6 +109,27 @@ expect_true 'R1 main guard require 是 no-op' 'guard_require_wired "$R_MAIN"'
 expect_eq 'R1 main 未绑定 task' '' "$(task_bind_read "$R_MAIN")"
 expect_true 'R1 main wire 是 no-op' 'guard_wire_worktree "$R_MAIN"'
 
+# claim 的 pushurl 会覆盖 claim.url；必须以 effective config 判定，不能只
+# grep remote.claim.url。custom 与多值都保留原值并 fail-closed。
+CLAIM_CUSTOM="$TDIR/custom-claim.git"
+git -C "$R_A" config --worktree remote.claim.pushurl "$CLAIM_CUSTOM"
+CLAIM_CUSTOM_BEFORE="$(git -C "$R_A" config --worktree --get-all remote.claim.pushurl)"
+run_fail R1_CLAIM_CUSTOM_OUT task_ensure_claim_remote "$R_A"
+expect_true 'R1 custom claim.pushurl fail-closed' \
+  'printf "%s\n" "$R1_CLAIM_CUSTOM_OUT" | grep -Eq "用户自定义|custom|transport"'
+expect_eq 'R1 custom claim.pushurl 不被覆盖' "$CLAIM_CUSTOM_BEFORE" \
+  "$(git -C "$R_A" config --worktree --get-all remote.claim.pushurl)"
+git -C "$R_A" config --worktree --unset-all remote.claim.pushurl
+git -C "$R_A" config --worktree remote.claim.pushurl "$CLAIM_CUSTOM"
+git -C "$R_A" config --worktree --add remote.claim.pushurl "$R_ST"
+CLAIM_MULTI_BEFORE="$(git -C "$R_A" config --worktree --get-all remote.claim.pushurl)"
+run_fail R1_CLAIM_MULTI_OUT task_ensure_claim_remote "$R_A"
+expect_true 'R1 multi-value claim.pushurl fail-closed' \
+  'printf "%s\n" "$R1_CLAIM_MULTI_OUT" | grep -Eq "多值|歧义|ambiguous|transport"'
+expect_eq 'R1 multi-value claim.pushurl 不被覆盖' "$CLAIM_MULTI_BEFORE" \
+  "$(git -C "$R_A" config --worktree --get-all remote.claim.pushurl)"
+git -C "$R_A" config --worktree --unset-all remote.claim.pushurl
+
 A_PUSH_BEFORE="$(git -C "$R_A" remote get-url --push origin)"
 B_PUSH_BEFORE="$(git -C "$R_B" remote get-url --push origin)"
 B_RP_BEFORE="$(git -C "$R_B" config --get-all remote.origin.receivepack)"
@@ -197,7 +218,35 @@ git config --file "$COMMON" --unset-all remote.origin.pushurl
 make_repo r3
 TEST_STAGING="$R_ST"
 install_stage_remote "$R_ST" "$R_ORIGIN"
+guard_wire_worktree "$R_A"
 R3_OLD="$(git --git-dir="$R_ST" rev-parse refs/heads/main)"
+git --git-dir="$R_ST" update-ref refs/heads/unrelated "$R3_OLD"
+git --git-dir="$R_ST" update-ref refs/guard/github/heads/unrelated "$R3_OLD"
+R3_UNRELATED_SENTINEL="$R3_OLD"
+
+# refresh 前必须证明 candidate 与 staging source 是同一个 repository；换成
+# repo B 后即使 refs 形状相同也不得返回 refreshed。
+R3_OTHER="$TDIR/r3/other.git"
+git init -q --bare -b main "$R3_OTHER"
+git --git-dir="$R_ST" remote set-url github "$R3_OTHER"
+run_fail R3_ID_OUT guard_refresh_staging_for_merge "$R_A" main
+expect_true 'R3 candidate/staging identity 不同 fail-closed' \
+  'printf "%s\n" "$R3_ID_OUT" | grep -Fq "identity"'
+git --git-dir="$R_ST" remote set-url github "$R_ORIGIN"
+
+# SSH/HTTPS 等价形式归一化为同一 GitHub owner/repo；这是 identity helper 的
+# 正向 fixture，不依赖真实 GitHub 网络。
+R3_ID_ROOT="$TDIR/r3/identity"
+mkdir -p "$R3_ID_ROOT"
+git init -q "$R3_ID_ROOT/candidate"
+git -C "$R3_ID_ROOT/candidate" remote add origin 'git@github.com:Owner/Repo.git'
+git init -q --bare "$R3_ID_ROOT/staging.git"
+git --git-dir="$R3_ID_ROOT/staging.git" remote add github 'https://github.com/owner/repo.git'
+expect_eq 'R3 SSH/HTTPS identity 等价' owner/repo \
+  "$(guard_repo_identity 'git@github.com:Owner/Repo.git')"
+expect_true 'R3 等价 SSH/HTTPS identity 可 refresh 校验' \
+  'guard_validate_staging_source_identity "$R3_ID_ROOT/candidate" "$R3_ID_ROOT/staging.git"'
+
 printf 'r3-new\n' >> "$R_MAIN/README"
 git -C "$R_MAIN" add README
 git -C "$R_MAIN" commit -qm 'fixture: advance main'
@@ -208,10 +257,70 @@ R3_RESULT="$(guard_refresh_staging_for_merge "$R_A" main)"
 expect_eq 'R3 stale main scoped refresh' refreshed "$R3_RESULT"
 expect_eq 'R3 refresh 后 staging main 是 snapshot' "$R3_NEW" "$(git --git-dir="$R_ST" rev-parse refs/heads/main)"
 expect_eq 'R3 refresh 不改 task ref' "$R3_TASK_BEFORE" "$(git --git-dir="$R_ST" rev-parse refs/heads/r3-a)"
+expect_eq 'R3 refresh 不改 unrelated staging sentinel' "$R3_UNRELATED_SENTINEL" \
+  "$(git --git-dir="$R_ST" rev-parse refs/heads/unrelated)"
+expect_eq 'R3 refresh 不改 unrelated snapshot sentinel' "$R3_UNRELATED_SENTINEL" \
+  "$(git --git-dir="$R_ST" rev-parse refs/guard/github/heads/unrelated)"
 expect_eq 'R3 第二次 refresh no-op' noop "$(guard_refresh_staging_for_merge "$R_A" main)"
 
 git --git-dir="$R_ST" update-ref refs/heads/main "$R3_OLD" "$R3_NEW"
 TX_ROOT="$R_ST/git-guard/transactions"
+
+# noop 只有无任何 write evidence 才能继续；forward-plan、incoming、任意
+# write-intent，以及 accepted+contradictory 都必须阻断且不改 main。
+mkdir -p "$TX_ROOT/noop-clean"
+printf 'noop\n' > "$TX_ROOT/noop-clean/receive-status"
+printf 'noop\n' > "$TX_ROOT/noop-clean/forward-status"
+R3_NOOP_RESULT="$(guard_refresh_staging_for_merge "$R_A" main)"
+expect_eq 'R3 noop clean evidence 可继续' refreshed "$R3_NOOP_RESULT"
+rm -rf "$TX_ROOT/noop-clean"
+git --git-dir="$R_ST" update-ref refs/heads/main "$R3_OLD" "$R3_NEW"
+
+mkdir -p "$TX_ROOT/noop-plan"
+printf 'noop\n' > "$TX_ROOT/noop-plan/receive-status"
+printf 'noop\n' > "$TX_ROOT/noop-plan/forward-status"
+: > "$TX_ROOT/noop-plan/forward-plan"
+run_fail R3_NOOP_PLAN_OUT guard_refresh_staging_for_merge "$R_A" main
+expect_true 'R3 noop + forward-plan BLOCK' 'printf "%s\n" "$R3_NOOP_PLAN_OUT" | grep -Fq "write evidence"'
+expect_eq 'R3 noop + forward-plan 不 refresh' "$R3_OLD" "$(git --git-dir="$R_ST" rev-parse refs/heads/main)"
+rm -rf "$TX_ROOT/noop-plan"
+
+mkdir -p "$TX_ROOT/noop-incoming"
+printf 'noop\n' > "$TX_ROOT/noop-incoming/receive-status"
+printf 'noop\n' > "$TX_ROOT/noop-incoming/forward-status"
+: > "$TX_ROOT/noop-incoming/incoming"
+run_fail R3_NOOP_INCOMING_OUT guard_refresh_staging_for_merge "$R_A" main
+expect_true 'R3 noop + incoming BLOCK' 'printf "%s\n" "$R3_NOOP_INCOMING_OUT" | grep -Fq "write evidence"'
+rm -rf "$TX_ROOT/noop-incoming"
+
+mkdir -p "$TX_ROOT/noop-intent"
+printf 'noop\n' > "$TX_ROOT/noop-intent/receive-status"
+printf 'noop\n' > "$TX_ROOT/noop-intent/forward-status"
+: > "$TX_ROOT/noop-intent/write-intent"
+run_fail R3_NOOP_INTENT_OUT guard_refresh_staging_for_merge "$R_A" main
+expect_true 'R3 noop + write intent BLOCK' \
+  'printf "%s\n" "$R3_NOOP_INTENT_OUT" | grep -Fq "unknown write evidence"'
+rm -rf "$TX_ROOT/noop-intent"
+
+mkdir -p "$TX_ROOT/accepted-clean"
+printf 'accepted\n' > "$TX_ROOT/accepted-clean/receive-status"
+printf 'ok\n' > "$TX_ROOT/accepted-clean/forward-status"
+: > "$TX_ROOT/accepted-clean/incoming"
+: > "$TX_ROOT/accepted-clean/forward-plan"
+R3_ACCEPTED_RESULT="$(guard_refresh_staging_for_merge "$R_A" main)"
+expect_eq 'R3 accepted + coherent evidence 可继续' refreshed "$R3_ACCEPTED_RESULT"
+rm -rf "$TX_ROOT/accepted-clean"
+git --git-dir="$R_ST" update-ref refs/heads/main "$R3_OLD" "$R3_NEW"
+
+mkdir -p "$TX_ROOT/accepted-contradictory"
+printf 'accepted\n' > "$TX_ROOT/accepted-contradictory/receive-status"
+printf 'noop\n' > "$TX_ROOT/accepted-contradictory/forward-status"
+: > "$TX_ROOT/accepted-contradictory/incoming"
+run_fail R3_ACCEPTED_BAD_OUT guard_refresh_staging_for_merge "$R_A" main
+expect_true 'R3 accepted + contradictory BLOCK' \
+  'printf "%s\n" "$R3_ACCEPTED_BAD_OUT" | grep -Fq "contradictory"'
+rm -rf "$TX_ROOT/accepted-contradictory"
+
 mkdir -p "$TX_ROOT/pending"
 printf 'pending\n' > "$TX_ROOT/pending/receive-status"
 run_fail R3_PENDING_OUT guard_refresh_staging_for_merge "$R_A" main
@@ -238,14 +347,25 @@ run_fail R3_LEASE_OUT guard_refresh_staging_for_merge "$R_A" main
 expect_true 'R3 lease ambiguity fail-closed' 'printf "%s\n" "$R3_LEASE_OUT" | grep -Fq "transaction/lease"'
 rm -rf "$TX_ROOT/lease-ambiguous"
 
-git --git-dir="$R_ST" update-ref refs/heads/unrelated "$R3_OLD"
+# 现在故意制造 unrelated staging write；scoped refresh 必须停在 main 之外，
+# 不能把这个不一致当成可自动恢复事实。
+git --git-dir="$R_ST" update-ref refs/heads/unrelated "$R3_NEW"
 run_fail R3_UNRELATED_OUT guard_refresh_staging_for_merge "$R_A" main
 expect_true 'R3 unrelated write 不 replay' 'printf "%s\n" "$R3_UNRELATED_OUT" | grep -Fq "unrelated staging refs"'
 expect_eq 'R3 unrelated block 后 main 仍 stale' "$R3_OLD" "$(git --git-dir="$R_ST" rev-parse refs/heads/main)"
 git --git-dir="$R_ST" update-ref -d refs/heads/unrelated
 
-expect_eq 'R2 failure domain non-fast-forward' non-fast-forward \
-  "$(guard_classify_push_failure "$R_MAIN" '! [rejected] (non-fast-forward)' 1)"
+NFF_OUT=$'To github.com:o/r.git\n ! [rejected] task -> task (non-fast-forward)\nerror: failed to push some refs'
+FETCH_FIRST_OUT=$' ! [rejected] task -> task (fetch first)\nerror: failed to push some refs'
+HOOK_OUT=$' ! [remote rejected] task -> task (pre-receive hook declined)\nerror: failed to push some refs'
+expect_eq 'R2 failure domain explicit non-fast-forward' non-fast-forward \
+  "$(guard_classify_push_failure "$R_MAIN" "$NFF_OUT" 1)"
+expect_eq 'R2 failure domain fetch first' non-fast-forward \
+  "$(guard_classify_push_failure "$R_MAIN" "$FETCH_FIRST_OUT" 1)"
+expect_eq 'R2 hook rejection 是 Guard route' guard-route \
+  "$(guard_classify_push_failure "$R_MAIN" "$HOOK_OUT" 1)"
+expect_true 'R2 remote rejected 本身不判 NFF' \
+  '[ "$(guard_classify_push_failure "$R_MAIN" "! [remote rejected] task -> task" 1)" != non-fast-forward ]'
 expect_eq 'R2 failure domain authentication' authentication \
   "$(guard_classify_push_failure "$R_MAIN" 'remote: Authentication failed' 1)"
 expect_eq 'R2 failure domain network' network \

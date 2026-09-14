@@ -10,6 +10,19 @@ guard_staging_git() {
     "${XDG_STATE_HOME:-$HOME/.local/state}" "$(metrics_identity_dir)"
 }
 
+guard_ref_oid() {
+  local dir="$1" ref="$2"
+  git --git-dir="$dir" rev-parse -q --verify "${ref}^{commit}" 2>/dev/null || true
+}
+
+guard_error() {
+  if [ "$(type -t guard_err 2>/dev/null)" = function ]; then
+    guard_err "$*"
+  else
+    c_err "git-guard: $*"
+  fi
+}
+
 # ─────────────────────────────────────────────── transport facts
 #
 # A linked worktree has two config layers: the repository-wide config in the
@@ -124,6 +137,242 @@ guard_origin_value_kind() {
   else
     printf 'ambiguous\n'
   fi
+}
+
+# 从一组 config 值中取且仅取一个值。返回失败时不猜测是缺失还是多值，
+# 由调用方读取 GUARD_CONFIG_VALUE_COUNT 给出 fail-closed 诊断。
+guard_config_one_value() {
+  local values="${1:-}" line count=0 only=""
+  GUARD_CONFIG_VALUE_COUNT=0
+  GUARD_CONFIG_ONE_VALUE=""
+  [ -n "$values" ] || return 1
+  while IFS= read -r line; do
+    count=$((count + 1))
+    only="$line"
+  done <<< "$values"
+  GUARD_CONFIG_VALUE_COUNT="$count"
+  if [ "$count" = 1 ] && [ -n "$only" ]; then
+    GUARD_CONFIG_ONE_VALUE="$only"
+    return 0
+  fi
+  return 1
+}
+
+# canonical repository identity：GitHub 的 SSH/HTTPS 等价地址归一化为
+# owner/repo；本地 bare remote 归一化为 local:/absolute/path。无法解析的
+# 地址不参与猜测，供 candidate/staging identity 校验直接拒绝。
+guard_repo_identity() {
+  local raw="${1:-}" value rest authority host path scheme owner repo
+  local local_path local_dir local_base
+  [ -n "$raw" ] || return 1
+  case "$raw" in *[[:space:]]*|*\?*|*\#*) return 1 ;; esac
+  value="$raw"
+
+  case "$value" in
+    file://*)
+      local_path="${value#file://}"
+      case "$local_path" in /*) ;; *) return 1 ;; esac
+      ;;
+    http://*|https://*|ssh://*|git://*)
+      scheme="${value%%://*}"
+      rest="${value#*://}"
+      authority="${rest%%/*}"
+      [ "$authority" != "$rest" ] || return 1
+      path="${rest#*/}"
+      authority="${authority##*@}"
+      host="${authority%%:*}"
+      [ -n "$host" ] && [ -n "$path" ] || return 1
+      case "$scheme" in http|https|ssh|git) ;; *) return 1 ;; esac
+      ;;
+    git@*:*|*[!/:]@*:* )
+      authority="${value#*@}"
+      host="${authority%%:*}"
+      path="${authority#*:}"
+      [ -n "$host" ] && [ -n "$path" ] || return 1
+      ;;
+    /*)
+      local_path="$value"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+
+  if [ -n "${local_path:-}" ]; then
+    local_dir="${local_path%/*}"
+    local_base="${local_path##*/}"
+    [ -n "$local_dir" ] || local_dir=/
+    local_dir="$(cd "$local_dir" 2>/dev/null && pwd -P)" || return 1
+    local_base="${local_base%.git}"
+    [ -n "$local_base" ] || return 1
+    printf 'local:%s/%s\n' "$local_dir" "$local_base"
+    return 0
+  fi
+
+  host="$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')"
+  path="${path#/}"
+  path="${path%/}"
+  path="${path%.git}"
+  [ -n "$path" ] || return 1
+  if [ "$host" = github.com ] || [ "$host" = www.github.com ]; then
+    case "$path" in */*/*|*/*/) return 1 ;; esac
+    owner="${path%%/*}"
+    repo="${path#*/}"
+    [ "$owner" != "$path" ] && [ -n "$owner" ] && [ -n "$repo" ] || return 1
+    [[ "$owner" =~ ^[A-Za-z0-9._-]+$ ]] || return 1
+    [[ "$repo" =~ ^[A-Za-z0-9._-]+$ ]] || return 1
+    printf '%s/%s\n' "$(printf '%s' "$owner" | tr '[:upper:]' '[:lower:]')" \
+      "$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]')"
+    return 0
+  fi
+  printf '%s/%s\n' "$host" "$path"
+}
+
+guard_validate_staging_source_identity() {
+  local wt="$1" staging="$2" candidate_values staging_values
+  local candidate_url staging_url candidate_id staging_id remote
+  remote="${GUARD_REMOTE:-github}"
+  candidate_values="$(env -u GIT_DIR -u GIT_WORK_TREE git -C "$wt" \
+    config --get-all remote.origin.url 2>/dev/null || true)"
+  guard_config_one_value "$candidate_values" || {
+    err_code guard.remote_identity "candidate origin.url 必须恰好一个可解析值（${GUARD_CONFIG_VALUE_COUNT:-0} 个），拒绝 refresh"
+    return 1
+  }
+  candidate_url="$GUARD_CONFIG_ONE_VALUE"
+  candidate_id="$(guard_repo_identity "$candidate_url" 2>/dev/null || true)"
+  [ -n "$candidate_id" ] || {
+    err_code guard.remote_identity "无法解析 candidate origin repository identity，拒绝 refresh"
+    return 1
+  }
+
+  staging_values="$(env -u GIT_DIR -u GIT_WORK_TREE git --git-dir="$staging" \
+    config --get-all "remote.${remote}.url" 2>/dev/null || true)"
+  guard_config_one_value "$staging_values" || {
+    err_code guard.remote_identity "staging ${remote}.url 必须恰好一个可解析值（${GUARD_CONFIG_VALUE_COUNT:-0} 个），拒绝 refresh"
+    return 1
+  }
+  staging_url="$GUARD_CONFIG_ONE_VALUE"
+  staging_id="$(guard_repo_identity "$staging_url" 2>/dev/null || true)"
+  [ -n "$staging_id" ] || {
+    err_code guard.remote_identity "无法解析 staging mirror source repository identity，拒绝 refresh"
+    return 1
+  }
+  GUARD_CANDIDATE_REPO_IDENTITY="$candidate_id"
+  GUARD_STAGING_REPO_IDENTITY="$staging_id"
+  if [ "$candidate_id" != "$staging_id" ]; then
+    err_code guard.remote_identity "candidate=${candidate_id} 与 staging=${staging_id} repository identity 不一致，拒绝 refresh"
+    return 1
+  fi
+  return 0
+}
+
+# claim remote 的唯一 effective transport 判定。输出状态：absent（待建立）、
+# canonical、legacy、custom、mixed、ambiguous；GUARD_CLAIM_DETAIL 保留具体
+# key/层级，便于拒绝时不覆盖用户配置。
+guard_claim_transport_classify() {
+  local wt="$1" common enabled origin_values want
+  local shared_url shared_push shared_receive local_url local_push local_receive
+  local url_values push_values receive_values url_kind push_kind receive_kind
+  local shared_url_kind shared_push_kind shared_receive_kind
+  local has_shared=0 state=custom detail=""
+  common="$(guard_common_config_file "$wt" 2>/dev/null || true)"
+  [ -n "$common" ] || { GUARD_CLAIM_STATE=ambiguous; GUARD_CLAIM_DETAIL='shared config unreadable'; printf '%s\n' ambiguous; return 0; }
+  origin_values="$(env -u GIT_DIR -u GIT_WORK_TREE git -C "$wt" \
+    config --get-all remote.origin.url 2>/dev/null || true)"
+  guard_config_one_value "$origin_values" || {
+    GUARD_CLAIM_STATE=ambiguous
+    GUARD_CLAIM_DETAIL="origin.url ${GUARD_CONFIG_VALUE_COUNT:-0}-value"
+    printf '%s\n' ambiguous
+    return 0
+  }
+  want="$GUARD_CONFIG_ONE_VALUE"
+
+  shared_url="$(git config --file "$common" --get-all remote.claim.url 2>/dev/null || true)"
+  shared_push="$(git config --file "$common" --get-all remote.claim.pushurl 2>/dev/null || true)"
+  shared_receive="$(git config --file "$common" --get-all remote.claim.receivepack 2>/dev/null || true)"
+  [ -z "$shared_url$shared_push$shared_receive" ] || has_shared=1
+
+  enabled="$(git config --file "$common" --bool --get extensions.worktreeConfig 2>/dev/null || true)"
+  if [ "$enabled" = true ]; then
+    local_url="$(env -u GIT_DIR -u GIT_WORK_TREE git -C "$wt" config --worktree \
+      --get-all remote.claim.url 2>/dev/null || true)"
+    local_push="$(env -u GIT_DIR -u GIT_WORK_TREE git -C "$wt" config --worktree \
+      --get-all remote.claim.pushurl 2>/dev/null || true)"
+    local_receive="$(env -u GIT_DIR -u GIT_WORK_TREE git -C "$wt" config --worktree \
+      --get-all remote.claim.receivepack 2>/dev/null || true)"
+  else
+    local_url=""; local_push=""; local_receive=""
+  fi
+
+  url_values="$(env -u GIT_DIR -u GIT_WORK_TREE git -C "$wt" config \
+    --get-all remote.claim.url 2>/dev/null || true)"
+  push_values="$(env -u GIT_DIR -u GIT_WORK_TREE git -C "$wt" config \
+    --get-all remote.claim.pushurl 2>/dev/null || true)"
+  receive_values="$(env -u GIT_DIR -u GIT_WORK_TREE git -C "$wt" config \
+    --get-all remote.claim.receivepack 2>/dev/null || true)"
+  url_kind="$(guard_transport_value_kind "$url_values" "$want")"
+  push_kind="$(guard_transport_value_kind "$push_values" "$want")"
+  receive_kind="$(guard_transport_value_kind "$receive_values" '__no_claim_receivepack__')"
+
+  if [ "$url_kind" = absent ] && [ "$push_kind" = absent ] && [ "$receive_kind" = absent ]; then
+    if [ "$has_shared" = 1 ]; then
+      state=custom
+      detail='shared claim transport 与 effective claim 不一致'
+    else
+      state=absent
+      detail='claim transport absent'
+    fi
+  elif [ "$url_kind" = expected ] \
+      && { [ "$push_kind" = absent ] || [ "$push_kind" = expected ]; } \
+      && [ "$receive_kind" = absent ]; then
+    state=canonical
+    detail='effective claim url/pushurl/receivepack canonical'
+  else
+    case "$url_kind:$push_kind:$receive_kind" in
+      *ambiguous*|*'expected:ambiguous'*|*'ambiguous:expected'*) state=ambiguous; detail='effective claim transport multi-value/ambiguous' ;;
+      *expected*custom*|*custom*expected*|*expected*ambiguous*|*ambiguous*expected*) state=mixed; detail='effective claim transport mixed canonical/custom' ;;
+      *) state=custom; detail='effective claim transport custom or missing url' ;;
+    esac
+  fi
+
+  # linked worktree 的 shared claim.url 是 v1.0 遗留形态；不能把同值再写一份
+  # 到 worktree 后假装安全。shared pushurl/receivepack 则仍按 custom/mixed 拒绝。
+  shared_url_kind="$(guard_transport_value_kind "$shared_url" "$want")"
+  shared_push_kind="$(guard_transport_value_kind "$shared_push" "$want")"
+  shared_receive_kind="$(guard_transport_value_kind "$shared_receive" '__no_claim_receivepack__')"
+  if [ "$has_shared" = 1 ] && [ "$shared_url_kind" = expected ] \
+      && [ "$shared_push_kind" = absent ] && [ "$shared_receive_kind" = absent ] \
+      && [ -z "$local_url$local_push$local_receive" ]; then
+    state=legacy
+    detail='shared remote.claim.url legacy wiring'
+  fi
+  GUARD_CLAIM_STATE="$state"
+  GUARD_CLAIM_DETAIL="$detail"
+  printf '%s\n' "$state"
+}
+
+guard_claim_transport_preflight() {
+  local wt="$1" state
+  guard_claim_transport_classify "$wt" >/dev/null || return 1
+  state="$GUARD_CLAIM_STATE"
+  case "$state" in
+    absent|canonical) return 0 ;;
+    legacy) err_code claim.legacy_transport "claim transport 是 shared v1.0 legacy wiring，拒绝覆盖；先核对 Guard recovery"; return 1 ;;
+    mixed) err_code claim.mixed_transport "claim transport 含 canonical/custom 混合值，拒绝覆盖"; return 1 ;;
+    ambiguous) err_code claim.transport_ambiguous "claim transport 多值或歧义，拒绝覆盖"; return 1 ;;
+    *) err_code claim.custom_transport "claim transport 含用户自定义值，拒绝覆盖"; return 1 ;;
+  esac
+}
+
+guard_claim_transport_validate() {
+  local wt="$1" state
+  guard_claim_transport_classify "$wt" >/dev/null || return 1
+  state="$GUARD_CLAIM_STATE"
+  [ "$state" = canonical ] || {
+    err_code claim.transport_invalid "claim effective transport 未通过 canonical 校验（${state}: ${GUARD_CLAIM_DETAIL:-unknown}）"
+    return 1
+  }
+  return 0
 }
 
 guard_common_transport_classify() {
@@ -255,12 +504,20 @@ guard_find_main_worktree() {
 # custom、混合、多值或 fetch=staging 都必须由人核对，绝不覆盖。
 guard_recover_legacy_wiring() {
   local repo="$1" mode="${2:-apply}" main_wt common state key values
+  local claim_state
   case "$mode" in preview|apply) ;; *) err_code guard.usage "用法：new guard recover [--preview]"; return 1 ;; esac
   main_wt="$(guard_find_main_worktree "$repo" 2>/dev/null || true)"
   [ -n "$main_wt" ] || { err_code guard.main_worktree "无法定位 main worktree，拒绝恢复"; return 1; }
   guard_common_transport_classify "$main_wt" >/dev/null || {
     err_code guard.config_unreadable "无法读取 shared transport config，拒绝恢复"; return 1;
   }
+  if [ "$(type -t guard_claim_transport_classify 2>/dev/null)" = function ]; then
+    claim_state="$(guard_claim_transport_classify "$main_wt")"
+    case "$claim_state" in
+      custom|mixed|ambiguous)
+        err_code guard.claim_transport "claim effective transport 是 ${claim_state}，恢复不覆盖用户值；请先核对 remote.claim.url/pushurl/receivepack"; return 1 ;;
+    esac
+  fi
   state="$GUARD_SHARED_STATE"
   common="$GUARD_SHARED_CONFIG"
   echo "Guard legacy wiring ${mode}"
@@ -324,13 +581,133 @@ guard_main_transport_preflight() {
   return 0
 }
 
+# 单个 transaction 的 durable facts 一致性。除了状态文件与 snapshot/lease
+# 事实外，任何未知文件都按 write intent/evidence 处理；noop 只有在没有
+# 任何写入证据时才是 noop。accepted 也必须和正常 forwarding evidence 配对。
+guard_transaction_validate_one() {
+  local tx="$1" receive_status forward_status lease_status name entry
+  local has_incoming=0 has_plan=0 has_recovered=0 has_failure=0 unknown=""
+
+  receive_status="$(cat "$tx/receive-status" 2>/dev/null || true)"
+  forward_status="$(cat "$tx/forward-status" 2>/dev/null || true)"
+  for entry in "$tx"/* "$tx"/.[!.]*; do
+    [ -e "$entry" ] || continue
+    [ -f "$entry" ] || { unknown="$(basename "$entry")"; break; }
+    name="$(basename "$entry")"
+    case "$name" in
+      receive-status|forward-status|snapshot-nonce|snapshot-main|lease-status) ;;
+      incoming) has_incoming=1 ;;
+      forward-plan) has_plan=1 ;;
+      forward-recovered) has_recovered=1 ;;
+      forward-failure) has_failure=1 ;;
+      *) unknown="$name"; break ;;
+    esac
+  done
+  if [ -n "$unknown" ]; then
+    GUARD_TXN_ERROR="unknown write evidence ${unknown}"
+    return 1
+  fi
+  if [ -e "$tx/lease-status" ]; then
+    lease_status="$(cat "$tx/lease-status" 2>/dev/null || true)"
+    case "$lease_status" in
+      known|none|not-applicable) ;;
+      *) GUARD_TXN_ERROR="lease=${lease_status:-unknown}"; return 1 ;;
+    esac
+  fi
+
+  case "$receive_status" in
+    noop)
+      if [ "$forward_status" != noop ]; then
+        GUARD_TXN_ERROR="noop with forward=${forward_status:-unknown}"; return 1
+      fi
+      if [ "$has_incoming" = 1 ] || [ "$has_plan" = 1 ] \
+          || [ "$has_recovered" = 1 ] || [ "$has_failure" = 1 ]; then
+        GUARD_TXN_ERROR="noop with write evidence"
+        return 1
+      fi
+      ;;
+    rejected)
+      if [ -n "$forward_status" ] || [ "$has_incoming" = 1 ] \
+          || [ "$has_plan" = 1 ] || [ "$has_recovered" = 1 ] \
+          || [ "$has_failure" = 1 ]; then
+        GUARD_TXN_ERROR="rejected with forwarding/write evidence"
+        return 1
+      fi
+      ;;
+    accepted)
+      # 正常 accepted transaction 必须已有 post-receive incoming、forward-plan
+      # 与 forward-status=ok；accepted+noop 是自相矛盾，不能借此放行 refresh。
+      if [ "$forward_status" != ok ] || [ "$has_incoming" != 1 ] \
+          || [ "$has_plan" != 1 ] || [ "$has_failure" = 1 ]; then
+        GUARD_TXN_ERROR="accepted with contradictory forwarding/write facts"
+        return 1
+      fi
+      ;;
+    pending|mirror-failed|'')
+      GUARD_TXN_ERROR="receive=${receive_status:-unknown}"
+      return 1
+      ;;
+    *)
+      GUARD_TXN_ERROR="receive=${receive_status}"
+      return 1
+      ;;
+  esac
+  return 0
+}
+
+guard_transaction_consistency() {
+  local state="$1" root tx errors=""
+  root="$state/transactions"
+  GUARD_TRANSACTION_ERROR=""
+  [ -d "$root" ] || return 0
+  for tx in "$root"/*; do
+    [ -d "$tx" ] || continue
+    if ! guard_transaction_validate_one "$tx"; then
+      errors="${errors}${errors:+; }$(basename "$tx"): ${GUARD_TXN_ERROR:-inconsistent}"
+    fi
+  done
+  GUARD_TRANSACTION_ERROR="$errors"
+  [ -z "$errors" ]
+}
+
+# merge gate 只验证当前 task 与同一 staging 的关系，不更新任何 ref。
+# relation=stale-ok 仅供 refresh 前使用；synced 是 retry/final merge 的门槛。
+guard_merge_gate_validate() {
+  local wt="$1" main="${2:-main}" relation="${3:-synced}"
+  local staging snapshot_main staging_main
+  staging="$(guard_staging_git)"
+  [ -d "$staging" ] || return 0
+  guard_require_wired "$wt" || return 1
+  guard_validate_staging_source_identity "$wt" "$staging" || return 1
+  guard_transaction_consistency "$staging/git-guard" || {
+    guard_error "merge gate blocked: transaction/lease facts 不一致（${GUARD_TRANSACTION_ERROR:-unknown}）"
+    return 1
+  }
+  snapshot_main="$(guard_ref_oid "$staging" "refs/guard/github/heads/${main}")"
+  staging_main="$(guard_ref_oid "$staging" "refs/heads/${main}")"
+  [ -n "$snapshot_main" ] && [ -n "$staging_main" ] || {
+    guard_error "merge gate blocked: staging/snapshot 缺少 ${main}，拒绝猜测 mirror relation"
+    return 1
+  }
+  if [ "$relation" = synced ]; then
+    [ "$staging_main" = "$snapshot_main" ] || {
+      guard_error "merge gate blocked: staging ${main} 仍未与 Guard snapshot 对齐"
+      return 1
+    }
+  else
+    git --git-dir="$staging" merge-base --is-ancestor "$staging_main" "$snapshot_main" || {
+      guard_error "merge gate blocked: staging ${main} 不是 Guard snapshot 的祖先"
+      return 1
+    }
+  fi
+  return 0
+}
+
 # R3：merge 前只修复「同一 staging 的 main mirror 落后」这一种可证明场景。
 # 这是一个 refresh，不是 guard sync：不调用 guard_forward_plan，不读取或
 # 重放任何旧 transaction 的 lease，也不碰 unrelated refs。
 guard_refresh_staging_for_merge() (
   local wt="$1" main="${2:-main}" staging state snapshot_main staging_main tx
-  local receive_status forward_status marker lease_status
-  local -a blocked=()
   local GUARD_REFRESH_LOCK_STATE
 
   staging="$(guard_staging_git)"
@@ -338,6 +715,7 @@ guard_refresh_staging_for_merge() (
   [ -f "$staging/hooks/git-guard-lib.sh" ] || {
     guard_err "merge refresh blocked: staging hook library 不存在"; return 1;
   }
+  guard_merge_gate_validate "$wt" "$main" stale-ok || return 1
   state="$staging/git-guard"
   mkdir -p "$state/transactions"
 
@@ -352,56 +730,15 @@ guard_refresh_staging_for_merge() (
   }
   trap 'guard_lock_release "$GUARD_REFRESH_LOCK_STATE"' EXIT
 
-  # 先核对 durable transaction/lease facts；pending/failed/unknown 不能连
-  # snapshot 都盲目刷新，防止把这次 merge 的无关 refresh 变成隐式 replay。
-  for tx in "$state/transactions"/*; do
-    [ -d "$tx" ] || continue
-    receive_status="$(cat "$tx/receive-status" 2>/dev/null || true)"
-    forward_status="$(cat "$tx/forward-status" 2>/dev/null || true)"
-    case "$receive_status" in
-      rejected)
-        # pre-receive reject 没有 staged incoming/forward plan，可作为本次
-        # stale-main 证据；任何写入痕迹都不再是安全 refresh。
-        [ ! -e "$tx/incoming" ] || blocked+=("$(basename "$tx"):incoming")
-        [ ! -e "$tx/forward-plan" ] || blocked+=("$(basename "$tx"):forward-plan")
-        [ -z "$forward_status" ] || blocked+=("$(basename "$tx"):forward=${forward_status}")
-        ;;
-      noop)
-        [ "$forward_status" = noop ] || blocked+=("$(basename "$tx"):noop-status")
-        [ ! -e "$tx/incoming" ] || blocked+=("$(basename "$tx"):incoming")
-        [ ! -e "$tx/forward-plan" ] || blocked+=("$(basename "$tx"):forward-plan")
-        ;;
-      accepted)
-        case "$forward_status" in
-          ok|noop) ;;
-          *) blocked+=("$(basename "$tx"):forward=${forward_status:-unknown}") ;;
-        esac
-        ;;
-      pending|mirror-failed|'')
-        blocked+=("$(basename "$tx"):receive=${receive_status:-unknown}")
-        ;;
-      *)
-        blocked+=("$(basename "$tx"):receive=${receive_status}")
-        ;;
-    esac
-    for marker in "$tx/lease-ambiguity" "$tx/lease-ambiguous" "$tx/lease-unknown"; do
-      [ ! -e "$marker" ] || blocked+=("$(basename "$tx"):$(basename "$marker")")
-    done
-    [ ! -e "$tx/forward-failure" ] || blocked+=("$(basename "$tx"):forward-failure")
-    if [ -e "$tx/lease-status" ]; then
-      lease_status="$(cat "$tx/lease-status" 2>/dev/null || true)"
-      case "$lease_status" in known|none|not-applicable) ;; *)
-        blocked+=("$(basename "$tx"):lease=${lease_status:-unknown}") ;;
-      esac
-    fi
-  done
-  if [ "${#blocked[@]}" -ne 0 ]; then
-    guard_err "merge refresh blocked: transaction/lease facts 不明确（${blocked[*]}）；请显式 new guard sync 核对"
+  # 互斥内再次核对 durable facts；pending/failed/unknown 不能连 snapshot
+  # 都盲目刷新，防止把这次 merge 的无关 refresh 变成隐式 replay。
+  if ! guard_transaction_consistency "$state"; then
+    guard_err "merge refresh blocked: transaction/lease facts 不明确（${GUARD_TRANSACTION_ERROR:-unknown}）；请显式 new guard sync 核对"
     return 1
   fi
 
-  # durable facts 已明确后，只更新 snapshot namespace，不重放任何 transaction。
-  if ! guard_snapshot_github "$staging"; then
+  # durable facts 已明确后，只更新目标 main snapshot，不重放任何 transaction。
+  if ! guard_snapshot_github "$staging" "refs/heads/${main}"; then
     guard_err "merge refresh blocked: GitHub snapshot 刷新失败"; return 1
   fi
 
@@ -443,7 +780,10 @@ guard_classify_push_failure() {
   local wt="$1" output="${2:-}" rc="${3:-1}" staging domain
   staging="$(guard_staging_git)"
   domain=unknown
-  if printf '%s\n' "$output" | grep -Eiq 'non-fast-forward|fetch first|rejected[^[:alnum:]]'; then
+  # 只接受明确的 NFF 语义；`remote rejected` / `pre-receive hook declined`
+  # 是 hook/Guard 结果，不能因共享单词 rejected 被误判为 NFF。
+  if printf '%s\n' "$output" | grep -Eiq \
+      'non-fast-forward|fetch first|tip of your current branch is behind|updates were rejected because the remote contains work'; then
     domain=non-fast-forward
   elif printf '%s\n' "$output" | grep -Eiq 'authentication failed|could not read Username|permission denied|access denied|permission to .* denied|repository not found|could not read from remote repository|invalid username|bad credentials|403|401'; then
     domain=authentication
@@ -451,6 +791,8 @@ guard_classify_push_failure() {
     domain=network
   elif printf '%s\n' "$output" | grep -Eiq '陈旧 contract|staging.*(陈旧|未同步)|GitHub main 已前进|main 已前进.*staging'; then
     domain=guard-staging
+  elif printf '%s\n' "$output" | grep -Eiq 'pre-receive hook declined|update hook declined|remote rejected.*(hook|declined)|hook declined'; then
+    domain=guard-route
   elif guard_effective_guard_route "$wt" "$staging" \
       || printf '%s\n' "$output" | grep -Eiq 'git-guard|Guard.*(Binding|wrapper|staging)'; then
     domain=guard-route
@@ -647,6 +989,8 @@ guard_wire_worktree() {
       err_code guard.custom_transport "    ✗ shared transport 含用户自定义值，拒绝覆盖"; return 1 ;;
   esac
 
+  guard_claim_transport_preflight "$wt" || return 1
+
   guard_enable_worktree_config "$wt" || return 1
   local_push="$(git -C "$wt" config --worktree --get-all remote.origin.pushurl 2>/dev/null || true)"
   kind="$(guard_transport_value_kind "$local_push" "$staging")"
@@ -700,6 +1044,7 @@ guard_require_wired() {
     custom)
       err_code guard.custom_transport "    ✗ shared transport 含用户自定义值，拒绝把 task 视为已接线"; return 1 ;;
   esac
+  guard_claim_transport_validate "$wt" || return 1
   common_cfg="$GUARD_SHARED_CONFIG"
   enabled="$(git config --file "$common_cfg" --bool --get extensions.worktreeConfig 2>/dev/null || true)"
   [ "$enabled" = true ] || {

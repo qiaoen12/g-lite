@@ -188,12 +188,21 @@ zmerge_decide_action() {
   ZMERGE_ACTION=merge
 }
 
-# 持锁后最后复读。放行看 derive_task_state；Project Status 只警告。
-zmerge_reread_before_merge() {
-  local derived project pr pr_num js head_oid cur_blob
+# 所有 merge gates 的唯一复读入口。保持 z_load 时的 Z_HEAD 不变，任何
+# candidate HEAD 改变都必须走新的 Review；relation=stale-ok 只允许 R3 在
+# refresh 前暂时接受 main mirror stale，synced 才能用于 retry/final merge。
+zmerge_reread_all_merge_gates() {
+  local relation="${1:-synced}" derived project pr pr_num js head_oid cur_blob
+  local issue_state pr_body labels
 
-  Z_HEAD="$(git -C "$Z_WT" rev-parse HEAD)" || {
-    err_code task.head_unreadable "读不到 HEAD"
+  if [ -z "${Z_HEAD:-}" ]; then
+    err_code task.head_unreadable "没有 zmerge 初始 candidate HEAD，拒绝猜测"
+    return 1
+  fi
+  head_oid="$(git -C "$Z_WT" rev-parse HEAD 2>/dev/null || true)"
+  [ -n "$head_oid" ] || { err_code task.head_unreadable "读不到 HEAD"; return 1; }
+  [ "$head_oid" = "$Z_HEAD" ] || {
+    err_code z.pr_head_changed "candidate HEAD 已改变（${head_oid} ≠ ${Z_HEAD}），需要新的 zreview"
     return 1
   }
   z_fetch_origin_main "$Z_WT" "$Z_MAIN" || return 1
@@ -203,9 +212,10 @@ zmerge_reread_before_merge() {
     return 1
   fi
 
+  # Review 与 auto-merge 资格本身是远端 durable gates；先复读它们，再把
+  # 当前 origin/main Contract 与旧授权做等价性核对。
   z_require_passing_review || return 1
   z_require_auto_merge_safe_review || return 1
-
   contract_fetch_main "$Z_WT" "$Z_MAIN" \
     || { err_code contract.fetch_main_failed "无法 fetch origin/${Z_MAIN}，不使用本地陈旧副本"; return 1; }
   cur_blob="$(contract_main_blob "$Z_WT" "$Z_NUMBER" "$Z_MAIN")" \
@@ -227,14 +237,40 @@ zmerge_reread_before_merge() {
   fi
   task_pr_fields_ok "$js" "$Z_GIT_BR" "$Z_MAIN" "$Z_NUMBER" "$Z_SQUASH_TITLE" \
     || { err_code z.pr_fields "PR 非 Draft / head / base / Fixes / 标题 未通过"; return 1; }
+  pr_body="$(printf '%s' "$js" | jq -r '.body // empty')"
+  contract_pr_validate "$pr_body" "$Z_NUMBER" "$Z_CONTRACT_BLOB" "$Z_HEAD" \
+    || { err_code contract.pr_invalid "PR 未绑定当前 Contract / reviewed HEAD"; return 1; }
   head_oid="$(printf '%s' "$js" | jq -r '.headRefOid // empty')"
   [ "$head_oid" = "$Z_HEAD" ] || {
     err_code z.pr_head_changed "远端 PR head 已变化（${head_oid:-空} ≠ ${Z_HEAD}），需要重新 zreview"
     return 1
   }
 
+  # required checks 是远端 merge gate，也必须在每次 refresh 后及最终 merge 前
+  # 重新查询；读取失败不能被解释成「没有 checks」。
+  if ! z_required_contexts; then
+    err_code z.required_checks_unknown "required checks 状态未知${Z_REQUIRED_ERR:+：${Z_REQUIRED_ERR}}。不合并，不把 Checkpoint 写成「无 required checks」。"
+    return 1
+  fi
+  z_pr_checks_ok "$pr_num" || return 1
+
+  # 本地真实 diff 也属于现有 zmerge 门禁。复读时重新计算，避免 refresh
+  # 前后工作树事实被错误复用。
+  contract_require_diff_in_scope "$Z_WT" "$Z_BASE" "$Z_HEAD" "$Z_SCOPE" \
+    || { err_code z.diff_out_of_scope "真实 diff 越界，拒绝 merge"; return 1; }
+
   if ! task_fetch_issue "$Z_OWNER" "$Z_REPO" "$Z_NUMBER" "$Z_ISSUE_JSON"; then
     err_code task.issue_fetch_failed "无法读取 Issue / Project 状态"
+    return 1
+  fi
+  issue_state="$(jq -r '.data.repository.issue.state // empty' "$Z_ISSUE_JSON" 2>/dev/null || true)"
+  [ "$issue_state" = OPEN ] || {
+    err_code z.issue_state "Issue 状态不可合并（${issue_state:-unknown}）"
+    return 1
+  }
+  labels="$(task_issue_labels "$Z_ISSUE_JSON")"
+  if printf '%s' "$labels" | jq -e --arg want human-merge 'index($want) != null' >/dev/null 2>&1; then
+    err_code z.human_merge "Issue 有 human-merge 标签，zmerge 拒绝。需要人用 zpr 送 PR。"
     return 1
   fi
   derived="$(derive_task_state "$Z_NUMBER")" \
@@ -248,8 +284,16 @@ zmerge_reread_before_merge() {
       return 1
       ;;
   esac
+  if [ "$(type -t guard_merge_gate_validate 2>/dev/null)" = function ]; then
+    guard_merge_gate_validate "$Z_WT" "$Z_MAIN" "$relation" || return 1
+  fi
   ZMERGE_PR_NUM="$pr_num"
   ZMERGE_PR_JSON="$js"
+}
+
+# 持锁后最后复读。放行看 derive_task_state；Project Status 只警告。
+zmerge_reread_before_merge() {
+  zmerge_reread_all_merge_gates synced
 }
 
 zmerge_find_main_worktree() {
@@ -448,31 +492,9 @@ zmerge_deliver_review() {
 }
 
 # R3 的重试只允许由一次 Guard staging-main stale 失败触发。refresh 前后
-# 都复读 candidate HEAD、origin/main、Review、auto-merge 和 Contract；真正
-# 创建/读取 PR 后，zmerge_do_merge 还会走 zmerge_reread_before_merge 的全门禁。
+# 都调用同一个完整 merge-gate reread；真正 gh pr merge 前仍再次调用它。
 zmerge_guard_recovery_preflight() {
-  local current cur_blob
-  current="$(git -C "$Z_WT" rev-parse HEAD 2>/dev/null || true)"
-  [ -n "$current" ] || { err_code task.head_unreadable "无法读取 candidate HEAD，停止 Guard recovery"; return 1; }
-  [ "$current" = "$Z_HEAD" ] || {
-    err_code z.pr_head_changed "candidate HEAD 已改变（${current} ≠ ${Z_HEAD}），需要新的 zreview"; return 1;
-  }
-  z_fetch_origin_main "$Z_WT" "$Z_MAIN" || {
-    err_code z.main_fetch_failed "无法复读 origin/${Z_MAIN}，停止 Guard recovery"; return 1;
-  }
-  if ! z_main_is_current "$Z_WT" "origin/${Z_MAIN}" HEAD; then
-    err_code z.main_ahead "candidate 真落后于最新 main；不要由 Guard recovery 偷偷同步。下一步：new z sync"; return 1
-  fi
-  z_require_passing_review || return 1
-  z_require_auto_merge_safe_review || return 1
-  contract_fetch_main "$Z_WT" "$Z_MAIN" \
-    || { err_code contract.fetch_main_failed "无法复读 origin/${Z_MAIN} 上的 Contract，停止 Guard recovery"; return 1; }
-  cur_blob="$(contract_main_blob "$Z_WT" "$Z_NUMBER" "$Z_MAIN" 2>/dev/null || true)"
-  [ -n "$cur_blob" ] || { err_code contract.missing "origin/${Z_MAIN} 没有 Contract，停止 Guard recovery"; return 1; }
-  if contract_stale "$Z_CONTRACT_BLOB" "$cur_blob" "Guard recovery"; then
-    err_code contract.stale "Contract 已改变，旧 Review/merge authorization 失效；需要新的 zreview"; return 1
-  fi
-  return 0
+  zmerge_reread_all_merge_gates stale-ok
 }
 
 zmerge_deliver_review_with_guard_recovery() {

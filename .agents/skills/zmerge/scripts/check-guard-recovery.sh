@@ -30,7 +30,19 @@ COUNT="$TDIR/counts"
 mkdir -p "$COUNT"
 count() { cat "$COUNT/$1" 2>/dev/null || printf '0\n'; }
 bump() { local n; n="$(count "$1")"; printf '%s\n' "$((n + 1))" > "$COUNT/$1"; }
-reset_counts() { printf '0\n' > "$COUNT/deliver"; printf '0\n' > "$COUNT/refresh"; printf '0\n' > "$COUNT/preflight"; }
+gate() { cat "$COUNT/gate-$1" 2>/dev/null || printf 'unknown\n'; }
+set_gate() { printf '%s\n' "$2" > "$COUNT/gate-$1"; }
+reset_counts() {
+  printf '0\n' > "$COUNT/deliver"
+  printf '0\n' > "$COUNT/refresh"
+  printf '0\n' > "$COUNT/preflight"
+  set_gate human-merge present
+  set_gate transaction stable
+  set_gate lease stable
+  set_gate head "$Z_HEAD"
+  set_gate pr-head "$Z_HEAD"
+  CHANGE_ON_REFRESH=""
+}
 
 Z_WT="$ROOT"
 Z_MAIN=main
@@ -68,6 +80,15 @@ guard_classify_push_failure() { printf '%s\n' "$FAILURE_DOMAIN"; }
 
 guard_refresh_staging_for_merge() {
   bump refresh
+  if [ "$REFRESH_MODE" = refreshed ] || [ "$REFRESH_MODE" = noop ]; then
+    case "$CHANGE_ON_REFRESH" in
+      human-merge) set_gate human-merge removed ;;
+      transaction) set_gate transaction changed ;;
+      lease) set_gate lease changed ;;
+      head) set_gate head head-changed ;;
+      pr-head) set_gate pr-head pr-head-changed ;;
+    esac
+  fi
   case "$REFRESH_MODE" in
     refreshed|noop) printf '%s\n' "$REFRESH_MODE"; return 0 ;;
     blocked) printf '%s\n' 'refresh blocked' >&2; return 1 ;;
@@ -78,12 +99,28 @@ guard_refresh_staging_for_merge() {
 zmerge_guard_recovery_preflight() {
   bump preflight
   case "$PREFLIGHT_MODE" in
-    ok) return 0 ;;
+    ok) ;;
     behind) err_code z.main_ahead 'candidate 真落后；下一步：new z sync'; return 1 ;;
     head-changed) err_code z.pr_head_changed 'candidate HEAD 已改变；需要新的 zreview'; return 1 ;;
     review-invalid) err_code z.no_passing_review '当前 HEAD 没有有效 Review'; return 1 ;;
     *) err_code z.guard_recovery_preflight 'merge gates 未通过'; return 1 ;;
   esac
+  [ "$(gate human-merge)" = present ] || {
+    err_code z.human_merge_changed 'refresh 期间 human-merge gate 改变，停止'; return 1;
+  }
+  [ "$(gate transaction)" = stable ] || {
+    err_code z.transaction_changed 'refresh 期间 transaction state 改变，停止'; return 1;
+  }
+  [ "$(gate lease)" = stable ] || {
+    err_code z.lease_changed 'refresh 期间 lease 改变，停止'; return 1;
+  }
+  [ "$(gate head)" = "$Z_HEAD" ] || {
+    err_code z.pr_head_changed 'refresh 期间 candidate HEAD 改变，停止'; return 1;
+  }
+  [ "$(gate pr-head)" = "$Z_HEAD" ] || {
+    err_code z.pr_head_changed 'refresh 期间 PR head 改变，停止'; return 1;
+  }
+  return 0
 }
 
 # ── stale → 一次 refresh + 两次 preflight + 一次 retry ───────────────────
@@ -139,6 +176,24 @@ REFRESH_MODE=blocked
 run_capture A6_OUT A6_RC zmerge_deliver_review_with_guard_recovery
 expect_true 'R3 adapter refresh blocked 不 retry' '[ "$A6_RC" -ne 0 ] && [ "$(count refresh)" = 1 ] && [ "$(count deliver)" = 1 ]'
 expect_true 'R3 adapter refresh blocked 提示显式核对' 'printf "%s\n" "$A6_OUT" | grep -Fq "new guard sync"'
+
+# refresh 不是把前一轮授权冻结成可复用的 mock：每次 fault injection 都在
+# refresh 成功后改变一个 durable merge gate，第二次完整 preflight 必须读到
+# 变化并 fail-closed，绝不能进入 retry。
+for mutation in human-merge transaction lease head pr-head; do
+  reset_counts
+  DELIVER_MODE=stale
+  FAILURE_DOMAIN=guard-staging
+  PREFLIGHT_MODE=ok
+  REFRESH_MODE=refreshed
+  CHANGE_ON_REFRESH="$mutation"
+  run_capture MUTATION_OUT MUTATION_RC zmerge_deliver_review_with_guard_recovery
+  expect_true "R3 refresh 后 ${mutation} 改变阻断 retry" \
+    '[ "$MUTATION_RC" -ne 0 ] && [ "$(count deliver)" = 1 ] && [ "$(count refresh)" = 1 ] && [ "$(count preflight)" = 2 ]'
+  expect_true "R3 refresh 后 ${mutation} 有 gate 诊断" \
+    'printf "%s\n" "$MUTATION_OUT" | grep -Eiq "改变|changed|停止"'
+done
+CHANGE_ON_REFRESH=""
 
 expect_true 'R3 zmerge_do_merge 已使用 recovery adapter' \
   'grep -Fq "zmerge_deliver_review_with_guard_recovery" "$ROOT/.agents/skills/zmerge/scripts/merge-lib.sh"'

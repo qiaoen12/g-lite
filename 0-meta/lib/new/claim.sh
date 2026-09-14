@@ -192,39 +192,30 @@ task_origin_fetch_url() {
 
 # 命名 remote `claim` 必须等于 origin fetch URL。缺失或指错就改，不要求人操作。
 task_ensure_claim_remote() {
-  local wt="$1" want have common_cfg shared_values local_values line
+  local wt="$1" want have state staging guard_enabled=0
   want="$(task_origin_fetch_url "$wt")"
   [ -n "$want" ] || { err_code claim.no_origin "    ✗ 没有 origin fetch URL，无法建立 claim remote"; return 1; }
 
-  # linked worktree 的 claim remote 也不能把 remote.claim.url 写进 shared
-  # config。已有 shared 值不静默覆盖：它可能是用户自定义或旧 task 的事实，
-  # 由 Guard recovery/人工核对处理；当前 task 只在自己的 config.worktree
-  # 建立一份明确值。
-  if [ "$(type -t guard_enable_worktree_config 2>/dev/null)" = function ] \
-      && ! task_is_main_worktree "$wt"; then
-    guard_enable_worktree_config "$wt" || return 1
-    common_cfg="$(guard_common_config_file "$wt")" || {
-      err_code claim.claim_remote "    ✗ 无法读取 shared config，拒绝建立 claim remote"; return 1;
-    }
-    shared_values="$(git config --file "$common_cfg" --get-all remote.claim.url 2>/dev/null || true)"
-    if [ -n "$shared_values" ]; then
-      while IFS= read -r line; do
-        [ "$line" = "$want" ] || {
-          err_code claim.claim_remote "    ✗ shared claim remote 含自定义值，拒绝覆盖"; return 1;
-        }
-      done <<< "$shared_values"
-    fi
-    local_values="$(git -C "$wt" config --worktree --get-all remote.claim.url 2>/dev/null || true)"
-    if [ -z "$local_values" ]; then
-      git -C "$wt" config --worktree remote.claim.url "$want" \
-        || { err_code claim.claim_remote "    ✗ 无法创建 task-local claim remote"; return 1; }
-    elif [ "$local_values" != "$want" ]; then
-      err_code claim.claim_remote "    ✗ task-local claim remote 有自定义或多值，拒绝覆盖"; return 1
-    fi
-    return 0
+  # Guard 存在时先核对完整 effective claim transport。pushurl 会覆盖 url，
+  # receivepack 也可能把 claim push 绕到用户/旧 Guard 路径；任何 custom、
+  # mixed、ambiguous、multi-value 都必须在写入前 fail-closed。
+  if [ "$(type -t guard_claim_transport_preflight 2>/dev/null)" = function ] \
+      && [ "$(type -t guard_staging_git 2>/dev/null)" = function ]; then
+    staging="$(guard_staging_git 2>/dev/null || true)"
+    [ -d "$staging" ] && guard_enabled=1
+  fi
+  if [ "$guard_enabled" = 1 ]; then
+    guard_claim_transport_preflight "$wt" || return 1
+    state="$GUARD_CLAIM_STATE"
+    [ "$state" = canonical ] && return 0
   fi
 
-  if git -C "$wt" remote get-url claim >/dev/null 2>&1; then
+  if ! task_is_main_worktree "$wt" \
+      && [ "$(type -t guard_enable_worktree_config 2>/dev/null)" = function ]; then
+    guard_enable_worktree_config "$wt" || return 1
+    git -C "$wt" config --worktree remote.claim.url "$want" \
+      || { err_code claim.claim_remote "    ✗ 无法创建 task-local claim remote"; return 1; }
+  elif git -C "$wt" remote get-url claim >/dev/null 2>&1; then
     have="$(git -C "$wt" remote get-url claim 2>/dev/null || true)"
     if [ "$have" != "$want" ]; then
       git -C "$wt" remote set-url claim "$want" \
@@ -233,6 +224,10 @@ task_ensure_claim_remote() {
   else
     git -C "$wt" remote add claim "$want" \
       || { err_code claim.claim_remote "    ✗ 无法创建 claim remote"; return 1; }
+  fi
+  if [ "$guard_enabled" = 1 ] \
+      && [ "$(type -t guard_claim_transport_validate 2>/dev/null)" = function ]; then
+    guard_claim_transport_validate "$wt" || return 1
   fi
   return 0
 }

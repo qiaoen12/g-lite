@@ -139,7 +139,7 @@ setup_z() {
   Z_SCOPE=".agents/skills/zmerge/"
   ZMERGE_MERGED_PR=""
   Z_ISSUE_JSON="$TDIR/issue.json"
-  printf '%s\n' '{"data":{"repository":{"issue":{"body":"","id":"I"}}}}' > "$Z_ISSUE_JSON"
+  printf '%s\n' '{"data":{"repository":{"issue":{"body":"","id":"I","state":"OPEN","labels":{"nodes":[]}}}}}' > "$Z_ISSUE_JSON"
   z_wait_auto_close() { return 0; }
 }
 
@@ -203,6 +203,10 @@ task_pr_view_json() {
   jq -n --arg h "ffffffffffff" '{title:"feat(meta): x",headRefOid:$h,state:"OPEN",isDraft:false}'
 }
 task_pr_fields_ok() { return 0; }
+contract_pr_validate() { return 0; }
+z_required_contexts() { Z_REQUIRED_OK=1; Z_REQUIRED_CONTEXTS=; Z_REQUIRED_ERR=; return 0; }
+z_pr_checks_ok() { return 0; }
+contract_require_diff_in_scope() { return 0; }
 task_fetch_issue() { return 0; }
 derive_task_state() { printf '%s\n' "$TASK_STATUS_REVIEW"; }
 task_read_status_name() { printf '%s\n' "$TASK_STATUS_REVIEW"; }
@@ -247,6 +251,10 @@ task_pr_view_json() {
   jq -n --arg h "$Z_HEAD" '{title:"feat(meta): x",headRefOid:$h,state:"OPEN",isDraft:false}'
 }
 task_pr_fields_ok() { return 0; }
+contract_pr_validate() { return 0; }
+z_required_contexts() { Z_REQUIRED_OK=1; Z_REQUIRED_CONTEXTS=; Z_REQUIRED_ERR=; return 0; }
+z_pr_checks_ok() { return 0; }
+contract_require_diff_in_scope() { return 0; }
 task_fetch_issue() { return 0; }
 derive_task_state() { printf '%s\n' "$TASK_STATUS_REVIEW"; }
 task_read_status_name() { printf '%s\n' "$TASK_STATUS_BACKLOG"; }
@@ -259,6 +267,7 @@ z_merge_lock_release
 # 清掉 A2 的函数覆盖，避免污染后续。
 unset -f z_require_passing_review z_require_auto_merge_safe_review contract_fetch_main contract_main_blob \
   contract_stale task_find_matching_pr task_pr_view_json task_pr_fields_ok \
+  contract_pr_validate z_required_contexts z_pr_checks_ok contract_require_diff_in_scope \
   task_fetch_issue derive_task_state task_read_status_name \
   z_fetch_origin_main z_main_is_current
 # shellcheck source=/dev/null

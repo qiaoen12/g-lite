@@ -119,11 +119,24 @@ guard_write_txn_file() {
   mv -f "$tmp" "$(guard_txn_file "$tx" "$name")"
 }
 
-# receive-pack 开始前调用。只更新 snapshot namespace，不动 refs/heads。
+# receive-pack 开始前调用。无 ref 参数时维护完整 snapshot namespace（旧的
+# receive-pack 责任域）；有 ref 参数时只更新一个目标 snapshot ref，不 prune
+# 或更新其它 branch mirror，供 R3 scoped recovery 使用。
 guard_snapshot_github() {
-  local dir="$1" remote
+  local dir="$1" target_ref="${2:-}" remote target_snapshot
   remote="$(git --git-dir="$dir" remote get-url "$GUARD_REMOTE" 2>/dev/null || true)"
   [ -n "$remote" ] || { guard_err "staging 没有 ${GUARD_REMOTE} remote，无法镜像 GitHub"; return 1; }
+  if [ -n "$target_ref" ]; then
+    target_snapshot="$(guard_snapshot_ref "$target_ref")" || {
+      guard_err "不支持的 scoped snapshot ref：${target_ref}"; return 1;
+    }
+    if ! GIT_TERMINAL_PROMPT=0 git --git-dir="$dir" fetch --no-prune --no-tags \
+        --no-write-fetch-head --quiet "$GUARD_REMOTE" \
+        "${target_ref}:${target_snapshot}"; then
+      guard_err "无法镜像目标 GitHub ref ${target_ref}，fail-closed"; return 1
+    fi
+    return 0
+  fi
   if ! GIT_TERMINAL_PROMPT=0 git --git-dir="$dir" fetch --prune --no-tags --quiet \
       "$GUARD_REMOTE" "+refs/heads/*:${GUARD_SNAP}/heads/*"; then
     guard_err "无法镜像 GitHub refs，fail-closed（不用陈旧 staging 副本）"
