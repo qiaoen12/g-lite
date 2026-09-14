@@ -711,9 +711,9 @@ guard_refresh_staging_for_merge() (
   local GUARD_REFRESH_LOCK_STATE
 
   staging="$(guard_staging_git)"
-  [ -d "$staging" ] || { guard_err "merge refresh blocked: staging 不存在"; return 1; }
+  [ -d "$staging" ] || { guard_error "merge refresh blocked: staging 不存在"; return 1; }
   [ -f "$staging/hooks/git-guard-lib.sh" ] || {
-    guard_err "merge refresh blocked: staging hook library 不存在"; return 1;
+    guard_error "merge refresh blocked: staging hook library 不存在"; return 1;
   }
   guard_merge_gate_validate "$wt" "$main" stale-ok || return 1
   state="$staging/git-guard"
