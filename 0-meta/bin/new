@@ -56,6 +56,8 @@ usage() {
                             安全收尾：dirty / 未合入 / 未推送 任一命中即拒绝
 
   new task                  预检当前已 bind 的 Git 工作树与 Issue；不改 GitHub、不启动 Agent
+  new task worktree <n>     从已批准 Contract 建立任务 worktree：exact sparse、
+                            合法 branch、自动 bind。只要任务号，不必手写 --path
   new task bind <n>         在任务 worktree 显式绑定 Issue（本 worktree 的 git dir）
   new task approve <n>      人在主工作区、main 上把 Issue 正文写成 origin/main
                             上的契约文件。Backlog → Ready；在途任务只换契约、不动 Status。内容未变则 no-op

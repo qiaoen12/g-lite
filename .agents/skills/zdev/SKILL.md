@@ -23,6 +23,10 @@ canonical CLI 读取 binding + origin/main Contract，执行状态与范围门�
 
 原样返回 canonical CLI 的 Issue、Contract、branch、derived state、scope、HEAD、下一步和验证结果；失败也返回 reason code 与下一条命令。
 
+## 开工后
+
+start card / zdev gate PASS 只表示允许开发且 execution 已交接，不是开发完成，也不是下一步只能 Review。若 Next canonical command 是 `continue development`：读取 Contract，在允许范围内实现 R/A，验证并提交，直到 completion gate。Agent 退出码 0 不是 completion。只有 completion gate 通过后，下一步才是 `new z review`。
+
 ## 完成态
 
 开发交接只能发生在最终实现已进入明确 Git HEAD 且 worktree clean：untracked=0、unstaged=0、staged=0。`git add`、index.lock 或 `git commit` 失败时报告「未完成 / BLOCKED」，不写完成 Checkpoint；`new check --tier commit` 只证明暂存区检查，不证明 completion。无改动时必须明确报告 `no-change` 并保持 clean。
