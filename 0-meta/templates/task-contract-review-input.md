@@ -12,4 +12,6 @@ A1: 通过 | 定向测试通过
 
 每个 Contract R/A 必须恰好出现一次。R 只能是 `满足` / `不满足`；A 只能是 `通过` / `不通过` / `不适用`。`|` 右侧是证据，不能为空，也不能只有状态词。A 中登记的 `validator:<id>` 由仓库白名单实现执行，结果覆盖人工 A 状态；失败会把 A 置为不通过并阻止 Verdict=通过。
 
-Review actor 按 `--actor` → `NEW_TASK_ACTOR` → 当前 worktree 生效的 `git config user.email` 解析。与 claim actor 相同必须显式 `--allow-self`，并要求 Issue 已有 `human-merge`；渲染结果会写入机器字段 `Self-review=yes`。默认独立 Review 写 `Self-review=no`。
+`review_actor` 仍按 `--actor` → `NEW_TASK_ACTOR` → 当前 worktree 的 `git config user.email` 解析，但这只是领取/展示身份，不是独立性证明。`review_actor != claim_actor`、改 `--actor`、新 UUID、PID、机器名、模型名或终端名都不能单独制造独立 Reviewer。
+
+只有宿主或受控 launcher/hook 捕获的 execution/session `source_ref` 为 `verified`，且 reviewer lineage 不属于形成当前 candidate 的任何 dev/fix execution 或其 continuation/fork，才能写 `Self-review=no`。无法证明时写 `Self-review=unknown`，不得自动宣称独立 PASS。`--allow-self` 只用于同一 actor 的显式人工 self-review，且 Issue 必须已有 `human-merge`，结果写 `Self-review=yes`；它不是 unknown provenance 的 fallback。

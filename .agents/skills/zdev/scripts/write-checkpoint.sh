@@ -17,4 +17,4 @@ contract_checkpoint_validate "$checkpoint_body" "$Z_CONTRACT_JSON" "$Z_CONTRACT_
 task_checkpoint_completion_gate "$checkpoint_body" "$Z_WT" "${Z_BASE:-}" || exit 1
 
 z_write_checkpoint_file "$1"
-echo "已更新同一条 Checkpoint。"
+echo "已更新 Checkpoint tip（上一轮已归档为 historical fact）。"

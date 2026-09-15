@@ -6,7 +6,7 @@
 
 `new task claim` 与 `new z dev` 直接输出同一结构的 start card：Issue、`origin/main` 上的 Contract blob、worktree、branch、derived state、允许范围、HEAD 和下一条 canonical 命令。卡片是产品无关的事实包，Grok、Codex 等 adapter 只在卡片外追加自己的机械 trigger。它不要求 Agent 先完整阅读 07/08 或全部 policy；机器可判定的规则仍由 canonical CLI 执行。
 
-`Next canonical command` 按阶段取值：开工门禁刚通过、#13 `changed` completion 尚未成立时是 `continue development`，不是 Review。干净且 ahead=0 的树是尚未开发，不是已声明的 no-change。明确 no-change 是 #13 Checkpoint / completion 结论，start card 不会从 ahead=0 推断。只有 `changed` completion 成立时，下一步才是 `new z review <review-input>`。launcher / start card / Agent 退出码 0 都不表示开发完成。`new task grok|codex` 在卡片外追加 Developer execution handoff，要求 Agent 读取 Contract 并实际开发。
+`Next canonical command` 由当前阶段事实派生，不是只看 `changed` completion。开工门禁刚通过、#13 `changed` completion 尚未成立时是 `continue development`，不是 Review。干净且 ahead=0 的树是尚未开发，不是已声明的 no-change。明确 no-change 是 #13 Checkpoint / completion 结论，start card 不会从 ahead=0 推断。completion 已成立且没有适用 Review 时才是 `new z review <review-input>`；当前适用 Review 为不通过时是 `new z fix`；fix 形成新 candidate 后再 review；适用独立 PASS 走现有 `new z pr` / `new z merge`。`new z dev` / `new z fix` / `new z review` 另输出有界 stage facts：当前 tip、当前 finding 与历史引用，不灌入全部历史正文。launcher / start card / Agent 退出码 0 都不表示开发完成。`new task grok|codex` 在卡片外追加 Developer execution handoff，要求 Agent 读取 Contract 并实际开发。该 handoff 不是 durable execution provenance。
 
 `loaded_bytes` 只量卡片本体，以及卡片明确要求强制加载的文件。后续按需阅读的 docs、Review 输入和实现文件不进入这个指标。这样指标回答的是「开工最低加载量」，而不是「整个任务最终读了多少」。
 

@@ -175,10 +175,11 @@ expect_ok 'A4 Checkpoint machine field 唯一' test "$(grep -c '^claim_actor=' "
 expect_ok 'A4 Checkpoint 表格 actor' grep -Fq '| claim_actor | `claim@example.test` |' "$checkpoint_capture"
 unset -f task_write_checkpoint
 
-expect_fail 'A4 alpha→alpha 默认拒绝' review_actor_policy alpha alpha 0 1
-expect_ok 'A4 alpha→beta 独立通过' test "$(review_actor_policy beta alpha 0 0)" = no
+expect_ok 'A4 alpha→alpha 无 provenance 为 unknown' test "$(review_actor_policy alpha alpha 0 1)" = unknown
+expect_ok 'A4 alpha→beta 不再只靠 actor 判独立' test "$(review_actor_policy beta alpha 0 0)" = unknown
 expect_ok 'A4 allow-self 返回 yes' test "$(review_actor_policy alpha alpha 1 1)" = yes
 expect_fail 'A4 allow-self 无 human-merge 拒绝' review_actor_policy alpha alpha 1 0
+expect_fail 'A4 allow-self 不能换 actor 冒充独立' review_actor_policy beta alpha 1 1
 
 EFFECTIVE="$TDIR/effective.json"
 RESULTS="$TDIR/results.json"
@@ -240,9 +241,18 @@ expect_fail 'R3 actor machine field 与表格不一致' contract_review_validate
 
 same_actor_no="$TDIR/same-actor-no.md"
 sed -e 's/^Self-review=yes$/Self-review=no/' \
+  -e 's/| Self-review | \`yes\` |/| Self-review | \`no\` |/' \
   -e 's/| Self-review | yes |/| Self-review | no |/' \
   "$SELF_RENDER" > "$same_actor_no"
-expect_fail 'A4 alpha/alpha/no 拒绝' contract_review_validate "$(cat "$same_actor_no")" "$CONTRACT" "$BLOB" "$HEAD"
+expect_ok 'A4 同 Git identity 的 Self-review=no 结构仍可读' \
+  contract_review_validate "$(cat "$same_actor_no")" "$CONTRACT" "$BLOB" "$HEAD"
+unknown_self="$TDIR/unknown-self.md"
+sed -e 's/^Self-review=yes$/Self-review=unknown/' \
+  -e 's/| Self-review | \`yes\` |/| Self-review | \`unknown\` |/' \
+  -e 's/| Self-review | yes |/| Self-review | unknown |/' \
+  "$SELF_RENDER" > "$unknown_self"
+expect_ok 'A4 Self-review=unknown 结构合法' \
+  contract_review_validate "$(cat "$unknown_self")" "$CONTRACT" "$BLOB" "$HEAD"
 
 different_actor_yes="$TDIR/different-actor-yes.md"
 sed -e 's/^claim_actor=alpha$/claim_actor=beta/' \

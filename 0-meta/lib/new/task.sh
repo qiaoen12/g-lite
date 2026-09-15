@@ -1029,22 +1029,27 @@ task_resolve_pr_title() {
   return 1
 }
 
-# 零条则 POST，一条则 PATCH，多条或列出失败则拒绝。正文必须含对应标记。
+# 零条则 POST，一条则先归档旧 tip 再 PATCH。多条或列出失败则拒绝。
+# 正文必须含对应 tip 标记。历史评论改用 *-history 标记，不靠 created_at。
 task_write_marked_comment() {
   local owner="$1" repo="$2" number="$3" mark="$4" label="$5" body="$6"
-  local c cid payload
+  local c cid payload old_body hid role
   case "$body" in
     *"$mark"*) ;;
     *)
       err_code task.comment_marker_missing "    ✗ ${label} 正文缺少标记 ${mark}，拒绝写入"
       return 1 ;;
   esac
-  payload="$(jq -n --arg body "$body" '{body: $body}')"
   if ! c="$(task_unique_marked_comment "$owner" "$repo" "$number" "$mark" "$label")"; then
     err_code task.comment_unreadable "    ✗ 无法读取现有 ${label} 评论，不另开新楼。"
     return 1
   fi
+  if [ "$(type -t task_facts_stamp_provenance)" = function ]; then
+    role="$(task_facts_role_from_entry)"
+    body="$(task_facts_stamp_provenance "$body" "$role" "${Z_WT:-}")" || return 1
+  fi
   if [ -z "$c" ]; then
+    payload="$(jq -n --arg body "$body" '{body: $body}')"
     printf '%s\n' "$payload" \
       | GH_PAGER=cat gh api -X POST "repos/${owner}/${repo}/issues/${number}/comments" --input - >/dev/null
     return
@@ -1054,6 +1059,16 @@ task_write_marked_comment() {
     err_code task.comment_id_invalid "    ✗ ${label} 评论 id 不可用，不另开新楼。"
     return 1
   fi
+  old_body="$(printf '%s' "$c" | jq -r '.body // empty')"
+  if [ -n "$old_body" ] && [ "$old_body" != "$body" ] \
+     && [ "$(type -t task_facts_archive_tip)" = function ] \
+     && task_facts_history_mark_for "$mark" >/dev/null 2>&1; then
+    hid="$(task_facts_archive_tip "$owner" "$repo" "$number" "$mark" "$label" "$c")" || return 1
+    body="$(task_facts_prepare_tip_body "$body" "$mark" "$cid" "$hid" \
+      "${FACT_ARCHIVE_KIND:-}" "${FACT_ARCHIVE_ROLE:-unknown}" \
+      "${FACT_ARCHIVE_HEAD:-}" "${FACT_ARCHIVE_BLOB:-}" "$old_body")"
+  fi
+  payload="$(jq -n --arg body "$body" '{body: $body}')"
   printf '%s\n' "$payload" \
     | GH_PAGER=cat gh api -X PATCH "repos/${owner}/${repo}/issues/comments/${cid}" --input - >/dev/null
 }
@@ -1745,7 +1760,7 @@ ${TASK_CHECKPOINT_MARK}
 claim_actor=${claim_actor}
 ## Checkpoint
 
-由 \`new task review\` 写入或更新，同一条评论反复覆盖，不另开新楼。
+由 \`new task review\` 写入或更新。当前 Checkpoint tip 唯一；上一轮正文归档为 historical fact。
 
 | 项 | 值 |
 | --- | --- |
@@ -2505,4 +2520,9 @@ fi
 if [ "$(type -t guard_wire_worktree 2>/dev/null)" != function ]; then
   # shellcheck source=/dev/null
   . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/guard.sh"
+fi
+# #16 阶段事实与 tip/history writer。放在本文件末尾加载，避免改 bin/new。
+if [ "$(type -t task_facts_load 2>/dev/null)" != function ]; then
+  # shellcheck source=/dev/null
+  . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/facts.sh"
 fi

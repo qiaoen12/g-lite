@@ -1,5 +1,11 @@
 <!-- new-task-checkpoint -->
 claim_actor=ACTOR_ID
+fact_id=TIP_COMMENT_ID
+prev_fact_id=PREV_FACT_ID
+provenance_version=1
+source_type=unknown
+role=dev
+verification_state=unknown-unverified
 ## Checkpoint
 
 | 项 | 值 |
@@ -44,3 +50,11 @@ claim_actor=ACTOR_ID
 ```
 
 Developer/Fixer 只有在最终实现进入明确 HEAD 且三类 dirty 数量均为 0 时才能填写 `review-ready`；无改动必须明确填写 `no-change`。`git add`、index.lock 或 `git commit` 失败时填写 `未完成 / BLOCKED`，不能用 working tree 或 `new check --tier commit` 的 PASS 代替完成态。
+
+`fact_id` / `prev_fact_id` / provenance 是 #16 字段。缺省按 `unknown-unverified` 读；不要手写 UUID 或 actor 充当 `source_ref`。当前 tip 唯一；上一轮归档为 `<!-- new-task-checkpoint-history -->`，完整历史按 comment id 追溯。
+
+### Historical facts
+
+| fact_id | comment_id | kind | role | HEAD | Contract |
+| --- | --- | --- | --- | --- | --- |
+| PREV_FACT_ID | PREV_FACT_ID | checkpoint | dev | `full-sha` | `blob-sha` |

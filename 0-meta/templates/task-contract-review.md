@@ -1,7 +1,13 @@
 <!-- new-task-review -->
 review_actor=ACTOR_ID
 claim_actor=CLAIM_ACTOR_ID
-Self-review=no
+Self-review=unknown
+fact_id=TIP_COMMENT_ID
+prev_fact_id=PREV_FACT_ID
+provenance_version=1
+source_type=unknown
+role=review
+verification_state=unknown-unverified
 
 ## Review
 
@@ -15,7 +21,7 @@ Self-review=no
 | Contract | `blob-sha` |
 | review_actor | `ACTOR_ID` |
 | claim_actor | `CLAIM_ACTOR_ID` |
-| Self-review | `no` |
+| Self-review | `unknown` |
 
 ### 通过理由
 
@@ -40,3 +46,11 @@ Self-review=no
 
 - R1：满足。实现位置与证据。
 - A1：通过。证据。
+
+`Self-review=no` 只能在 execution provenance 证明独立后写入。无法证明时用 `unknown`，不要改 `--actor` 或 `--allow-self` 冒充独立。当前 tip 唯一；上一轮归档为 `<!-- new-task-review-history -->`。
+
+### Historical facts
+
+| fact_id | comment_id | kind | role | HEAD | Contract |
+| --- | --- | --- | --- | --- | --- |
+| PREV_FACT_ID | PREV_FACT_ID | review | review | `FULL_SHA` | `blob-sha` |

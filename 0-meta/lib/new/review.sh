@@ -57,19 +57,21 @@ review_contract_id_exists() {
 
 review_actor_policy() {
   local review_actor="$1" claim_actor="$2" allow_self="${3:-0}" human_merge="${4:-0}"
-  if [ "$review_actor" != "$claim_actor" ]; then
-    printf '%s\n' no
+  if [ "$allow_self" = 1 ]; then
+    if [ "$review_actor" != "$claim_actor" ]; then
+      review_reject review.self_actor_mismatch \
+        '--allow-self 只用于同一 actor 的显式人工 self-review，不能用来制造独立性'
+      return 1
+    fi
+    if [ "$human_merge" != 1 ]; then
+      review_reject review.self_requires_human_merge 'Self-review 必须有 human-merge 标签；拒绝发布'
+      return 1
+    fi
+    printf '%s\n' yes
     return 0
   fi
-  if [ "$allow_self" != 1 ]; then
-    review_reject review.actor_not_independent 'review_actor 与 claim_actor 相同；需要 --allow-self 才能显式 self-review'
-    return 1
-  fi
-  if [ "$human_merge" != 1 ]; then
-    review_reject review.self_requires_human_merge 'Self-review 必须有 human-merge 标签；拒绝发布'
-    return 1
-  fi
-  printf '%s\n' yes
+  # actor 字符串不同不再等于独立。未证明时只能记 unknown。
+  printf '%s\n' unknown
 }
 
 review_parse_structured_input() {
@@ -490,6 +492,14 @@ review_publish() {
   fi
   if ! self_review="$(review_actor_policy "$review_actor" "$claim_actor" "$allow_self" "$human_merge")"; then
     return 1
+  fi
+  if [ "$self_review" != yes ]; then
+    if [ "$(type -t task_facts_current_reviewer_independent)" = function ] \
+       && task_facts_current_reviewer_independent; then
+      self_review=no
+    else
+      self_review=unknown
+    fi
   fi
 
   parsed="$(mktemp -t review-parsed.XXXXXX)"; TMPS="$TMPS $parsed"

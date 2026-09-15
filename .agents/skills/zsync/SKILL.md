@@ -21,7 +21,7 @@ canonical CLI 负责 `git rebase origin/main`、冲突恢复和远端 `--force-w
 
 ## 返回用户
 
-返回同步前后 main/HEAD、是否发生 rebase、最小验证结果，以及要求重新 `zreview` 的下一步。
+返回同步前后 main/HEAD。noop 且 HEAD/Contract/provenance 未变则原 PASS 仍适用；rebase 改变 HEAD SHA 后必须新 Review。
 
 ## 不做
 

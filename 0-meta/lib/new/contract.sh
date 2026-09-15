@@ -1149,8 +1149,8 @@ contract_review_validate() {
   task_actor_valid "$claim_actor" \
     || { contract_err contract.claim_actor_invalid "Review 的 claim_actor 非法"; return 1; }
   case "$self_review" in
-    yes|no) ;;
-    *) contract_err contract.self_review_invalid "Review 的 Self-review 必须是 yes 或 no"; return 1 ;;
+    yes|no|unknown) ;;
+    *) contract_err contract.self_review_invalid "Review 的 Self-review 必须是 yes、no 或 unknown"; return 1 ;;
   esac
   table_actor="$(contract_table_field "$body" review_actor)"
   [ "$table_actor" = "$review_actor" ] \
@@ -1168,11 +1168,9 @@ contract_review_validate() {
         return 1
       }
       ;;
-    no)
-      [ "$review_actor" != "$claim_actor" ] || {
-        contract_err contract.self_review_actor_mismatch "Self-review=no 但 review_actor 与 claim_actor 相同"
-        return 1
-      }
+    no|unknown)
+      # no 不再要求 actor 字符串不同：同 Git identity 的真实独立 A/B 可以 Self-review=no。
+      # unknown 表示尚未证明独立，也不得因此改写旧 verdict。
       ;;
   esac
   verdict="$(contract_table_field "$body" "Verdict")"
