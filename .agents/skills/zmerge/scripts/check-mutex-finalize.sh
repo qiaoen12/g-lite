@@ -127,19 +127,29 @@ make_pair() {
 }
 
 setup_z() {
+  local wanted current
   Z_WT="$1"
   Z_MAIN=main
   Z_OWNER=o
   Z_REPO=r
   Z_NUMBER=21
   Z_GIT_BR="${2:-task-21}"
+  wanted="$Z_GIT_BR"
+  current="$(git -C "$Z_WT" symbolic-ref --short HEAD 2>/dev/null || true)"
+  if [ "$current" != "$wanted" ]; then
+    if git -C "$Z_WT" show-ref --verify --quiet "refs/heads/$wanted"; then
+      git -C "$Z_WT" switch -q "$wanted"
+    else
+      git -C "$Z_WT" switch -q -c "$wanted"
+    fi
+  fi
   Z_HEAD="$(git -C "$Z_WT" rev-parse HEAD)"
   Z_SQUASH_TITLE="feat(meta): x"
   Z_CONTRACT_BLOB=deadbeef
   Z_SCOPE=".agents/skills/zmerge/"
   ZMERGE_MERGED_PR=""
   Z_ISSUE_JSON="$TDIR/issue.json"
-  printf '%s\n' '{"data":{"repository":{"issue":{"body":"","id":"I"}}}}' > "$Z_ISSUE_JSON"
+  printf '%s\n' '{"data":{"repository":{"issue":{"body":"","id":"I","state":"OPEN","labels":{"nodes":[]}}}}}' > "$Z_ISSUE_JSON"
   z_wait_auto_close() { return 0; }
 }
 
@@ -203,6 +213,10 @@ task_pr_view_json() {
   jq -n --arg h "ffffffffffff" '{title:"feat(meta): x",headRefOid:$h,state:"OPEN",isDraft:false}'
 }
 task_pr_fields_ok() { return 0; }
+contract_pr_validate() { return 0; }
+z_required_contexts() { Z_REQUIRED_OK=1; Z_REQUIRED_CONTEXTS=; Z_REQUIRED_ERR=; return 0; }
+z_pr_checks_ok() { return 0; }
+contract_require_diff_in_scope() { return 0; }
 task_fetch_issue() { return 0; }
 derive_task_state() { printf '%s\n' "$TASK_STATUS_REVIEW"; }
 task_read_status_name() { printf '%s\n' "$TASK_STATUS_REVIEW"; }
@@ -247,6 +261,10 @@ task_pr_view_json() {
   jq -n --arg h "$Z_HEAD" '{title:"feat(meta): x",headRefOid:$h,state:"OPEN",isDraft:false}'
 }
 task_pr_fields_ok() { return 0; }
+contract_pr_validate() { return 0; }
+z_required_contexts() { Z_REQUIRED_OK=1; Z_REQUIRED_CONTEXTS=; Z_REQUIRED_ERR=; return 0; }
+z_pr_checks_ok() { return 0; }
+contract_require_diff_in_scope() { return 0; }
 task_fetch_issue() { return 0; }
 derive_task_state() { printf '%s\n' "$TASK_STATUS_REVIEW"; }
 task_read_status_name() { printf '%s\n' "$TASK_STATUS_BACKLOG"; }
@@ -259,6 +277,7 @@ z_merge_lock_release
 # 清掉 A2 的函数覆盖，避免污染后续。
 unset -f z_require_passing_review z_require_auto_merge_safe_review contract_fetch_main contract_main_blob \
   contract_stale task_find_matching_pr task_pr_view_json task_pr_fields_ok \
+  contract_pr_validate z_required_contexts z_pr_checks_ok contract_require_diff_in_scope \
   task_fetch_issue derive_task_state task_read_status_name \
   z_fetch_origin_main z_main_is_current
 # shellcheck source=/dev/null
@@ -287,8 +306,8 @@ expect_true "A3 文案" 'printf "%s\n" "$a3out" | grep -Fq "远端已合并;fina
 expect_eq "A3 第一次未调用 merge" 0 "$(got merge)"
 expect_eq "A3 第一次尝试删除" 1 "$(got delete)"
 
-jq -n --arg br task-21 \
-  '[{number:9,headRefName:$br,baseRefName:"main",state:"MERGED",title:"feat(meta): x",mergeCommit:{oid:""}}]' \
+jq -n --arg br task-21 --arg head "$Z_HEAD" --arg merge "$(git -C "$A3/wt" rev-parse main)" \
+  '[{number:9,headRefName:$br,baseRefName:"main",state:"MERGED",title:"feat(meta): x",headRefOid:$head,mergeCommit:{oid:$merge}}]' \
   > "$GH_MERGED_FIXTURE"
 printf '%s\n' '[]' > "$GH_OPEN_FIXTURE"
 cat "$GH_MERGED_FIXTURE" > "$GH_ALL_FIXTURE"
@@ -310,8 +329,8 @@ make_pair "$A4"
 cd "$A4/wt"
 setup_z "$A4/wt" task-21
 zero merge
-jq -n --arg br task-21 \
-  '[{number:9,headRefName:$br,baseRefName:"main",state:"MERGED",title:"feat(meta): x",mergeCommit:{oid:""}}]' \
+jq -n --arg br task-21 --arg head "$Z_HEAD" --arg merge "$(git -C "$A4/wt" rev-parse main)" \
+  '[{number:9,headRefName:$br,baseRefName:"main",state:"MERGED",title:"feat(meta): x",headRefOid:$head,mergeCommit:{oid:$merge}}]' \
   > "$GH_MERGED_FIXTURE"
 cat "$GH_MERGED_FIXTURE" > "$GH_ALL_FIXTURE"
 printf '%s\n' '[]' > "$GH_OPEN_FIXTURE"
@@ -623,6 +642,64 @@ expect_eq "40-A4 回读空 mergeCommit 非 0" 1 "$s4obs"
 expect_eq "40-A4 回读 reason" z.merge_commit_unobserved "$METRICS_REASON_CODE"
 expect_eq "40-A4 回读未 merge" 0 "$(got merge)"
 expect_eq "40-A4 有界重试 view" 2 "$(got view)"
+
+# ── #14 finalize：历史同名 PR 不得替代当前 HEAD proof ──
+# 当前 branch 与历史 merged PR 同名，但历史 PR 的 head=A；本轮当前
+# Z_HEAD=B，且远端 task branch 已不存在。只按 branch 名命中会错误 finalize，
+# 正确结果必须回到 merge lane。
+HF="$TDIR/history-finalize"
+make_pair "$HF"
+cd "$HF/wt"
+git -C "$HF/wt" checkout -qb task-14
+printf 'head-a\n' > "$HF/wt/history.txt"
+git -C "$HF/wt" add history.txt
+git -C "$HF/wt" commit -qm historical-head-a
+history_a="$(git -C "$HF/wt" rev-parse HEAD)"
+git -C "$HF/wt" push -q origin HEAD:refs/heads/task-14
+printf 'head-b\n' >> "$HF/wt/history.txt"
+git -C "$HF/wt" add history.txt
+git -C "$HF/wt" commit -qm current-head-b
+history_b="$(git -C "$HF/wt" rev-parse HEAD)"
+git --git-dir="$HF/origin.git" update-ref -d refs/heads/task-14
+setup_z "$HF/wt" task-14
+Z_HEAD="$history_b"
+jq -nc --arg head "$history_a" --arg merge "$(git -C "$HF/wt" rev-parse main)" \
+  '[{number:14,state:"MERGED",headRefName:"task-14",baseRefName:"main",headRefOid:$head,mergeCommit:{oid:$merge}}]' \
+  > "$GH_MERGED_FIXTURE"
+printf '%s\n' '[]' > "$GH_ALL_FIXTURE"
+ZMERGE_MERGED_PR=""
+METRICS_REASON_CODE=""
+history_rc=0
+zmerge_decide_action || history_rc=$?
+expect_eq "14 历史 merged PR + 当前 B 不 finalize" 0 "$history_rc"
+expect_eq "14 历史 merged PR + 当前 B 进入 merge" merge "$ZMERGE_ACTION"
+expect_eq "14 历史 proof 未被采纳" '' "$ZMERGE_MERGED_PR"
+expect_true "14 当前远端 branch 确实 missing" \
+  '! git --git-dir="$HF/origin.git" show-ref --verify --quiet refs/heads/task-14'
+
+# 同一决策函数的正向边界：只有 merged PR headRefOid == 当前 Z_HEAD 才能
+# 形成 finalize action。
+HG="$TDIR/history-finalize-good"
+make_pair "$HG"
+cd "$HG/wt"
+git -C "$HG/wt" checkout -qb task-14
+printf 'head-current\n' > "$HG/wt/history.txt"
+git -C "$HG/wt" add history.txt
+git -C "$HG/wt" commit -qm current-head
+history_good="$(git -C "$HG/wt" rev-parse HEAD)"
+git --git-dir="$HG/origin.git" update-ref -d refs/heads/task-14
+setup_z "$HG/wt" task-14
+jq -nc --arg head "$history_good" --arg merge "$(git -C "$HG/wt" rev-parse main)" \
+  '[{number:14,state:"MERGED",headRefName:"task-14",baseRefName:"main",headRefOid:$head,mergeCommit:{oid:$merge}}]' \
+  > "$GH_MERGED_FIXTURE"
+ZMERGE_MERGED_PR=""
+METRICS_REASON_CODE=""
+history_good_rc=0
+zmerge_decide_action || history_good_rc=$?
+expect_eq "14 当前 HEAD 等于 merged PR head 才 finalize" 0 "$history_good_rc"
+expect_eq "14 当前 HEAD 等价 proof 进入 finalize" finalize "$ZMERGE_ACTION"
+expect_eq "14 正向 proof headRefOid" "$history_good" \
+  "$(printf '%s' "$ZMERGE_MERGED_PR" | jq -r '.headRefOid')"
 
 # ── #40 查询路径：不设 ZMERGE_MERGED_PR，对齐 ceshi test zmerge ──
 S1L="$TDIR/s1l"

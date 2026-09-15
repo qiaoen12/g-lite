@@ -243,7 +243,11 @@ mkdir -p "$(dirname "$DEST")"
 rm -rf "$DEST"
 mv "$ST" "$DEST"
 ST="$DEST"
-git -C "$WT" remote set-url --push origin "$GH"
+# Keep the fresh linked-worktree fixture free of shared transport values.  The
+# v1.0 legacy shape is covered separately; this section exercises the new
+# worktree-local constructor.
+git -C "$WT" config --unset-all remote.origin.pushurl 2>/dev/null || true
+git -C "$WT" config --unset-all remote.origin.receivepack 2>/dev/null || true
 git -C "$WT" remote remove claim 2>/dev/null || true
 # 主工作区（.git 目录）不接线
 expect_eq "主工作区 guard_wire no-op" 0 "$(task_is_main_worktree "$WT"; echo $?)"
@@ -253,7 +257,6 @@ expect_eq "主工作区 guard_wire no-op" 0 "$(task_is_main_worktree "$WT"; echo
 git -C "$WT" worktree add -q -b wire-task "$TDIR/wire-linked" task-30 >/dev/null
 LINK="$TDIR/wire-linked"
 git -C "$LINK" remote set-url origin "$(git -C "$WT" remote get-url origin)"
-git -C "$LINK" remote set-url --push origin "$GH"
 set +e
 wire_rc=0
 guard_wire_worktree "$LINK" || wire_rc=$?
@@ -680,8 +683,12 @@ rm -rf "$MDEST"
 mkdir -p "$(dirname "$MDEST")"
 mv "$ST" "$MDEST"
 ST="$MDEST"
-git -C "$MROOT" remote set-url --push origin "$GH"
-git -C "$MROOT" config remote.origin.receivepack "$ST/hooks/guard-receive-pack"
+# Leave the main/common config clean; task_bind must construct both transport
+# values in each linked worktree's config.worktree.
+MCOMMON="$(guard_common_config_file "$MROOT")"
+git config --file "$MCOMMON" --unset-all remote.origin.pushurl 2>/dev/null || true
+git config --file "$MCOMMON" --unset-all remote.origin.receivepack 2>/dev/null || true
+git config --file "$MCOMMON" --unset-all remote.claim.url 2>/dev/null || true
 MLOCK="$TDIR/matrix-derived.lock"
 # Override equals this clone's origin nwo so metrics identity matches the
 # staging dir computed above. Do not hardcode a host repo name.

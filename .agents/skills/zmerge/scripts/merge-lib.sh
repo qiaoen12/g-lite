@@ -85,7 +85,11 @@ z_merge_lock_release() {
 }
 
 zmerge_find_merged_pr() {
-  local owner="$1" repo="$2" head="$3" base="$4" js n
+  local owner="$1" repo="$2" head="$3" base="$4" tip="$5" js n
+  [ -n "$tip" ] || {
+    err_code z.finalize_head_unreadable "没有当前 Z_HEAD，拒绝使用历史 merged PR finalize"
+    return 2
+  }
   if ! js="$(GH_PAGER=cat gh pr list \
       --repo "${owner}/${repo}" \
       --head "$head" \
@@ -101,11 +105,8 @@ zmerge_find_merged_pr() {
     err_code z.pr_list_failed "已合并 PR 列表无法解析"
     return 2
   fi
-  if [ "$n" = 0 ]; then
-    printf ''
-    return 0
-  fi
-  printf '%s' "$js" | jq -c '.[0]'
+  printf '%s' "$js" | jq -c --arg head "$head" --arg base "$base" --arg tip "$tip" \
+    'map(select(.state == "MERGED" and .headRefName == $head and .baseRefName == $base and .headRefOid == $tip and ((.mergeCommit.oid // "") | length) > 0)) | .[0] // empty'
 }
 
 # 为当前 tip 取 squash 等价证明。优先本轮 ZMERGE_MERGED_PR（headRefOid 必须
@@ -116,7 +117,10 @@ zmerge_squash_proof_pr() {
   local tip="$1" pr_head js n
   if [ -n "${ZMERGE_MERGED_PR:-}" ]; then
     pr_head="$(printf '%s' "$ZMERGE_MERGED_PR" | jq -r '.headRefOid // empty' 2>/dev/null || true)"
-    if [ "$pr_head" = "$tip" ]; then
+    if [ "$pr_head" = "$tip" ] \
+        && [ "$(printf '%s' "$ZMERGE_MERGED_PR" | jq -r '.headRefName // empty' 2>/dev/null || true)" = "$Z_GIT_BR" ] \
+        && [ "$(printf '%s' "$ZMERGE_MERGED_PR" | jq -r '.baseRefName // empty' 2>/dev/null || true)" = "$Z_MAIN" ] \
+        && [ "$(printf '%s' "$ZMERGE_MERGED_PR" | jq -r '.state // empty' 2>/dev/null || true)" = MERGED ]; then
       printf '%s' "$ZMERGE_MERGED_PR"
       return 0
     fi
@@ -136,8 +140,8 @@ zmerge_squash_proof_pr() {
     err_code z.pr_list_failed "已合并 PR 列表无法解析"
     return 2
   fi
-  printf '%s' "$js" | jq -c --arg tip "$tip" \
-    'map(select(.headRefOid == $tip)) | .[0] // empty'
+  printf '%s' "$js" | jq -c --arg tip "$tip" --arg head "$Z_GIT_BR" --arg base "$Z_MAIN" \
+    'map(select(.state == "MERGED" and .headRefName == $head and .baseRefName == $base and .headRefOid == $tip)) | .[0] // empty'
 }
 
 # 0=有 PR；1=确认无 PR；2=读取失败。
@@ -162,10 +166,21 @@ zmerge_any_pr_for_head() {
 
 # 设置 ZMERGE_ACTION=merge|finalize。finalize 时 ZMERGE_MERGED_PR 可能为空。
 zmerge_decide_action() {
-  local merged any_rc=0
+  local merged any_rc=0 current_branch tip
   ZMERGE_ACTION=""
   ZMERGE_MERGED_PR=""
-  merged="$(zmerge_find_merged_pr "$Z_OWNER" "$Z_REPO" "$Z_GIT_BR" "$Z_MAIN")" || return 1
+  current_branch="$(git -C "$Z_WT" symbolic-ref --short HEAD 2>/dev/null || true)"
+  [ "$current_branch" = "$Z_GIT_BR" ] || {
+    err_code z.branch_changed "finalize decision 的当前 branch 已改变（${current_branch:-detached} ≠ ${Z_GIT_BR:-empty}）"
+    return 1
+  }
+  tip="$(git -C "$Z_WT" rev-parse HEAD 2>/dev/null || true)"
+  [ -n "$tip" ] || { err_code z.finalize_head_unreadable "读不到当前 HEAD，拒绝 finalize"; return 1; }
+  [ "$tip" = "${Z_HEAD:-}" ] || {
+    err_code z.pr_head_changed "当前 HEAD 已改变（${tip} ≠ ${Z_HEAD:-empty}），拒绝历史 finalize proof"
+    return 1
+  }
+  merged="$(zmerge_find_merged_pr "$Z_OWNER" "$Z_REPO" "$Z_GIT_BR" "$Z_MAIN" "$tip")" || return 1
   if [ -n "$merged" ]; then
     ZMERGE_ACTION=finalize
     ZMERGE_MERGED_PR="$merged"
@@ -188,12 +203,19 @@ zmerge_decide_action() {
   ZMERGE_ACTION=merge
 }
 
-# 持锁后最后复读。放行看 derive_task_state；Project Status 只警告。
-zmerge_reread_before_merge() {
-  local derived project pr pr_num js head_oid cur_blob
-
-  Z_HEAD="$(git -C "$Z_WT" rev-parse HEAD)" || {
-    err_code task.head_unreadable "读不到 HEAD"
+# 这些小门禁共享一套 reread 实现；pre-push recovery 只组合不依赖 PR 的
+# 门禁，full merge recovery/final merge 再组合 PR/checks。保持 z_load 时的
+# Z_HEAD 不变，任何 candidate HEAD 改变都必须走新的 Review。
+zmerge_reread_head_branch_main_gates() {
+  local head_oid
+  if [ -z "${Z_HEAD:-}" ]; then
+    err_code task.head_unreadable "没有 zmerge 初始 candidate HEAD，拒绝猜测"
+    return 1
+  fi
+  head_oid="$(git -C "$Z_WT" rev-parse HEAD 2>/dev/null || true)"
+  [ -n "$head_oid" ] || { err_code task.head_unreadable "读不到 HEAD"; return 1; }
+  [ "$head_oid" = "$Z_HEAD" ] || {
+    err_code z.pr_head_changed "candidate HEAD 已改变（${head_oid} ≠ ${Z_HEAD}），需要新的 zreview"
     return 1
   }
   z_fetch_origin_main "$Z_WT" "$Z_MAIN" || return 1
@@ -202,18 +224,264 @@ zmerge_reread_before_merge() {
 如果同步导致 HEAD 改变，旧 Review 将失效，需重新 zreview。"
     return 1
   fi
+}
 
-  z_require_passing_review || return 1
-  z_require_auto_merge_safe_review || return 1
+zmerge_reread_branch_gate() {
+  local current_branch
+  current_branch="$(git -C "$Z_WT" symbolic-ref --short HEAD 2>/dev/null || true)"
+  [ -n "${Z_GIT_BR:-}" ] && [ "$current_branch" = "$Z_GIT_BR" ] || {
+    err_code z.branch_changed "candidate branch 已改变（${current_branch:-游离} ≠ ${Z_GIT_BR:-空}），拒绝 recovery"
+    return 1
+  }
+  task_branch_pushable "$Z_GIT_BR" "$Z_MAIN" || {
+    err_code z.branch_not_pushable "candidate branch 不可交付：${Z_GIT_BR:-空}"
+    return 1
+  }
+}
 
+zmerge_reread_contract_gate() {
+  local cur_blob
   contract_fetch_main "$Z_WT" "$Z_MAIN" \
     || { err_code contract.fetch_main_failed "无法 fetch origin/${Z_MAIN}，不使用本地陈旧副本"; return 1; }
   cur_blob="$(contract_main_blob "$Z_WT" "$Z_NUMBER" "$Z_MAIN")" \
-    || { err_code contract.missing "origin/${Z_MAIN} 上没有契约，拒绝 merge"; return 1; }
-  if contract_stale "$Z_CONTRACT_BLOB" "$cur_blob" "合并前复读"; then
-    err_code contract.stale "契约已重新批准，拒绝 merge。重新 zreview 后再试。"
+    || { err_code contract.missing "origin/${Z_MAIN} 上没有契约，拒绝继续"; return 1; }
+  ZMERGE_CURRENT_CONTRACT_BLOB="$cur_blob"
+  if contract_stale "$Z_CONTRACT_BLOB" "$cur_blob" "merge gate reread"; then
+    err_code contract.stale "契约已重新批准，拒绝继续。重新 zreview 后再试。"
     return 1
   fi
+}
+
+zmerge_reread_diff_gate() {
+  contract_require_diff_in_scope "$Z_WT" "$Z_BASE" "$Z_HEAD" "$Z_SCOPE" \
+    || { err_code z.diff_out_of_scope "真实 diff 越界，拒绝 merge"; return 1; }
+}
+
+zmerge_reread_issue_gates() {
+  local issue_state labels derived project
+  if ! task_fetch_issue "$Z_OWNER" "$Z_REPO" "$Z_NUMBER" "$Z_ISSUE_JSON"; then
+    err_code task.issue_fetch_failed "无法读取 Issue / Project 状态"
+    return 1
+  fi
+  issue_state="$(jq -r '.data.repository.issue.state // empty' "$Z_ISSUE_JSON" 2>/dev/null || true)"
+  [ "$issue_state" = OPEN ] || {
+    err_code z.issue_state "Issue 状态不可继续（${issue_state:-unknown}）"
+    return 1
+  }
+  labels="$(task_issue_labels "$Z_ISSUE_JSON")"
+  if printf '%s' "$labels" | jq -e --arg want human-merge 'index($want) != null' >/dev/null 2>&1; then
+    err_code z.human_merge "Issue 有 human-merge 标签，zmerge 拒绝。需要人用 zpr 送 PR。"
+    return 1
+  fi
+  derived="$(derive_task_state "$Z_NUMBER")" \
+    || { err_code z.derive_failed "无法推导任务状态"; return 1; }
+  project="$(task_read_status_name "$Z_ISSUE_JSON" || true)"
+  Z_STATUS="$project"
+  Z_DERIVED="$derived"
+  ZMERGE_ISSUE_DIGEST="$(jq -cS . "$Z_ISSUE_JSON" 2>/dev/null | zmerge_digest_text 2>/dev/null || true)"
+  [ -n "$ZMERGE_ISSUE_DIGEST" ] || {
+    err_code z.issue_unreadable "Issue reread 不是可解析的 JSON，拒绝继续"
+    return 1
+  }
+  z_warn_if_status_drift "$derived" "$project"
+  case "$derived" in
+    "$TASK_STATUS_PROGRESS"|"$TASK_STATUS_REVIEW") ;;
+    *)
+      err_code z.wrong_dev_status "推导状态不是 ${TASK_STATUS_PROGRESS} 或 ${TASK_STATUS_REVIEW}（当前：${derived:-空}）。"
+      return 1
+      ;;
+  esac
+}
+
+zmerge_recovery_guard_pre_refresh() {
+  if [ "$(type -t guard_recovery_pre_refresh_preflight 2>/dev/null)" != function ]; then
+    err_code z.guard_missing "R3 recovery 需要 Guard phase gate，但 production Guard 未加载"
+    return 1
+  fi
+  guard_recovery_pre_refresh_preflight "$Z_WT" "$Z_MAIN"
+}
+
+zmerge_recovery_guard_post_refresh() {
+  if [ "$(type -t guard_recovery_post_refresh_preflight 2>/dev/null)" != function ]; then
+    err_code z.guard_missing "R3 recovery 需要 Guard post-refresh gate，但 production Guard 未加载"
+    return 1
+  fi
+  guard_recovery_post_refresh_preflight "$Z_WT" "$Z_MAIN"
+}
+
+zmerge_final_guard_preflight() {
+  if [ "$(type -t guard_final_merge_preflight 2>/dev/null)" = function ]; then
+    guard_final_merge_preflight "$Z_WT" "$Z_MAIN"
+  else
+    err_code z.guard_missing "final merge 需要 production Guard final gate，但 Guard 未加载"
+    return 1
+  fi
+}
+
+# PRE_REFRESH/POST_REFRESH 共用的非 PR 事实 reread。relation 由 phase-specific
+# Guard gate 读取，不由 caller 传入宽松 policy。
+zmerge_reread_recovery_common_gates() {
+  zmerge_reread_head_branch_main_gates || return 1
+  zmerge_reread_branch_gate || return 1
+  z_require_passing_review || return 1
+  z_require_auto_merge_safe_review || return 1
+  zmerge_reread_contract_gate || return 1
+  zmerge_reread_diff_gate || return 1
+  zmerge_reread_issue_gates || return 1
+}
+
+# PR/Review lane 的读取和 proof。body/title/base/head/Fixes/Draft/state/head OID
+# 全部进入同一 digest；refresh 前后 lane 不得隐式切换。
+zmerge_pr_lane_digest() {
+  jq -cS '{number,url,baseRefName,headRefName,headRefOid,isDraft,state,title,body}' |
+    zmerge_digest_text
+}
+
+zmerge_read_matching_pr_facts() {
+  local pr="$1" pr_num js pr_body
+  pr_num="$(printf '%s' "$pr" | jq -r '.number // empty')"
+  [[ "$pr_num" =~ ^[1-9][0-9]*$ ]] || {
+    err_code z.pr_invalid "matching PR 缺少合法 number，BLOCK"
+    return 1
+  }
+  js="$(task_pr_view_json "$Z_OWNER" "$Z_REPO" "$pr_num")" \
+    || { err_code task.pr_unreadable "回读 matching PR 失败"; return 1; }
+  if [ "$(printf '%s' "$js" | jq -r '.title // empty')" != "$Z_SQUASH_TITLE" ]; then
+    err_code z.pr_title_mismatch "远端 PR 标题与 Squash-Title 不一致，BLOCK"
+    return 1
+  fi
+  task_pr_fields_ok "$js" "$Z_GIT_BR" "$Z_MAIN" "$Z_NUMBER" "$Z_SQUASH_TITLE" \
+    || { err_code z.pr_fields "PR 的 state/head/base/Draft/Fixes/title 未通过，BLOCK"; return 1; }
+  pr_body="$(printf '%s' "$js" | jq -r '.body // empty')"
+  contract_pr_validate "$pr_body" "$Z_NUMBER" "$Z_CONTRACT_BLOB" "$Z_HEAD" \
+    || { err_code contract.pr_invalid "PR 未绑定当前 Contract/reviewed HEAD，BLOCK"; return 1; }
+  [ "$(printf '%s' "$js" | jq -r '.headRefOid // empty')" = "$Z_HEAD" ] || {
+    err_code z.pr_head_changed "PR head OID 与当前 Z_HEAD 不一致，BLOCK"
+    return 1
+  }
+  if ! z_required_contexts; then
+    err_code z.required_checks_unknown "required checks 状态未知，BLOCK"
+    return 1
+  fi
+  z_pr_checks_ok "$pr_num" || return 1
+  ZMERGE_PR_NUM="$pr_num"
+  ZMERGE_PR_JSON="$js"
+  ZMERGE_PR_LANE_PROOF="$(printf '%s' "$js" | zmerge_pr_lane_digest)" || return 1
+}
+
+zmerge_capture_recovery_lane() {
+  local pr
+  pr="$(task_find_matching_pr "$Z_OWNER" "$Z_REPO" "$Z_GIT_BR" "$Z_MAIN")" \
+    || { err_code z.pr_lookup_failed "无法确认 recovery PR lane，BLOCK"; return 1; }
+  if [ -z "$pr" ]; then
+    ZMERGE_RECOVERY_LANE=no-pr
+    ZMERGE_PR_NUM=""
+    ZMERGE_PR_JSON=""
+    ZMERGE_PR_LANE_PROOF=none
+    return 0
+  fi
+  ZMERGE_RECOVERY_LANE=pr
+  zmerge_read_matching_pr_facts "$pr"
+}
+
+zmerge_assert_recovery_lane_stable() {
+  local pr
+  case "${ZMERGE_RECOVERY_LANE:-}" in
+    no-pr)
+      pr="$(task_find_matching_pr "$Z_OWNER" "$Z_REPO" "$Z_GIT_BR" "$Z_MAIN")" \
+        || { err_code z.pr_lookup_failed "post-refresh 无法确认 no-PR lane，BLOCK"; return 1; }
+      [ -z "$pr" ] || {
+        err_code z.recovery_pr_lane_changed "recovery lane 从 no-PR 变为 PR，BLOCK"
+        return 1
+      }
+      ;;
+    pr)
+      pr="$(task_find_matching_pr "$Z_OWNER" "$Z_REPO" "$Z_GIT_BR" "$Z_MAIN")" \
+        || { err_code z.pr_lookup_failed "post-refresh 无法确认 PR lane，BLOCK"; return 1; }
+      [ -n "$pr" ] || {
+        err_code z.recovery_pr_lane_changed "recovery lane 从 PR 变为 no-PR，BLOCK"
+        return 1
+      }
+      zmerge_read_matching_pr_facts "$pr" || return 1
+      [ "$ZMERGE_PR_LANE_PROOF" = "$ZMERGE_RECOVERY_PR_LANE_PROOF" ] || {
+        err_code z.recovery_pr_changed "refresh 前后 matching PR head/base/body/title/Fixes 改变，BLOCK"
+        return 1
+      }
+      ;;
+    *)
+      err_code z.recovery_lane_unknown "recovery lane 未建立，BLOCK"
+      return 1
+      ;;
+  esac
+}
+
+# PRE_REFRESH：唯一一次确定 lane，并允许 Guard 处于 pre-refresh-stale。
+zmerge_recovery_pre_refresh_preflight() {
+  ZMERGE_RECOVERY_PHASE=PRE_REFRESH
+  ZMERGE_RECOVERY_ACTIVE=0
+  ZMERGE_RECOVERY_GATE_SNAPSHOT=""
+  zmerge_reread_recovery_common_gates || return 1
+  zmerge_recovery_guard_pre_refresh || return 1
+  zmerge_capture_recovery_lane || return 1
+  ZMERGE_RECOVERY_PR_LANE_PROOF="${ZMERGE_PR_LANE_PROOF:-none}"
+  ZMERGE_RECOVERY_GATE_SNAPSHOT="$(zmerge_gate_snapshot)" || return 1
+  ZMERGE_RECOVERY_ACTIVE=1
+}
+
+# POST_REFRESH：不接收 relation 参数；固定 synced，且只接受原 lane 的证明。
+zmerge_recovery_post_refresh_preflight() {
+  [ "${ZMERGE_RECOVERY_ACTIVE:-0}" = 1 ] || {
+    err_code z.recovery_phase "没有 active recovery PRE_REFRESH proof，拒绝 POST_REFRESH"
+    return 1
+  }
+  ZMERGE_RECOVERY_PHASE=POST_REFRESH
+  zmerge_reread_recovery_common_gates || return 1
+  zmerge_recovery_guard_post_refresh || return 1
+  zmerge_assert_recovery_lane_stable || return 1
+  zmerge_assert_recovery_snapshot_stable || return 1
+}
+
+zmerge_recovery_pre_retry_preflight() {
+  [ "${ZMERGE_RECOVERY_ACTIVE:-0}" = 1 ] || {
+    err_code z.recovery_phase "没有 active recovery proof，拒绝 PRE_RETRY"
+    return 1
+  }
+  ZMERGE_RECOVERY_PHASE=PRE_RETRY
+  zmerge_reread_recovery_common_gates || return 1
+  zmerge_recovery_guard_post_refresh || return 1
+  zmerge_assert_recovery_lane_stable || return 1
+  zmerge_assert_recovery_snapshot_stable || return 1
+}
+
+# 每次 reread 后都与同一个 PRE_REFRESH proof 比较；不能用当前合法值覆盖它。
+zmerge_assert_recovery_snapshot_stable() {
+  local current
+  [ -n "${ZMERGE_RECOVERY_GATE_SNAPSHOT:-}" ] || {
+    err_code z.recovery_snapshot_missing "缺少 PRE_REFRESH durable gate snapshot，BLOCK"
+    return 1
+  }
+  current="$(zmerge_gate_snapshot)" || return 1
+  [ "$current" = "$ZMERGE_RECOVERY_GATE_SNAPSHOT" ] || {
+    err_code z.recovery_facts_changed "${ZMERGE_RECOVERY_PHASE}: Review / authorization / Guard durable facts 与 PRE_REFRESH 不同，BLOCK；未 retry"
+    return 1
+  }
+}
+
+# 所有最终 merge gates 的唯一复读入口。它不接受 relation 参数；Guard 存在时
+# final gate 固定要求 synced，未安装时显式为 guard-disabled。
+zmerge_reread_all_merge_gates() {
+  local pr pr_num js head_oid pr_body
+
+  [ "$#" -eq 0 ] || {
+    err_code z.phase_argument "final merge gate 不接受 relation 参数"
+    return 1
+  }
+
+  zmerge_reread_head_branch_main_gates || return 1
+  zmerge_reread_branch_gate || return 1
+  z_require_passing_review || return 1
+  z_require_auto_merge_safe_review || return 1
+  zmerge_reread_contract_gate || return 1
 
   pr="$(task_find_matching_pr "$Z_OWNER" "$Z_REPO" "$Z_GIT_BR" "$Z_MAIN")" \
     || { err_code z.pr_ambiguous "找不到唯一匹配 PR（不唯一则停止）"; return 1; }
@@ -227,29 +495,98 @@ zmerge_reread_before_merge() {
   fi
   task_pr_fields_ok "$js" "$Z_GIT_BR" "$Z_MAIN" "$Z_NUMBER" "$Z_SQUASH_TITLE" \
     || { err_code z.pr_fields "PR 非 Draft / head / base / Fixes / 标题 未通过"; return 1; }
+  pr_body="$(printf '%s' "$js" | jq -r '.body // empty')"
+  contract_pr_validate "$pr_body" "$Z_NUMBER" "$Z_CONTRACT_BLOB" "$Z_HEAD" \
+    || { err_code contract.pr_invalid "PR 未绑定当前 Contract / reviewed HEAD"; return 1; }
   head_oid="$(printf '%s' "$js" | jq -r '.headRefOid // empty')"
   [ "$head_oid" = "$Z_HEAD" ] || {
     err_code z.pr_head_changed "远端 PR head 已变化（${head_oid:-空} ≠ ${Z_HEAD}），需要重新 zreview"
     return 1
   }
 
-  if ! task_fetch_issue "$Z_OWNER" "$Z_REPO" "$Z_NUMBER" "$Z_ISSUE_JSON"; then
-    err_code task.issue_fetch_failed "无法读取 Issue / Project 状态"
+  if ! z_required_contexts; then
+    err_code z.required_checks_unknown "required checks 状态未知${Z_REQUIRED_ERR:+：${Z_REQUIRED_ERR}}。不合并，不把 Checkpoint 写成「无 required checks」。"
     return 1
   fi
-  derived="$(derive_task_state "$Z_NUMBER")" \
-    || { err_code z.derive_failed "无法推导任务状态"; return 1; }
-  project="$(task_read_status_name "$Z_ISSUE_JSON" || true)"
-  z_warn_if_status_drift "$derived" "$project"
-  case "$derived" in
-    "$TASK_STATUS_PROGRESS"|"$TASK_STATUS_REVIEW") ;;
-    *)
-      err_code z.wrong_dev_status "推导状态不是 ${TASK_STATUS_PROGRESS} 或 ${TASK_STATUS_REVIEW}（当前：${derived:-空}）。"
-      return 1
-      ;;
-  esac
+  z_pr_checks_ok "$pr_num" || return 1
+  zmerge_reread_diff_gate || return 1
+  zmerge_reread_issue_gates || return 1
+  zmerge_final_guard_preflight || return 1
   ZMERGE_PR_NUM="$pr_num"
   ZMERGE_PR_JSON="$js"
+  ZMERGE_RECOVERY_STAGE=full-merge
+}
+
+zmerge_digest_text() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | awk '{print $1}'
+  else
+    sha256sum | awk '{print $1}'
+  fi
+}
+
+# recovery 两次 gate reread 之间只允许发生本次 scoped mirror refresh；其它
+# authorization/durable fact 的变化一律停止。使用 Guard non-target fingerprint
+# 排除目标 main mirror 的 stale→synced OID 与 scoped fetch 的目标 snapshot；
+# canonical main OID 仍绑定，relation 由各 phase gate 独立验证。
+zmerge_gate_snapshot() {
+  local main_oid review_digest pr_digest review_source review_body review_id
+  local claim_oid=none claim_rc=0
+  main_oid="$(git -C "$Z_WT" rev-parse -q --verify "origin/${Z_MAIN}" 2>/dev/null || true)"
+  [ -n "$main_oid" ] && [ -n "${GUARD_RECOVERY_NON_TARGET_FINGERPRINT:-}" ] || {
+    err_code z.recovery_snapshot_missing "缺少 canonical main / Guard durable facts，BLOCK"
+    return 1
+  }
+  # 复用唯一 Review reader；正文必须仍是本 phase 刚通过 production validator
+  # 的正文。source id 与原始 body 一起 hash（保留尾部换行），不另建 Review parser。
+  review_source="$(task_unique_marked_comment "$Z_OWNER" "$Z_REPO" "$Z_NUMBER" \
+    "$TASK_REVIEW_MARK" Review)" || {
+    err_code z.review_unreadable "无法读取 durable Review source，BLOCK"; return 1;
+  }
+  review_id="$(printf '%s' "$review_source" | jq -r '.id // empty')" || return 1
+  [[ "$review_id" =~ ^[1-9][0-9]*$ ]] || {
+    err_code z.review_identity_missing "Review 缺少 durable comment identity，BLOCK"; return 1;
+  }
+  review_body="$(printf '%s' "$review_source" | jq -r '.body // empty')" || return 1
+  [ "$review_body" = "${Z_REVIEW_BODY:-}" ] \
+    && [ "$(task_review_table_field "$review_body" Verdict)" = "$TASK_VERDICT_PASS" ] \
+    && [ "$(task_review_table_field "$review_body" Squash-Title)" = "${Z_SQUASH_TITLE:-}" ] || {
+    err_code z.review_changed "Review source 与刚验证的 Review proof 不同，BLOCK"; return 1;
+  }
+  review_digest="$(printf '%s' "$review_source" | jq -cS \
+    --arg source "${Z_OWNER}/${Z_REPO}#${Z_NUMBER}" \
+    --arg title "$Z_SQUASH_TITLE" --arg self "$Z_SELF_REVIEW" \
+    '{source:$source,id,node_id,url,html_url,user:(.user | {id,node_id,login}),
+      body,title:$title,self_review:$self}' | zmerge_digest_text)" || return 1
+  # derive_task_state 也读取 claim 授权。合法的新 claim 可能推导出同一状态，
+  # 因此复用其 reader 并绑定 durable ref OID，而不只比较 derived status。
+  task_claim_read_lock "$Z_WT" "$Z_NUMBER" >/dev/null || claim_rc=$?
+  case "$claim_rc" in
+    0)
+      claim_oid="$(git -C "$Z_WT" rev-parse --verify "$(task_claim_ref "$Z_NUMBER")")" || return 1
+      ;;
+    2) ;;
+    *) return 1 ;;
+  esac
+  pr_digest="${ZMERGE_PR_LANE_PROOF:-none}"
+  {
+    printf 'lane=%s\n' "${ZMERGE_RECOVERY_LANE:-unknown}"
+    printf 'head=%s\nbranch=%s\nmain=%s\n' \
+      "${Z_HEAD:-}" "${Z_GIT_BR:-}" "$main_oid"
+    printf 'contract=%s\nreview=%s\nissue=%s\nderived=%s\nstatus=%s\n' \
+      "${ZMERGE_CURRENT_CONTRACT_BLOB:-}" "$review_digest" \
+      "${ZMERGE_ISSUE_DIGEST:-}" "${Z_DERIVED:-}" "${Z_STATUS:-}"
+    printf 'pr=%s\nchecks=%s/%s/%s\n' "$pr_digest" \
+      "${Z_REQUIRED_OK:-}" "${Z_REQUIRED_CONTEXTS:-}" "${Z_CHECKS_NOTE:-}"
+    printf 'claim=%s\n' "$claim_oid"
+    printf 'guard=%s\nsnapshot-namespace=%s\n' \
+      "$GUARD_RECOVERY_NON_TARGET_FINGERPRINT" "${GUARD_RECOVERY_SNAPSHOT_NAMESPACE:-}"
+  } | zmerge_digest_text
+}
+
+# 持锁后最后复读。放行看 derive_task_state；Project Status 只警告。
+zmerge_reread_before_merge() {
+  zmerge_reread_all_merge_gates
 }
 
 zmerge_find_main_worktree() {
@@ -447,9 +784,100 @@ zmerge_deliver_review() {
   "$ROOT/0-meta/bin/new" task review
 }
 
+zmerge_refresh_proof_field() {
+  local proof="$1" key="$2"
+  printf '%s\n' "$proof" | awk -F= -v want="$key" '$1 == want { print substr($0, index($0, "=") + 1); exit }'
+}
+
+zmerge_validate_refresh_proof() {
+  local proof="$1" phase result snapshot staging tx route unrelated
+  phase="$(zmerge_refresh_proof_field "$proof" phase)"
+  result="$(zmerge_refresh_proof_field "$proof" result)"
+  snapshot="$(zmerge_refresh_proof_field "$proof" target_snapshot_oid)"
+  staging="$(zmerge_refresh_proof_field "$proof" target_staging_oid)"
+  tx="$(zmerge_refresh_proof_field "$proof" transaction_fingerprint)"
+  route="$(zmerge_refresh_proof_field "$proof" route_identity_fingerprint)"
+  unrelated="$(zmerge_refresh_proof_field "$proof" unrelated_ref_fingerprint)"
+  [ "$phase" = REFRESH ] || return 1
+  case "$result" in refreshed|noop) ;; *) return 1 ;; esac
+  [ -n "$snapshot" ] && [ "$snapshot" = "$staging" ] \
+    && [ -n "$tx" ] && [ -n "$route" ] && [ -n "$unrelated" ]
+}
+
+zmerge_deliver_review_with_guard_recovery() {
+  local out retry_out refresh_out domain rc=0 retry_rc=0
+  ZMERGE_DELIVER_FAILURE_CLASSIFIED=0
+  ZMERGE_RECOVERY_ACTIVE=0
+  ZMERGE_RECOVERY_PHASE=PR/REVIEW
+  out="$(zmerge_deliver_review 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    [ -z "$out" ] || printf '%s\n' "$out"
+    return 0
+  fi
+  if [ "$(type -t guard_classify_push_failure 2>/dev/null)" = function ]; then
+    domain="$(guard_classify_push_failure "$Z_WT" "$out" "$rc")"
+  else
+    domain=unknown
+  fi
+  if [ "$domain" != guard-staging ]; then
+    [ -z "$out" ] || printf '%s\n' "$out" >&2
+    return "$rc"
+  fi
+
+  [ -z "$out" ] || printf '%s\n' "$out" >&2
+  zmerge_recovery_pre_refresh_preflight || {
+    ZMERGE_DELIVER_FAILURE_CLASSIFIED=1
+    ZMERGE_RECOVERY_ACTIVE=0
+    return 1
+  }
+  ZMERGE_RECOVERY_PHASE=REFRESH
+  refresh_out="$(guard_refresh_staging_for_merge "$Z_WT" "$Z_MAIN")" || {
+    err_code z.guard_refresh_blocked "Guard refresh 未完成 structured proof；未 retry task review"
+    ZMERGE_DELIVER_FAILURE_CLASSIFIED=1
+    ZMERGE_RECOVERY_ACTIVE=0
+    return 1
+  }
+  zmerge_validate_refresh_proof "$refresh_out" || {
+    err_code z.guard_refresh_proof "Guard refresh proof 不完整或 target OID 不一致；未 retry task review"
+    ZMERGE_DELIVER_FAILURE_CLASSIFIED=1
+    ZMERGE_RECOVERY_ACTIVE=0
+    return 1
+  }
+  ZMERGE_REFRESH_PROOF="$refresh_out"
+  ZMERGE_REFRESH_RESULT="$(zmerge_refresh_proof_field "$refresh_out" result)"
+  echo "Guard staging stale：已完成 scoped ${ZMERGE_REFRESH_RESULT}，进入 POST_REFRESH reread。" >&2
+
+  zmerge_recovery_post_refresh_preflight || {
+    ZMERGE_DELIVER_FAILURE_CLASSIFIED=1
+    ZMERGE_RECOVERY_ACTIVE=0
+    return 1
+  }
+  zmerge_recovery_pre_retry_preflight || {
+    ZMERGE_DELIVER_FAILURE_CLASSIFIED=1
+    ZMERGE_RECOVERY_ACTIVE=0
+    return 1
+  }
+
+  ZMERGE_RECOVERY_PHASE=RETRY
+  retry_out="$(zmerge_deliver_review 2>&1)" || retry_rc=$?
+  if [ "$retry_rc" -ne 0 ]; then
+    [ -z "$retry_out" ] || printf '%s\n' "$retry_out" >&2
+    err_code z.review_deliver_failed "Guard scoped refresh 后 task review 仍失败；不再自动重试"
+    ZMERGE_DELIVER_FAILURE_CLASSIFIED=1
+    ZMERGE_RECOVERY_ACTIVE=0
+    return 1
+  fi
+  ZMERGE_RECOVERY_PHASE=PR/REVIEW
+  ZMERGE_RECOVERY_ACTIVE=0
+  [ -z "$retry_out" ] || printf '%s\n' "$retry_out"
+  return 0
+}
+
 # after_merge=1：本轮刚 gh pr merge 成功，失败必须用「远端已合并;finalize 未完成:…」
 zmerge_finalize() {
   local after_merge="${1:-0}"
+
+  ZMERGE_RECOVERY_PHASE=FINALIZE
 
   zmerge_report_main_title
 
@@ -495,8 +923,10 @@ zmerge_do_merge() {
   z_warn_if_status_drift "$derived" "$project"
   case "$derived" in
     "$TASK_STATUS_PROGRESS"|"$TASK_STATUS_REVIEW")
-      zmerge_deliver_review || {
-        err_code z.review_deliver_failed "new task review 失败"
+      zmerge_deliver_review_with_guard_recovery || {
+        if [ "${ZMERGE_DELIVER_FAILURE_CLASSIFIED:-0}" != 1 ]; then
+          err_code z.review_deliver_failed "new task review 失败"
+        fi
         return 1
       }
       ;;
@@ -591,10 +1021,12 @@ EOF
     return 1
   }
 
+  ZMERGE_RECOVERY_PHASE=PRE_MERGE
   if ! zmerge_reread_before_merge; then
     return 1
   fi
 
+  ZMERGE_RECOVERY_PHASE=MERGE
   if ! GH_PROMPT_DISABLED=1 GH_PAGER=cat gh pr merge "$pr_num" \
     --repo "${Z_OWNER}/${Z_REPO}" \
     --squash \
@@ -605,6 +1037,7 @@ EOF
     return 1
   fi
 
+  ZMERGE_RECOVERY_PHASE=FINALIZE
   merged="$(zmerge_observe_merge_commit "$Z_OWNER" "$Z_REPO" "$pr_num")" || return 1
   oid="$(printf '%s' "$merged" | jq -r '.mergeCommit.oid // empty')"
   [ -n "$oid" ] || {
@@ -621,7 +1054,8 @@ EOF
   fi
   echo "main ${oid:0:12} 结构化 body 已写入。"
   ZMERGE_MERGED_PR="$(printf '%s' "$merged" | jq -c --arg t "$Z_SQUASH_TITLE" \
-    '{number:null,title:$t,headRefOid:(.headRefOid // ""),mergeCommit:{oid:(.mergeCommit.oid // "")}}')"
+    --arg head "$Z_GIT_BR" --arg base "$Z_MAIN" \
+    '{number:null,state:"MERGED",title:$t,headRefName:$head,baseRefName:$base,headRefOid:(.headRefOid // ""),mergeCommit:{oid:(.mergeCommit.oid // "")}}')"
 
   if ! zmerge_finalize 1; then
     return 1
