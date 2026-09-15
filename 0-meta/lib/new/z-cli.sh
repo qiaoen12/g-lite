@@ -7,7 +7,8 @@ z_cli_usage() {
 用法：new z <dev|fix|sync|review|pr|merge> [...]
 
   new z dev              开发入口：加载 binding + Contract，门禁后打印开工摘要。
-                         不领取、不改 Project、不写代码。
+                         不领取、不改 Project。门禁成功不是开发完成；
+                         未通过 completion gate 时下一步是继续开发，不是 Review。
   new z fix              修复入口：同一加载与门禁，不打印开发摘要。
   new z sync             将任务分支 rebase 到最新 origin/main
   new z review [--actor <id>] [--allow-self] <review-input>
@@ -38,10 +39,16 @@ z_cli_gate() {
 }
 
 z_cli_dev_summary() {
+  local next
+  next="$(task_next_canonical_command "$Z_WT" "origin/${Z_MAIN:-main}")"
   task_start_card "$Z_OWNER" "$Z_REPO" "$Z_NUMBER" "$Z_ISSUE_URL" "$Z_MAIN" \
     "$Z_CONTRACT_BLOB" "$Z_WT" "$Z_LOGICAL_BR" "$Z_GIT_BR" \
     "${Z_DERIVED:-${Z_STATUS:-unknown}}" "$Z_SCOPE" \
-    "new z review <review-input>" "$Z_HEAD"
+    "$next" "$Z_HEAD"
+  if [ "$next" = "$TASK_BOOTSTRAP_NEXT_DEV" ]; then
+    echo
+    task_developer_handoff_text
+  fi
 }
 
 z_cli_exec_skill() {

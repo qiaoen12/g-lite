@@ -272,6 +272,11 @@ commit-msg 跑的时候索引已经就绪，所以「先看实际改了什么」
 Orca 已经建好的任务工作树，不要再跑 `new worktree`。在那棵树里：
 
 ```bash
+new task worktree <n>
+                    # 正常路径：只要任务号。从 origin/main Contract 派生
+                    # exact sparse、worktree、合法 task branch、自动 bind。
+                    # 不手写 --path，不扩大到父目录，不关闭 sparse。
+                    # 结束态 clean / bound / unclaimed；不 claim、不启动 Agent
 new task            # 只预检；不领取、不改 GitHub、不启动 Agent
 new task approve <n>
                     # 人在主工作区、main 上把 Issue 正文写成 origin/main
@@ -292,7 +297,7 @@ new task review     # In progress：push → 创建或复用 base=main 的非 Dr
                     # 不合并 PR、不关闭 Issue、不向 main push、不改 Done
 ```
 
-开工之后的开发、审查与合并入口是 canonical `new z dev|fix|sync|review|pr|merge`。`.agents/skills/` 里的 `zdev` `zfix` `zreview` `zsync` `zmerge` `zpr` 只做 thin adapter（Codex `$zdev`，Grok `/zdev`，均关闭隐式调用）。`new task grok` / `new task codex` 在领取成功后自动执行 `zdev`；`new z dev` / `zdev` 先输出开工摘要再开发，人也可再次显式选择。默认链路：`zdev` → `zreview` → 通过则 `zmerge`（推导 In progress 或 In review 时都调 `new task review`：前者创建或复用 PR，后者只更新唯一已有 PR，并以 Squash-Title squash merge）。required checks 读取失败必须停止，不得当成「没有 checks」。有 `human-merge` 标签时 `zreview` 不进入 `zmerge`，由人明确选 `zpr` 送 PR。`zmerge` 在同一 git common dir 上互斥，持锁后复读再 merge；只有 `headRefOid` 等于当前 `Z_HEAD`、branch/base 与当前任务一致且 merge proof 完整的 MERGED PR，或「确认无 PR 且 HEAD 已在 origin/main」才只 finalize，不二次 merge。PR 列表读取失败必须停止，不得当成无 PR 去 finalize。finalize 删远端任务分支（删除前证明 tip 已是 `origin/main` 的祖先，并用 `--force-with-lease`；lease stale 不得改成无 lease 重试），并在条件满足时把本地主工作区 `ff-only` 到 origin/main，否则只报告「本地 main 未同步」。merge 后收尾失败输出「远端已合并;finalize 未完成:<步骤>」。`refs/claims/<n>` 与任务同寿，finalize 不删除；它是任务身份和 `derive_task_state` 的耐久锚点。协议见 [`templates/z-workflow.md`](../templates/z-workflow.md)。Task Contract（approve 进 main、blob SHA、五处门禁只读 origin/main）见 [`08-task-contract.md`](08-task-contract.md)。
+开工之后的开发、审查与合并入口是 canonical `new z dev|fix|sync|review|pr|merge`。`.agents/skills/` 里的 `zdev` `zfix` `zreview` `zsync` `zmerge` `zpr` 只做 thin adapter（Codex `$zdev`，Grok `/zdev`，均关闭隐式调用）。`new task grok` / `new task codex` 在领取成功后自动执行 `zdev`，并把 Developer execution handoff 交给唯一 claim winner；loser 不启动 Agent。`new z dev` / `zdev` 先输出开工摘要再开发：门禁 PASS 不是开发完成，未通过 completion gate 时下一步是继续开发而不是 Review。人也可再次显式选择。默认链路：`zdev`（实际开发至 #13 completion）→ `zreview` → 通过则 `zmerge`（推导 In progress 或 In review 时都调 `new task review`：前者创建或复用 PR，后者只更新唯一已有 PR，并以 Squash-Title squash merge）。required checks 读取失败必须停止，不得当成「没有 checks」。有 `human-merge` 标签时 `zreview` 不进入 `zmerge`，由人明确选 `zpr` 送 PR。`zmerge` 在同一 git common dir 上互斥，持锁后复读再 merge；只有 `headRefOid` 等于当前 `Z_HEAD`、branch/base 与当前任务一致且 merge proof 完整的 MERGED PR，或「确认无 PR 且 HEAD 已在 origin/main」才只 finalize，不二次 merge。PR 列表读取失败必须停止，不得当成无 PR 去 finalize。finalize 删远端任务分支（删除前证明 tip 已是 `origin/main` 的祖先，并用 `--force-with-lease`；lease stale 不得改成无 lease 重试），并在条件满足时把本地主工作区 `ff-only` 到 origin/main，否则只报告「本地 main 未同步」。merge 后收尾失败输出「远端已合并;finalize 未完成:<步骤>」。`refs/claims/<n>` 与任务同寿，finalize 不删除；它是任务身份和 `derive_task_state` 的耐久锚点。协议见 [`templates/z-workflow.md`](../templates/z-workflow.md)。Task Contract（approve 进 main、blob SHA、五处门禁只读 origin/main）见 [`08-task-contract.md`](08-task-contract.md)。
 
 通用领取不启动 Agent。`new task grok` / `new task codex` 才启动已登记产品；其它名字直接拒绝。预检失败、推导状态不能领取、claim push 被拒，都不会启动 Agent。领取以 `claim` remote 上创建 `refs/claims/<n>` 为准：空树 orphan commit 记录 `host` / `worktree` / `branch`（winner 身份）和 `at`（诊断），再 `git push --porcelain --force-with-lease=refs/claims/<n>: claim <lock>:refs/claims/<n>`。porcelain `*` 才是本次 winner，`=` / `!` 都是「已被领取」。`claim` 等于 origin 的 fetch URL，不受 origin push URL 影响；缺失或指错时预检自动修正。其后普通任务分支 push 走 origin 的 push URL。被拒则不写 Status、不写 Checkpoint。
 
@@ -385,7 +390,7 @@ new worktree --list
 5. `sparse-checkout set 0-meta .agents <你给的路径…>`
 6. `checkout`
 
-第 2 步是刻意加的。`sparse-checkout` 对不存在的路径**静默通过**，打错一个字得到的是一个空工作区，而错误要等 AI 干了半天才暴露。
+第 2 步是刻意加的。`sparse-checkout` 对不存在的路径**静默通过**，打错一个字得到的是一个空工作区，而错误要等 AI 干了半天才暴露。这条检查只约束**手工** `--path`。`new task worktree <n>` 从已批准 Contract 识别「获准但基点尚不存在」的目录，不得因此扩大到父目录、关闭 sparse，或用 `--skip-checks` 绕过手工路径检查。
 
 ### 为什么无条件带上 `0-meta` 和 `.agents`
 
@@ -393,7 +398,9 @@ AI 至少要能读到 `AGENTS.md`、`policy.yaml`、schema、审计工具，以�
 
 这两项是**公共可见**，不是默认可写。可写范围只来自 Issue「允许改动范围」。`new task` 不得把它们判成稀疏越界，也不得因为它们固定可见就扩大业务写入范围。
 
-仓库根层的文件（`AGENTS.md` `README.md` `.gitignore` `.aiignore` `.cursorignore`）由 cone 模式自动带上，不用单独指定。
+仓库根层的 `AGENTS.md` 是框架必需输入：task-aware bootstrap / bind 必须让它自动可读，无需 `git checkout --ignore-skip-worktree-bits`。它仍不是任务写授权；修改 scope 外的根 `AGENTS.md` 继续被 commit / diff 门禁拒绝。其它根层文件（`README.md` `.gitignore` `.aiignore` `.cursorignore`）由 cone 模式自动带上，不用单独指定。
+
+`new task worktree <n>` 用 `origin/main` 的 OID 建分支，避免 fresh task branch 误跟踪 `origin/main`。已有真实 remote tracking、同名远端分支或冲突 binding 时保留并诊断，不自动覆盖。
 
 > `.cursorignore` 只有被 git 跟踪才会出现在 worktree 里。没跟踪的话，那个 worktree 里 Cursor 的访问边界是失效的——`new worktree` 会就这一点告警。
 

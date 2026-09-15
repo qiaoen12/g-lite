@@ -82,12 +82,16 @@ TASK_COMMIT_MSG_CHECK="$ROOT/0-meta/audit/scripts/check-commit-msg.sh"
 
 task_usage() {
   cat <<'USAGE'
-用法：new task [claim|grok|codex|review|approve|bind]
+用法：new task [claim|grok|codex|review|approve|bind|worktree]
 
   new task           预检当前已 bind 的 Git 工作树与 Issue
                      不领取、不改 GitHub Project 状态、不启动 Agent
+  new task worktree <n>
+                     从 origin/main 已批准 Contract 建立任务 worktree：
+                     exact sparse、合法 task branch、自动 bind。
+                     只要任务号，不必手写 --path。不 claim、不启动 Agent。
   new task bind <n>  在任务 worktree 上显式绑定 Issue（本 worktree 的 git dir）
-                     若当前不是 sparse，工作区干净时收成 cone sparse（公共目录 + 契约范围）
+                     完整检出或过宽 sparse：干净且无独有提交时收成 exact sparse
                      不 claim、不改 Project、不写 Checkpoint、不启动 Agent
   new task approve <n>
                      人在主工作区、main 分支上运行：把 Issue 正文写成
@@ -176,6 +180,7 @@ ${TASK_START_CARD_BEGIN}
 | HEAD | \`${head}\` |
 
 本卡包含当前任务的开工事实；不要求先完整阅读仓库规则或流程文档。
+本卡不表示开发完成、验证完成或 review-ready。
 其它资料按需读取，机器可判定的规则由 canonical CLI 门禁执行。
 ${TASK_START_CARD_END}
 EOF
@@ -227,8 +232,9 @@ task_agent_start_prompt() {
   esac
   card="$(task_start_card "$owner" "$repo" "$number" "$issue_url" "$main" \
     "$contract_blob" "$wt" "$logical_br" "$git_br" "$status" "$scope" \
-    "new z dev" "$head")" || return 1
+    "$TASK_BOOTSTRAP_NEXT_DEV" "$head")" || return 1
   printf '%s\n' "$card"
+  task_developer_handoff_text
   # 末行只保留具体产品的机械 trigger；卡片本体在不同产品之间完全一致。
   printf '%s\n' "$token"
 }
@@ -1928,45 +1934,11 @@ task_sparse_set_paths() {
   done <<< "$scope"
 }
 
-# 完整检出不是合法任务工作树。clean 时收成 cone sparse；已是 sparse 则保持。
-task_bind_ensure_sparse() {
-  local wt="$1" scope="$2" git_sparse busy dirty
-  local sparse=()
-  local p seen=" "
-  while IFS= read -r p; do
-    [ -n "$p" ] || continue
-    case "$seen" in *" $p "*) continue ;; esac
-    seen="${seen}${p} "
-    sparse+=("$p")
-  done < <(task_sparse_set_paths "$wt" "$scope")
-  [ "${#sparse[@]}" -gt 0 ] || {
-    err_code task.sparse_set_failed "sparse 路径为空（always_include + 契约范围）"
-    return 1
-  }
-
-  if task_is_sparse "$wt"; then
-    return 0
-  fi
-  if busy="$(task_git_busy "$wt")"; then
-    err_code task.git_busy "bind 要把工作树收成 sparse，但不能在 git 忙时改检出：${busy}"
-    return 1
-  fi
-  dirty="$(git -C "$wt" -c core.quotePath=false status --porcelain 2>/dev/null || true)"
-  if [ -n "$dirty" ]; then
-    err_code task.sparse_requires_clean "bind 要把完整检出收成 sparse-checkout，工作区必须干净。"
-    return 1
-  fi
-  git -C "$wt" sparse-checkout init --cone >/dev/null \
-    || { err_code task.sparse_init_failed "git sparse-checkout init --cone 失败"; return 1; }
-  git -C "$wt" sparse-checkout set "${sparse[@]}" >/dev/null \
-    || { err_code task.sparse_set_failed "git sparse-checkout set 失败"; return 1; }
-  task_is_sparse "$wt" \
-    || { err_code task.not_sparse "bind 后工作树仍不是 sparse-checkout"; return 1; }
-  c_ok "    ✓ 已将完整检出收成 sparse（可见 ${sparse[*]}；可写范围仍由契约约束）"
-}
+# task_bind_ensure_sparse 在 bootstrap.sh：已 sparse 不再直接 return；
+# 过宽且可安全收窄时写成 exact sparse，并 materialize 框架可读输入。
 
 task_bind() {
-  local n="$1" wt="$ROOT" main nwo owner repo json load_rc=0 scope bindf
+  local n="$1" wt="${2:-$ROOT}" main nwo owner repo json load_rc=0 scope bindf
   task_config_require
   [[ "$n" =~ ^[1-9][0-9]*$ ]] || die_code task.issue_number_invalid "Issue 编号不合法：$n"
   [ "$(git -C "$wt" rev-parse --is-inside-work-tree 2>/dev/null || true)" = true ] \
@@ -2020,6 +1992,11 @@ cmd_task() {
       [ $# -eq 2 ] || die_code task.usage "用法：new task approve <issue 编号>（在主工作区、main 分支上运行）"
       metrics_begin new-task.approve
       task_approve "$2"
+      return ;;
+    worktree)
+      [ $# -eq 2 ] || die_code task.usage "用法：new task worktree <issue 编号>"
+      metrics_begin new-task.worktree
+      task_bootstrap_worktree "$2"
       return ;;
     bind)
       [ $# -eq 2 ] || die_code task.usage "用法：new task bind <issue 编号>（在任务 worktree 上运行）"
@@ -2317,11 +2294,15 @@ cmd_task() {
       fi
     done <<< "$scope"
 
-    # 公共可见目录（always_include）允许出现在 sparse 中，不视为越界。
+    # 公共可见目录与框架根文件允许出现在 sparse 中，不视为越界。
     # 这不是写授权：可写范围只来自 Issue「允许改动范围」。
     for d in "${sparse_dirs[@]+"${sparse_dirs[@]}"}"; do
       local ok=0
+      if task_framework_readable_path "$d"; then
+        ok=1
+      fi
       for a in $always; do
+        [ "$ok" = 1 ] && break
         task_is_under "$d" "$a" && ok=1 && break
       done
       if [ "$ok" != 1 ]; then
@@ -2503,6 +2484,10 @@ cmd_task() {
   task_claim_or_resume
 }
 
+if [ "$(type -t task_bootstrap_worktree 2>/dev/null)" != function ]; then
+  # shellcheck source=/dev/null
+  . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bootstrap.sh"
+fi
 # Contract v1 与 task 入口同目录加载，避免改 0-meta/bin/new（超出本任务范围）。
 if [ "$(type -t contract_parse_body 2>/dev/null)" != function ]; then
   # shellcheck source=/dev/null

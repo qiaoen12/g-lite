@@ -453,7 +453,7 @@ prompt_has_required() {
   printf '%s\n' "$card" | grep -Fq '0-meta/lib/new/' || return 1
   printf '%s\n' "$card" | grep -Fq 'Derived state | In progress' || return 1
   printf '%s\n' "$card" | grep -Fq 'origin/main:0-meta/tasks/23/contract.json' || return 1
-  printf '%s\n' "$card" | grep -Fq 'Next canonical command | new z dev' || return 1
+  printf '%s\n' "$card" | grep -Fq 'Next canonical command | continue development' || return 1
   printf '%s\n' "$card" | grep -Fq 'HEAD | `unknown`' || return 1
   printf '%s\n' "$card" | grep -Eq 'canonical-start-card' || return 1
   printf '%s\n' "$p" | grep -Eq '请先读|07/08|0-meta/policy\.yaml' && return 1 || true

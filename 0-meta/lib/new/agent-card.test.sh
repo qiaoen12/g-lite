@@ -40,7 +40,7 @@ expect_true "start card 有 Issue/Contract/worktree/branch/state/scope/next" \
    printf "%s\n" "$GCARD" | grep -Fq "Branch | unknown（git: unknown）" &&
    printf "%s\n" "$GCARD" | grep -Fq "Derived state | In progress" &&
    printf "%s\n" "$GCARD" | grep -Fq "Allowed scope | 0-meta/lib/new/" &&
-   printf "%s\n" "$GCARD" | grep -Fq "Next canonical command | new z dev"'
+   printf "%s\n" "$GCARD" | grep -Fq "Next canonical command | continue development"'
 expect_true "start card 不要求先读 07/08" \
   '! printf "%s\n" "$GCARD" | grep -Eq "请先读|07/08|0-meta/policy\.yaml"'
 expect_eq "TASK_PROMPT_READS 为空" "" "$TASK_PROMPT_READS"
