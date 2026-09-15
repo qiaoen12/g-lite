@@ -44,9 +44,18 @@ git_cfg() {
   git -C "$1" config core.hooksPath /dev/null
 }
 
-write_contract() {
-  local dest="$1" n="$2"
+write_contract_scopes() {
+  local dest="$1" n="$2" scopes_json="" s first=1
+  shift 2
   mkdir -p "$(dirname "$dest")"
+  for s in "$@"; do
+    if [ "$first" = 1 ]; then
+      scopes_json="    \"${s}\""
+      first=0
+    else
+      scopes_json="${scopes_json},"$'\n'"    \"${s}\""
+    fi
+  done
   cat > "$dest" <<JSON
 {
   "schema_version": "task-contract/v1",
@@ -56,12 +65,17 @@ write_contract() {
   "requirements": [{"id": "R1", "text": "implement fixture note"}],
   "acceptances": [{"id": "A1", "text": "note exists", "requires": ["R1"], "applicable_when": null}],
   "scope": [
-    "1-code/fixture-app/note.txt",
-    "2-infra/ops-control/policy/logging.yml",
-    "2-infra/ops-control/newdir"
+${scopes_json}
   ]
 }
 JSON
+}
+
+write_contract() {
+  write_contract_scopes "$1" "$2" \
+    "1-code/fixture-app/note.txt" \
+    "2-infra/ops-control/policy/logging.yml" \
+    "2-infra/ops-control/newdir"
 }
 
 # ── 静态：production 入口仍在，且未用 fixture 重定义同名判定 ────────
@@ -535,13 +549,59 @@ Z_WT="$DEST10" Z_MAIN=main Z_OWNER=o Z_REPO=r
 derived10="$(derive_task_state 10)"
 expect_eq "launch 失败不退回 Ready" "In progress" "$derived10"
 
-# ── 手工 --path 安全检查仍在 ───────────────────────────────────
+# ── 手工 --path 安全检查仍在（不得因 task skip-checks 被绕过）─
 set +e
 manual="$(cd "$MAIN" && run_new "$MAIN" worktree badpath --path 2-infra/does-not-exist 2>&1)"
 manual_rc=$?
 set -e
-expect_true "manual --path 缺失仍失败" '[ "$manual_rc" != 0 ]'
-expect_contains "manual 提示基点不存在" "$manual" "不存在"
+expect_true "C manual --path 缺失仍失败" '[ "$manual_rc" != 0 ]'
+expect_contains "C manual 提示基点不存在" "$manual" "不存在"
+
+# ── 回归 A：Contract 只有已存在 exact file，无 missing directory ─
+write_contract_scopes "$MAIN/0-meta/tasks/11/contract.json" 11 \
+  "1-code/fixture-app/note.txt"
+git -C "$MAIN" add 0-meta/tasks/11/contract.json
+git -C "$MAIN" commit -qm 'contract 11 exact-file-only'
+git -C "$MAIN" push -q origin main
+set +e
+boot11="$(cd "$MAIN" && run_new "$MAIN" task worktree 11 2>&1)"
+boot11_rc=$?
+set -e
+DEST11="$(cd "$MAIN/.." && pwd)/worktrees/task-11"
+expect_eq "A exact-file-only bootstrap 0" 0 "$boot11_rc"
+if [ "$boot11_rc" != 0 ]; then printf '%s\n' "$boot11" >&2; fi
+expect_eq "A exact file 可见" 1 "$( [ -f "$DEST11/1-code/fixture-app/note.txt" ] && echo 1 || echo 0 )"
+expect_eq "A secret 不可见" 0 "$( [ -e "$DEST11/1-code/secret-tree/hidden.txt" ] && echo 1 || echo 0 )"
+expect_true "A sparse 含精确文件" \
+  'git -C "$DEST11" sparse-checkout list | grep -q "1-code/fixture-app/note.txt"'
+expect_true "A 不扩大到父目录 1-code" \
+  '! git -C "$DEST11" sparse-checkout list | grep -qx "1-code"'
+expect_true "A 不扩大到 fixture-app 目录" \
+  '! git -C "$DEST11" sparse-checkout list | grep -qx "1-code/fixture-app"'
+
+# ── 回归 B：已存在 exact file + 已存在 directory，无 missing ───
+write_contract_scopes "$MAIN/0-meta/tasks/12/contract.json" 12 \
+  "1-code/fixture-app/note.txt" \
+  "2-infra/ops-control/policy"
+git -C "$MAIN" add 0-meta/tasks/12/contract.json
+git -C "$MAIN" commit -qm 'contract 12 file-plus-dir'
+git -C "$MAIN" push -q origin main
+set +e
+boot12="$(cd "$MAIN" && run_new "$MAIN" task worktree 12 2>&1)"
+boot12_rc=$?
+set -e
+DEST12="$(cd "$MAIN/.." && pwd)/worktrees/task-12"
+expect_eq "B file+dir bootstrap 0" 0 "$boot12_rc"
+if [ "$boot12_rc" != 0 ]; then printf '%s\n' "$boot12" >&2; fi
+expect_eq "B exact file 可见" 1 "$( [ -f "$DEST12/1-code/fixture-app/note.txt" ] && echo 1 || echo 0 )"
+expect_eq "B 已存在目录内容可见" 1 "$( [ -f "$DEST12/2-infra/ops-control/policy/logging.yml" ] && echo 1 || echo 0 )"
+expect_true "B sparse 含精确文件" \
+  'git -C "$DEST12" sparse-checkout list | grep -q "1-code/fixture-app/note.txt"'
+expect_true "B sparse 含已存在目录" \
+  'git -C "$DEST12" sparse-checkout list | grep -q "2-infra/ops-control/policy"'
+expect_true "B 不扩大到父目录 1-code" \
+  '! git -C "$DEST12" sparse-checkout list | grep -qx "1-code"'
+expect_eq "B secret 不可见" 0 "$( [ -e "$DEST12/1-code/secret-tree/hidden.txt" ] && echo 1 || echo 0 )"
 
 # ── next command：完成后才是 Review ────────────────────────────
 next7="$(task_next_canonical_command "$DEST" "$BEFORE_LAUNCH")"
@@ -562,6 +622,38 @@ expect_true "expected 不含 1-code 父目录" \
   '! printf "%s\n" "$exp" | grep -Fxq "1-code"'
 expect_true "expected 不含 AGENTS.md set 项" \
   '! printf "%s\n" "$exp" | grep -Fxq "AGENTS.md"'
+
+# ── 函数级：直接调用 production task_sparse_apply_exact ────────
+OID="$(git -C "$MAIN" rev-parse origin/main)"
+FN_A="$TDIR/fn-exact-file"
+git -C "$MAIN" worktree add --no-checkout -q -b code/task-fn-a "$FN_A" "$OID"
+set +e
+fn_a_out="$(task_sparse_apply_exact "$FN_A" "$(printf '%s\n' '1-code/fixture-app/note.txt')" "$OID" 2>&1)"
+fn_a_rc=$?
+set -e
+expect_eq "fn A apply exact-file-only 0" 0 "$fn_a_rc"
+if [ "$fn_a_rc" != 0 ]; then printf '%s\n' "$fn_a_out" >&2; fi
+git -C "$FN_A" checkout -q
+expect_eq "fn A exact file 可见" 1 "$( [ -f "$FN_A/1-code/fixture-app/note.txt" ] && echo 1 || echo 0 )"
+expect_true "fn A sparse 含精确文件" \
+  'git -C "$FN_A" sparse-checkout list | grep -q "1-code/fixture-app/note.txt"'
+expect_true "fn A 不扩大到 1-code" \
+  '! git -C "$FN_A" sparse-checkout list | grep -qx "1-code"'
+expect_eq "fn A secret 不可见" 0 "$( [ -e "$FN_A/1-code/secret-tree/hidden.txt" ] && echo 1 || echo 0 )"
+
+FN_B="$TDIR/fn-file-plus-dir"
+git -C "$MAIN" worktree add --no-checkout -q -b code/task-fn-b "$FN_B" "$OID"
+set +e
+fn_b_out="$(task_sparse_apply_exact "$FN_B" "$(printf '%s\n' '1-code/fixture-app/note.txt' '2-infra/ops-control/policy')" "$OID" 2>&1)"
+fn_b_rc=$?
+set -e
+expect_eq "fn B apply file+dir 0" 0 "$fn_b_rc"
+if [ "$fn_b_rc" != 0 ]; then printf '%s\n' "$fn_b_out" >&2; fi
+git -C "$FN_B" checkout -q
+expect_eq "fn B exact file 可见" 1 "$( [ -f "$FN_B/1-code/fixture-app/note.txt" ] && echo 1 || echo 0 )"
+expect_eq "fn B 已存在目录可见" 1 "$( [ -f "$FN_B/2-infra/ops-control/policy/logging.yml" ] && echo 1 || echo 0 )"
+expect_true "fn B 不扩大到 1-code" \
+  '! git -C "$FN_B" sparse-checkout list | grep -qx "1-code"'
 
 echo "bootstrap.test.sh: 通过 ${pass}，失败 ${fail}"
 [ "$fail" -eq 0 ]

@@ -171,7 +171,11 @@ task_sparse_apply_exact() {
     [ -n "$p" ] || continue
     sparse+=("$p")
     kind="$(task_rev_path_type "$wt" "$rev" "$p")"
-    [ -n "$kind" ] || need_skip=1
+    # cone 只接受 tree。blob / 非 tree / 基点缺失都必须 --skip-checks。
+    case "$kind" in
+      tree) ;;
+      *) need_skip=1 ;;
+    esac
   done < <(task_sparse_expected_paths "$wt" "$scope" "$rev")
   [ "${#sparse[@]}" -gt 0 ] || {
     err_code task.sparse_set_failed "sparse 路径为空（always_include + 契约范围）"
@@ -179,8 +183,8 @@ task_sparse_apply_exact() {
   }
   git -C "$wt" sparse-checkout init --cone >/dev/null \
     || { err_code task.sparse_init_failed "git sparse-checkout init --cone 失败"; return 1; }
-  # 仅 Contract 已授权但基点尚不存在的路径才带 --skip-checks。
-  # 通用 new worktree --path 不得走这条路。
+  # Contract exact sparse：非 tree 条目才带 --skip-checks。
+  # 通用 new worktree --path 不得走这条路，仍要求手工路径在基点存在。
   if [ "$need_skip" = 1 ]; then
     git -C "$wt" sparse-checkout set --skip-checks "${sparse[@]}" >/dev/null \
       || { err_code task.sparse_set_failed "git sparse-checkout set --skip-checks 失败"; return 1; }
