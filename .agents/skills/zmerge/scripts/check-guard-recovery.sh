@@ -65,7 +65,7 @@ event() { printf '%s\n' "$1" >> "${GH_EVENTS:?}"; }
 if [ "${1:-}" = api ]; then
   if [[ "$*" == *"issues/14/comments"* ]]; then
     event comments
-    jq -n --rawfile body "${GH_REVIEW_BODY:?}" '[{id:1401,body:$body}]'
+    jq --rawfile body "${GH_REVIEW_BODY:?}" '[. + {body:$body}]' "${GH_REVIEW_SOURCE:?}"
     exit 0
   fi
   if [[ "$*" == *graphql* ]]; then
@@ -175,10 +175,11 @@ CONTRACT_PATH="0-meta/tasks/14/contract.json"
 TITLE='feat(meta): recovery fixture'
 GH_ISSUE_JSON="$TDIR/issue.json"
 GH_REVIEW_BODY="$TDIR/review.md"
+GH_REVIEW_SOURCE="$TDIR/review-source.json"
 GH_PR_JSON="$TDIR/pr.json"
 GH_PR_STATE=none
 GH_BRANCH="$BR"
-export GH_ISSUE_JSON GH_REVIEW_BODY GH_PR_JSON GH_PR_STATE GH_BRANCH
+export GH_ISSUE_JSON GH_REVIEW_BODY GH_REVIEW_SOURCE GH_PR_JSON GH_PR_STATE GH_BRANCH
 
 # 真实 Git fixture：GitHub bare、candidate branch、staging heads 与 snapshot
 # 都是真实 ref。staging 在 main 的 m1 之前完成镜像，然后 candidate 从 m1
@@ -279,6 +280,11 @@ printf '%s\n' '[]' > "$TDIR/review-results.json"
 review_render "$TDIR/review-input.json" "$TDIR/review-results.json" \
   "$GH_REVIEW_BODY" beta alpha no \
   '.agents/skills/zmerge/recovery-fixture.txt'
+cp "$GH_REVIEW_BODY" "$TDIR/review-base.md"
+jq -n '{id:1401,node_id:"IC_1401",url:"https://api.github.com/repos/o/r/issues/comments/1401",
+  html_url:"https://github.com/o/r/issues/14#issuecomment-1401",
+  user:{id:42,node_id:"U_42",login:"reviewer"}}' > "$TDIR/review-source-base.json"
+cp "$TDIR/review-source-base.json" "$GH_REVIEW_SOURCE"
 
 PR_BODY="$TDIR/pr-body.md"
 cat > "$PR_BODY" <<EOF
@@ -357,6 +363,18 @@ advance_remote_main() {
   env -u GIT_DIR -u GIT_WORK_TREE git -C "$SEED" push -q origin main
 }
 
+# 合法 claim 的两个不同 durable commit，保持 branch/actor 与派生状态不变。
+seed_valid_claim() {
+  local previous="${1:-}" oid
+  set --
+  [ -z "$previous" ] || set -- -p "$previous"
+  oid="$(printf 'host: fixture\nworktree: %s\nbranch: %s\nclaim_actor: alpha\n' "$WT" "$BR" |
+    GIT_AUTHOR_NAME=fixture GIT_AUTHOR_EMAIL=fixture@example.test \
+    GIT_COMMITTER_NAME=fixture GIT_COMMITTER_EMAIL=fixture@example.test \
+    git --git-dir="$ORIGIN" commit-tree "${MAIN_LATEST}^{tree}" "$@")" || return 1
+  git --git-dir="$ORIGIN" update-ref refs/claims/14 "$oid"
+}
+
 # 只在 production scoped fetch 完成后改变真实状态源；不是 gate 替身。
 guard_refresh_staging_after_snapshot() {
   case "$MUTATION" in
@@ -406,7 +424,7 @@ guard_refresh_staging_after_snapshot() {
         "$GH_PR_JSON" > "$GH_PR_JSON.tmp"
       mv "$GH_PR_JSON.tmp" "$GH_PR_JSON"
       ;;
-    transaction|lease|retreat|post-ahead|post-diverged|post-missing)
+    transaction|lease|retreat|post-ahead|post-diverged|post-missing|review-*|issue-body|valid-transaction|valid-lease|valid-unrelated|valid-claim)
       # 这些 mutation 必须发生在 update-ref 之后；这里只保持
       # production refresh 的 snapshot provider 正常返回。
       ;;
@@ -421,6 +439,55 @@ guard_refresh_staging_after_snapshot() {
 guard_refresh_staging_after_update() {
   printf 'post-%s\n' "$MUTATION" >> "$EVENTS"
   case "$MUTATION" in
+    review-body)
+      printf '\n合法备注：Review 结论和绑定不变。\n' >> "$GH_REVIEW_BODY"
+      ;;
+    review-new-valid)
+      jq '.id=1402 | .node_id="IC_1402" |
+        .url="https://api.github.com/repos/o/r/issues/comments/1402" |
+        .html_url="https://github.com/o/r/issues/14#issuecomment-1402"' \
+        "$GH_REVIEW_SOURCE" > "$GH_REVIEW_SOURCE.tmp"
+      mv "$GH_REVIEW_SOURCE.tmp" "$GH_REVIEW_SOURCE"
+      ;;
+    review-source-actor)
+      jq '.user={id:43,node_id:"U_43",login:"another-reviewer"}' \
+        "$GH_REVIEW_SOURCE" > "$GH_REVIEW_SOURCE.tmp"
+      mv "$GH_REVIEW_SOURCE.tmp" "$GH_REVIEW_SOURCE"
+      ;;
+    review-actor)
+      sed 's/beta/gamma/g' "$GH_REVIEW_BODY" > "$GH_REVIEW_BODY.tmp"
+      mv "$GH_REVIEW_BODY.tmp" "$GH_REVIEW_BODY"
+      ;;
+    review-head|review-contract|review-invalid)
+      case "$MUTATION" in
+        review-head) replacement="s/$Z_HEAD/1111111111111111111111111111111111111111/g" ;;
+        review-contract) replacement="s/$Z_CONTRACT_BLOB/2222222222222222222222222222222222222222/g" ;;
+        review-invalid) replacement='s/| Verdict | 通过 |/| Verdict | 不通过 |/' ;;
+      esac
+      sed "$replacement" "$GH_REVIEW_BODY" > "$GH_REVIEW_BODY.tmp"
+      mv "$GH_REVIEW_BODY.tmp" "$GH_REVIEW_BODY"
+      ;;
+    review-newline)
+      printf '\n' >> "$GH_REVIEW_BODY"
+      ;;
+    issue-body)
+      jq '.data.repository.issue.body += " legal authorization note"' \
+        "$GH_ISSUE_JSON" > "$GH_ISSUE_JSON.tmp"
+      mv "$GH_ISSUE_JSON.tmp" "$GH_ISSUE_JSON"
+      ;;
+    valid-transaction)
+      mv "$STAGING/git-guard/transactions/mutated" "$STAGING/git-guard/transactions/replaced"
+      ;;
+    valid-lease)
+      printf '%s\n' not-applicable > "$STAGING/git-guard/transactions/mutated/lease-status"
+      ;;
+    valid-unrelated)
+      git --git-dir="$STAGING" update-ref refs/heads/unrelated "$MAIN_LATEST"
+      git --git-dir="$STAGING" update-ref refs/guard/github/heads/unrelated "$MAIN_LATEST"
+      ;;
+    valid-claim)
+      seed_valid_claim "$(git --git-dir="$ORIGIN" rev-parse refs/claims/14)"
+      ;;
     transaction)
       printf '%s\n' pending > "$STAGING/git-guard/transactions/mutated/receive-status"
       ;;
@@ -471,7 +538,7 @@ guard_refresh_staging_after_lock() {
     lock-unrelated)
       git --git-dir="$STAGING" update-ref refs/heads/unrelated "$MAIN_LATEST" "$UNRELATED_SENTINEL"
       ;;
-    none|human-merge|transaction|lease|retreat|post-ahead|post-diverged|post-missing|branch|head|main|pr-head|pr-appear|pr-disappear|pr-title|pr-base|pr-body|pr-fixes) ;;
+    none|human-merge|transaction|lease|retreat|post-ahead|post-diverged|post-missing|branch|head|main|pr-head|pr-appear|pr-disappear|pr-title|pr-base|pr-body|pr-fixes|review-*|issue-body|valid-transaction|valid-lease|valid-unrelated|valid-claim) ;;
     *)
       echo "unknown lock mutation: $MUTATION" >&2
       return 1
@@ -487,6 +554,8 @@ reset_fixture() {
   reset_events
   cp "$TDIR/issue-base.json" "$GH_ISSUE_JSON"
   cp "$TDIR/pr-base.json" "$GH_PR_JSON"
+  cp "$TDIR/review-base.md" "$GH_REVIEW_BODY"
+  cp "$TDIR/review-source-base.json" "$GH_REVIEW_SOURCE"
   git -C "$SEED" switch -q main
   git -C "$SEED" reset -q --hard "$MAIN_LATEST"
   git -C "$SEED" push -q --force origin 'refs/heads/main:refs/heads/main'
@@ -494,6 +563,8 @@ reset_fixture() {
   git -C "$WT" reset -q --hard "$Z_HEAD"
   git -C "$WT" clean -q -fd
   git -C "$WT" update-ref refs/remotes/origin/main "$MAIN_LATEST"
+  git -C "$WT" update-ref -d refs/claims/14
+  git --git-dir="$ORIGIN" update-ref -d refs/claims/14
   git -C "$WT" config --worktree remote.origin.pushurl "$STAGING"
   git -C "$WT" config --worktree --unset-all remote.claim.pushurl >/dev/null 2>&1 || true
   git -C "$WT" branch -D "$OTHER_BR" >/dev/null 2>&1 || true
@@ -516,7 +587,9 @@ for symbol in \
   zmerge_reread_all_merge_gates zmerge_reread_head_branch_main_gates \
   zmerge_reread_branch_gate zmerge_reread_recovery_common_gates \
   zmerge_recovery_pre_refresh_preflight zmerge_recovery_post_refresh_preflight \
-  zmerge_recovery_pre_retry_preflight; do
+  zmerge_recovery_pre_retry_preflight zmerge_gate_snapshot \
+  zmerge_assert_recovery_snapshot_stable zmerge_deliver_review_with_guard_recovery \
+  task_unique_marked_comment task_claim_read_lock; do
   if grep -Eq "^[[:space:]]*${symbol}[[:space:]]*\(\)" "$0"; then
     bad "测试不应覆盖 production symbol：${symbol}"
   else
@@ -554,6 +627,57 @@ expect_true 'R3 no-PR pre-push reader 两次读取 Review provider' \
   '[ "$(event_count comments)" -ge 4 ]'
 expect_eq 'R3 no-PR pre-push 不读取 PR view' 0 "$(event_count pr-view)"
 expect_eq 'R3 no-PR pre-push 不读取 required checks' 0 "$(event_count required)"
+expect_true 'R3 unchanged Review body/source 保持同一 proof' \
+  'cmp -s "$GH_REVIEW_BODY" "$TDIR/review-base.md" && cmp -s "$GH_REVIEW_SOURCE" "$TDIR/review-source-base.json"'
+printf 'Review unchanged: rc=%s retry=%s\n' "$NOPR_OK_RC" "$(( $(file_count "$TDIR/deliver-count") - 1 ))"
+
+# Review mutation matrix：仍合法的正文、source identity、actor 都必须由
+# production snapshot comparison 阻断；HEAD/Contract/非法 verdict 继续由
+# production validator 阻断。所有 mutation 都发生在真实 refresh update 后。
+for review_mutation in review-body review-new-valid review-source-actor review-actor review-newline review-head review-contract review-invalid; do
+  reset_fixture
+  expect_true "R3 ${review_mutation} pre-refresh Review 合法" \
+    '(z_require_passing_review && z_require_auto_merge_safe_review) >/dev/null 2>&1'
+  MUTATION="$review_mutation"
+  run_capture REVIEW_MUTATION_OUT REVIEW_MUTATION_RC zmerge_deliver_review_with_guard_recovery
+  expect_true "R3 ${review_mutation} refresh 后 BLOCK / retry=0" \
+    '[ "$REVIEW_MUTATION_RC" -ne 0 ] && [ "$(file_count "$TDIR/deliver-count")" = 1 ] && [ "$(event_count post-$MUTATION)" = 1 ] && [ "$(git --git-dir="$STAGING" rev-parse refs/heads/main)" = "$MAIN_LATEST" ]'
+  case "$review_mutation" in
+    review-head|review-contract|review-invalid)
+      expect_true "R3 ${review_mutation} post-refresh Review 不再可授权" \
+        '! (z_require_passing_review && z_require_auto_merge_safe_review) >/dev/null 2>&1'
+      ;;
+    *)
+      expect_true "R3 ${review_mutation} post-refresh Review 仍合法" \
+        '(z_require_passing_review && z_require_auto_merge_safe_review) >/dev/null 2>&1'
+      expect_true "R3 ${review_mutation} 由 durable snapshot comparison 阻断" \
+        'printf "%s\n" "$REVIEW_MUTATION_OUT" | grep -Fq "durable facts 与 PRE_REFRESH 不同"'
+      ;;
+  esac
+  if [ "$review_mutation" = review-new-valid ]; then
+    expect_true 'R3 Review B 只有 source identity 改变，body/HEAD/verdict 完全相同' \
+      '[ "$(jq -r .id "$GH_REVIEW_SOURCE")" = 1402 ] && cmp -s "$GH_REVIEW_BODY" "$TDIR/review-base.md"'
+  fi
+  printf '%s: rc=%s retry=%s\n' "$review_mutation" "$REVIEW_MUTATION_RC" "$(( $(file_count "$TDIR/deliver-count") - 1 ))"
+done
+
+# Sibling invariant：当前仍合法不代表还是原授权。Issue、transaction identity、
+# lease、成对 unrelated refs 与 claim 都是合法替换，必须绑定到 PRE_REFRESH snapshot。
+for sibling_mutation in issue-body valid-transaction valid-lease valid-unrelated valid-claim; do
+  reset_fixture
+  case "$sibling_mutation" in
+    valid-transaction) seed_clean_transaction noop ;;
+    valid-lease) seed_clean_transaction noop none ;;
+    valid-claim) seed_valid_claim ;;
+  esac
+  MUTATION="$sibling_mutation"
+  run_capture SIBLING_OUT SIBLING_RC zmerge_deliver_review_with_guard_recovery
+  expect_true "R3 ${sibling_mutation} 合法替换仍 BLOCK / retry=0" \
+    '[ "$SIBLING_RC" -ne 0 ] && [ "$(file_count "$TDIR/deliver-count")" = 1 ] && [ "$(event_count post-$MUTATION)" = 1 ] && printf "%s\n" "$SIBLING_OUT" | grep -Fq "durable facts 与 PRE_REFRESH 不同"'
+  expect_true "R3 ${sibling_mutation} 当前 Issue / Guard 仍合法" \
+    '(zmerge_reread_issue_gates && guard_recovery_post_refresh_preflight "$WT" main) >/dev/null 2>&1'
+  printf '%s: rc=%s retry=%s\n' "$sibling_mutation" "$SIBLING_RC" "$(( $(file_count "$TDIR/deliver-count") - 1 ))"
+done
 
 # Guard lock 外建立 proof 后，lock 内每个关键事实都必须重新读取。provider
 # 只模拟 lock 取得后的 durable mutation；若 lock-in reread 缺失，refresh 会
@@ -769,7 +893,9 @@ for symbol in \
   zmerge_reread_all_merge_gates zmerge_reread_head_branch_main_gates \
   zmerge_reread_branch_gate zmerge_reread_recovery_common_gates \
   zmerge_recovery_pre_refresh_preflight zmerge_recovery_post_refresh_preflight \
-  zmerge_recovery_pre_retry_preflight; do
+  zmerge_recovery_pre_retry_preflight zmerge_gate_snapshot \
+  zmerge_assert_recovery_snapshot_stable zmerge_deliver_review_with_guard_recovery \
+  task_unique_marked_comment task_claim_read_lock; do
   if grep -Eq "^[[:space:]]*${symbol}[[:space:]]*\(\)" "$0"; then
     bad "TOCTOU fixture 仍覆盖 production ${symbol}"
   else

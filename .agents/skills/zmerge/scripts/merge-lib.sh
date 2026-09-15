@@ -418,11 +418,14 @@ zmerge_assert_recovery_lane_stable() {
 # PRE_REFRESH：唯一一次确定 lane，并允许 Guard 处于 pre-refresh-stale。
 zmerge_recovery_pre_refresh_preflight() {
   ZMERGE_RECOVERY_PHASE=PRE_REFRESH
-  ZMERGE_RECOVERY_ACTIVE=1
+  ZMERGE_RECOVERY_ACTIVE=0
+  ZMERGE_RECOVERY_GATE_SNAPSHOT=""
   zmerge_reread_recovery_common_gates || return 1
   zmerge_recovery_guard_pre_refresh || return 1
   zmerge_capture_recovery_lane || return 1
   ZMERGE_RECOVERY_PR_LANE_PROOF="${ZMERGE_PR_LANE_PROOF:-none}"
+  ZMERGE_RECOVERY_GATE_SNAPSHOT="$(zmerge_gate_snapshot)" || return 1
+  ZMERGE_RECOVERY_ACTIVE=1
 }
 
 # POST_REFRESH：不接收 relation 参数；固定 synced，且只接受原 lane 的证明。
@@ -435,6 +438,7 @@ zmerge_recovery_post_refresh_preflight() {
   zmerge_reread_recovery_common_gates || return 1
   zmerge_recovery_guard_post_refresh || return 1
   zmerge_assert_recovery_lane_stable || return 1
+  zmerge_assert_recovery_snapshot_stable || return 1
 }
 
 zmerge_recovery_pre_retry_preflight() {
@@ -446,6 +450,21 @@ zmerge_recovery_pre_retry_preflight() {
   zmerge_reread_recovery_common_gates || return 1
   zmerge_recovery_guard_post_refresh || return 1
   zmerge_assert_recovery_lane_stable || return 1
+  zmerge_assert_recovery_snapshot_stable || return 1
+}
+
+# 每次 reread 后都与同一个 PRE_REFRESH proof 比较；不能用当前合法值覆盖它。
+zmerge_assert_recovery_snapshot_stable() {
+  local current
+  [ -n "${ZMERGE_RECOVERY_GATE_SNAPSHOT:-}" ] || {
+    err_code z.recovery_snapshot_missing "缺少 PRE_REFRESH durable gate snapshot，BLOCK"
+    return 1
+  }
+  current="$(zmerge_gate_snapshot)" || return 1
+  [ "$current" = "$ZMERGE_RECOVERY_GATE_SNAPSHOT" ] || {
+    err_code z.recovery_facts_changed "${ZMERGE_RECOVERY_PHASE}: Review / authorization / Guard durable facts 与 PRE_REFRESH 不同，BLOCK；未 retry"
+    return 1
+  }
 }
 
 # 所有最终 merge gates 的唯一复读入口。它不接受 relation 参数；Guard 存在时
@@ -507,17 +526,51 @@ zmerge_digest_text() {
 }
 
 # recovery 两次 gate reread 之间只允许发生本次 scoped mirror refresh；其它
-# authorization/durable fact 的变化一律停止。Guard fingerprint 已排除目标
-# main mirror 的预期 stale→synced OID，但包含 transaction/lease、routing 和
-# unrelated refs。
+# authorization/durable fact 的变化一律停止。使用 Guard non-target fingerprint
+# 排除目标 main mirror 的 stale→synced OID 与 scoped fetch 的目标 snapshot；
+# canonical main OID 仍绑定，relation 由各 phase gate 独立验证。
 zmerge_gate_snapshot() {
-  local main_oid review_digest pr_digest
+  local main_oid review_digest pr_digest review_source review_body review_id
+  local claim_oid=none claim_rc=0
   main_oid="$(git -C "$Z_WT" rev-parse -q --verify "origin/${Z_MAIN}" 2>/dev/null || true)"
-  review_digest="$(printf '%s\n' "${Z_SQUASH_TITLE:-}" "${Z_SELF_REVIEW:-}" \
-    "${Z_REVIEW_BODY:-}" | zmerge_digest_text)" || return 1
-  pr_digest="$(printf '%s' "${ZMERGE_PR_JSON:-no-pr}" | zmerge_digest_text)" || return 1
+  [ -n "$main_oid" ] && [ -n "${GUARD_RECOVERY_NON_TARGET_FINGERPRINT:-}" ] || {
+    err_code z.recovery_snapshot_missing "缺少 canonical main / Guard durable facts，BLOCK"
+    return 1
+  }
+  # 复用唯一 Review reader；正文必须仍是本 phase 刚通过 production validator
+  # 的正文。source id 与原始 body 一起 hash（保留尾部换行），不另建 Review parser。
+  review_source="$(task_unique_marked_comment "$Z_OWNER" "$Z_REPO" "$Z_NUMBER" \
+    "$TASK_REVIEW_MARK" Review)" || {
+    err_code z.review_unreadable "无法读取 durable Review source，BLOCK"; return 1;
+  }
+  review_id="$(printf '%s' "$review_source" | jq -r '.id // empty')" || return 1
+  [[ "$review_id" =~ ^[1-9][0-9]*$ ]] || {
+    err_code z.review_identity_missing "Review 缺少 durable comment identity，BLOCK"; return 1;
+  }
+  review_body="$(printf '%s' "$review_source" | jq -r '.body // empty')" || return 1
+  [ "$review_body" = "${Z_REVIEW_BODY:-}" ] \
+    && [ "$(task_review_table_field "$review_body" Verdict)" = "$TASK_VERDICT_PASS" ] \
+    && [ "$(task_review_table_field "$review_body" Squash-Title)" = "${Z_SQUASH_TITLE:-}" ] || {
+    err_code z.review_changed "Review source 与刚验证的 Review proof 不同，BLOCK"; return 1;
+  }
+  review_digest="$(printf '%s' "$review_source" | jq -cS \
+    --arg source "${Z_OWNER}/${Z_REPO}#${Z_NUMBER}" \
+    --arg title "$Z_SQUASH_TITLE" --arg self "$Z_SELF_REVIEW" \
+    '{source:$source,id,node_id,url,html_url,user:(.user | {id,node_id,login}),
+      body,title:$title,self_review:$self}' | zmerge_digest_text)" || return 1
+  # derive_task_state 也读取 claim 授权。合法的新 claim 可能推导出同一状态，
+  # 因此复用其 reader 并绑定 durable ref OID，而不只比较 derived status。
+  task_claim_read_lock "$Z_WT" "$Z_NUMBER" >/dev/null || claim_rc=$?
+  case "$claim_rc" in
+    0)
+      claim_oid="$(git -C "$Z_WT" rev-parse --verify "$(task_claim_ref "$Z_NUMBER")")" || return 1
+      ;;
+    2) ;;
+    *) return 1 ;;
+  esac
+  pr_digest="${ZMERGE_PR_LANE_PROOF:-none}"
   {
-    printf 'stage=%s\n' "${ZMERGE_RECOVERY_STAGE:-unknown}"
+    printf 'lane=%s\n' "${ZMERGE_RECOVERY_LANE:-unknown}"
     printf 'head=%s\nbranch=%s\nmain=%s\n' \
       "${Z_HEAD:-}" "${Z_GIT_BR:-}" "$main_oid"
     printf 'contract=%s\nreview=%s\nissue=%s\nderived=%s\nstatus=%s\n' \
@@ -525,7 +578,9 @@ zmerge_gate_snapshot() {
       "${ZMERGE_ISSUE_DIGEST:-}" "${Z_DERIVED:-}" "${Z_STATUS:-}"
     printf 'pr=%s\nchecks=%s/%s/%s\n' "$pr_digest" \
       "${Z_REQUIRED_OK:-}" "${Z_REQUIRED_CONTEXTS:-}" "${Z_CHECKS_NOTE:-}"
-    printf 'guard=%s\n' "${GUARD_MERGE_GATE_FINGERPRINT:-none}"
+    printf 'claim=%s\n' "$claim_oid"
+    printf 'guard=%s\nsnapshot-namespace=%s\n' \
+      "$GUARD_RECOVERY_NON_TARGET_FINGERPRINT" "${GUARD_RECOVERY_SNAPSHOT_NAMESPACE:-}"
   } | zmerge_digest_text
 }
 
