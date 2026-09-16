@@ -559,6 +559,26 @@ task_facts_stamp_fact_id() {
   '
 }
 
+# current tip 与 history 共用：正文 fact_id 若存在，必须唯一且等于
+# GitHub comment id。缺省视为 recognized legacy，不回填。
+task_facts_check_fact_id() {
+  local body="$1" comment_id="$2" label="$3"
+  local n fact_id
+  n="$(task_machine_field_count "$body" fact_id)"
+  if [ "$n" -gt 1 ]; then
+    err_code facts.fact_id_duplicate "${label} 的 fact_id 重复，拒绝猜测"
+    return 1
+  fi
+  [ "$n" = 0 ] && return 0
+  fact_id="$(task_machine_field "$body" fact_id)"
+  if [ -z "$fact_id" ] || [ "$fact_id" != "$comment_id" ]; then
+    err_code facts.fact_id_mismatch \
+      "${label} 的 fact_id=${fact_id:-empty} 与 GitHub comment id ${comment_id:-empty} 冲突"
+    return 1
+  fi
+  return 0
+}
+
 task_facts_replace_mark() {
   local body="$1" from="$2" to="$3"
   printf '%s\n' "$body" | awk -v from="$from" -v to="$to" '
@@ -580,10 +600,13 @@ task_facts_comment_by_id() {
   printf '%s' "$js" | jq -c --argjson id "$id" 'map(select(.id == $id)) | .[0] // empty'
 }
 
-# 重复 tip、分叉、损坏引用、重复 fact_id 一律 fail-closed。不看 created_at。
+# 重复 tip、分叉、损坏引用、重复或错误 fact_id 一律 fail-closed。不看 created_at。
 task_facts_validate_history() {
-  local js="$1" tip_body="$2" tip_mark="$3" history_mark="$4" label="$5"
-  local rows orphans seen=" " line id cid kind body fact_id prev n_hist n_rows
+  local js="$1" tip_body="$2" tip_mark="$3" history_mark="$4" label="$5" tip_id="${6:-}"
+  local rows orphans seen=" " line id cid kind body prev n_hist n_rows
+  if [ -n "$tip_id" ]; then
+    task_facts_check_fact_id "$tip_body" "$tip_id" "${label}" || return 1
+  fi
   prev="$(task_machine_field "$tip_body" prev_fact_id)"
   rows="$(task_facts_history_rows "$tip_body")"
   n_hist="$(task_facts_comment_ids_with_mark "$js" "$history_mark" | awk 'NF{c++} END{print c+0}')"
@@ -636,12 +659,7 @@ task_facts_validate_history() {
         return 1
         ;;
     esac
-    fact_id="$(task_machine_field "$body" fact_id)"
-    if [ -n "$fact_id" ] && [ "$fact_id" != "$id" ] && [ "$fact_id" != "$cid" ]; then
-      err_code facts.history_id_mismatch \
-        "${label} 历史评论 ${cid} 的 fact_id=${fact_id} 与索引 ${id} 冲突"
-      return 1
-    fi
+    task_facts_check_fact_id "$body" "$cid" "${label} 历史" || return 1
   done <<< "$rows"
   orphans="$(task_facts_comment_ids_with_mark "$js" "$history_mark")"
   while IFS= read -r cid; do
@@ -1004,6 +1022,7 @@ task_facts_load() {
     fi
     task_facts_validate_history "$js" "$FACT_CK_BODY" \
       "$TASK_CHECKPOINT_MARK" "$TASK_CHECKPOINT_HISTORY_MARK" "Checkpoint" \
+      "$FACT_CK_ID" \
       || return 1
     FACT_CK_HEAD="$(task_review_table_field "$FACT_CK_BODY" HEAD)"
     FACT_CK_BLOB="$(task_review_table_field "$FACT_CK_BODY" Contract)"
@@ -1027,6 +1046,7 @@ task_facts_load() {
     fi
     task_facts_validate_history "$js" "$FACT_RV_BODY" \
       "$TASK_REVIEW_MARK" "$TASK_REVIEW_HISTORY_MARK" "Review" \
+      "$FACT_RV_ID" \
       || return 1
     FACT_RV_VERDICT="$(task_review_table_field "$FACT_RV_BODY" "Verdict")"
     FACT_RV_HEAD="$(task_review_table_field "$FACT_RV_BODY" "reviewed HEAD")"

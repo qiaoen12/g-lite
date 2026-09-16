@@ -824,5 +824,82 @@ expect_true "F16-RA-01 Case7 无法分类仍纳入 set" \
 expect_false "F16-RA-01 Case7 无法分类 fail-closed" \
   'task_facts_reviewer_independent "$ra_rev_b" "$HEAD1" "$WT" "$FACT_COMMENTS_JSON"'
 
+# F16-E2E-corrupt-fact-id：current tip 与 history 共用正文 fact_id ↔ GitHub id。
+ck_fact_ok="$(printf '%s\n' "$v1_ck_filled" | awk '
+  {print}
+  $0=="<!-- new-task-checkpoint -->" { print "fact_id=100" }
+')"
+comment_obj 100 "$ck_fact_ok" > "$TDIR/c-100-ok.json"
+set_comments "$TDIR/c-100-ok.json"
+task_facts_load o r 16 "$WT" "$BASE"
+expect_eq "current Checkpoint fact_id=100 且 comment id=100 可加载" 1 "$TASK_FACTS_READY"
+expect_eq "current Checkpoint 使用 GitHub comment id" 100 "$FACT_CK_ID"
+
+ck_fact_bad="$(printf '%s\n' "$v1_ck_filled" | awk '
+  {print}
+  $0=="<!-- new-task-checkpoint -->" { print "fact_id=1" }
+')"
+comment_obj 100 "$ck_fact_bad" > "$TDIR/c-100-bad.json"
+set_comments "$TDIR/c-100-bad.json"
+if task_facts_load o r 16 "$WT" "$BASE" 2>"$TDIR/ck-fact-bad.err"; then
+  bad "current Checkpoint fact_id=1 / comment id=100 应 fail-closed"
+else
+  grep -Fq 'fact_id=1' "$TDIR/ck-fact-bad.err" \
+    && grep -Fq '100' "$TDIR/ck-fact-bad.err" \
+    && ok || bad "corrupt Checkpoint fact_id 应报告与 GitHub comment id 冲突"
+fi
+
+rv_fact_ok="$(printf '%s\n' "$fail_review" | awk '
+  {print}
+  $0=="<!-- new-task-review -->" { print "fact_id=200" }
+')"
+comment_obj 200 "$rv_fact_ok" > "$TDIR/c-200-ok.json"
+set_comments "$TDIR/c-200-ok.json"
+task_facts_load o r 16 "$WT" "$BASE"
+expect_eq "current Review fact_id=200 且 comment id=200 可加载" 1 "$TASK_FACTS_READY"
+expect_eq "current Review 使用 GitHub comment id" 200 "$FACT_RV_ID"
+
+rv_fact_bad="$(printf '%s\n' "$fail_review" | awk '
+  {print}
+  $0=="<!-- new-task-review -->" { print "fact_id=1" }
+')"
+comment_obj 200 "$rv_fact_bad" > "$TDIR/c-200-bad.json"
+set_comments "$TDIR/c-200-bad.json"
+if task_facts_load o r 16 "$WT" "$BASE" 2>"$TDIR/rv-fact-bad.err"; then
+  bad "current Review fact_id=1 / comment id=200 应 fail-closed"
+else
+  grep -Fq 'fact_id=1' "$TDIR/rv-fact-bad.err" \
+    && grep -Fq '200' "$TDIR/rv-fact-bad.err" \
+    && ok || bad "corrupt Review fact_id 应报告与 GitHub comment id 冲突"
+fi
+
+ck_fact_dup="$(printf '%s\n' "$v1_ck_filled" | awk '
+  {print}
+  $0=="<!-- new-task-checkpoint -->" {
+    print "fact_id=100"
+    print "fact_id=1"
+  }
+')"
+comment_obj 100 "$ck_fact_dup" > "$TDIR/c-100-dup.json"
+set_comments "$TDIR/c-100-dup.json"
+if task_facts_load o r 16 "$WT" "$BASE" 2>"$TDIR/ck-fact-dup.err"; then
+  bad "duplicate fact_id machine field 应 fail-closed"
+else
+  grep -Fq 'fact_id' "$TDIR/ck-fact-dup.err" \
+    && ok || bad "duplicate fact_id 应报告重复"
+fi
+
+comment_obj 100 "$v1_ck_filled" > "$TDIR/c-100-legacy.json"
+comment_obj 200 "$fail_review" > "$TDIR/c-200-legacy.json"
+set_comments "$TDIR/c-100-legacy.json" "$TDIR/c-200-legacy.json"
+task_facts_load o r 16 "$WT" "$BASE"
+expect_eq "legacy current fact 无 fact_id 仍可加载" 1 "$TASK_FACTS_READY"
+expect_eq "legacy Checkpoint 仍用 GitHub comment id" 100 "$FACT_CK_ID"
+expect_eq "legacy Review 仍用 GitHub comment id" 200 "$FACT_RV_ID"
+expect_false "legacy Checkpoint 未回填 fact_id" \
+  'printf "%s\n" "$FACT_CK_BODY" | grep -q "^fact_id="'
+expect_false "legacy Review 未回填 fact_id" \
+  'printf "%s\n" "$FACT_RV_BODY" | grep -q "^fact_id="'
+
 echo "facts.test.sh: 通过 ${pass}，失败 ${fail}"
 [ "$fail" -eq 0 ]

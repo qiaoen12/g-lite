@@ -30,7 +30,7 @@ actor 只是领取/展示身份，不是 execution provenance，也不是认证�
 
 `new z dev` / `new z fix` / `new z review` 共用一个有界 loader，恢复 Contract、binding、当前 HEAD、有界 diff、当前 Checkpoint tip、当前 Review tip、未关闭 findings、PR、provenance 摘要和 next canonical command。正常恢复不灌入全部历史正文；完整历史按 comment id 按需追溯。
 
-Checkpoint / Review 的当前 tip 仍由 `<!-- new-task-checkpoint -->` / `<!-- new-task-review -->` 唯一标识。新写入先把上一轮正文归档为 `*-history` 评论，并在 tip 上留下 `prev_fact_id` 与 Historical facts 引用。重复 tip、分叉、损坏引用 fail-closed，不按 `created_at` 猜最新。不引入新账户数据库。
+Checkpoint / Review 的当前 tip 仍由 `<!-- new-task-checkpoint -->` / `<!-- new-task-review -->` 唯一标识。新写入先把上一轮正文归档为 `*-history` 评论，并在 tip 上留下 `prev_fact_id` 与 Historical facts 引用。重复 tip、分叉、损坏引用、正文 `fact_id` 与 GitHub comment id 不一致 fail-closed，不按 `created_at` 猜最新。不引入新账户数据库。recognized legacy 无 `fact_id` 的正文保持只读兼容，不回填。
 
 v1.0.0 的 Contract / binding / Checkpoint / Review，以及 #13 completion 与 delivery shape，保持只读兼容。缺 #16 provenance 字段记为 `unknown-unverified`，不改写旧正文，不补造旧身份。
 
