@@ -411,7 +411,7 @@ ${evidence}领取以 refs/claims/${number} 为准；Status 是视图
 \`\`\`
 EOF
 )"
-  task_write_checkpoint "$owner" "$repo" "$number" "$ck_body"
+  TASK_FACT_STAMP_ROLE=claim task_write_checkpoint "$owner" "$repo" "$number" "$ck_body"
 }
 
 task_claim_try_status_progress() {

@@ -177,6 +177,48 @@ completion="$(printf '%s\n' "$v1_ck_filled" | awk '
   }
 ')"
 expect_eq "#13 completion shape 可识别" completion "$(task_facts_classify_checkpoint "$completion")"
+expect_eq "v1.0.0 不是 claim-only" unknown "$(task_facts_classify_checkpoint "$v1_ck_filled")"
+expect_eq "legacy completion independence class 为 unknown" unknown \
+  "$(task_facts_independence_class "$completion")"
+expect_eq "delivery independence class" delivery "$(task_facts_independence_class "$delivery")"
+
+claim_unknown="$(cat <<EOF
+${TASK_CHECKPOINT_HISTORY_MARK}
+claim_actor=same@example.test
+provenance_version=1
+source_type=unknown
+role=unknown
+verification_state=unknown-unverified
+## Checkpoint
+由 \`new task claim\` 写入或更新。当前 Checkpoint tip 唯一。
+
+| 项 | 值 |
+| --- | --- |
+| Issue | o/r#16 |
+| Contract | \`${BLOB}\` |
+| Agent | \`codex\`（未启动） |
+| claim_actor | \`same@example.test\` |
+| 启动时间 | 2026-09-01T00:00:00+0000 |
+| HEAD | \`${BASE}\` |
+| 工作区状态 | 干净 |
+| 允许范围 | 0-meta/lib/new/ |
+| PR | 无 |
+| 下一步 | 已领取。下一步：new z dev。
+EOF
+)"
+expect_eq "claim-only shape 可识别" claim "$(task_facts_classify_checkpoint "$claim_unknown")"
+expect_eq "claim-only independence class" claim "$(task_facts_independence_class "$claim_unknown")"
+expect_true "claim-only 检测器命中" 'task_facts_is_claim_only "$claim_unknown"'
+expect_false "v1.0.0 不是 claim-only" 'task_facts_is_claim_only "$v1_ck_filled"'
+expect_false "completion 不是 claim-only" 'task_facts_is_claim_only "$completion"'
+expect_eq "claim writer stamp role" claim "$(TASK_FACT_STAMP_ROLE=claim task_facts_role_from_entry)"
+claim_stamped="$(task_facts_stamp_provenance "$(printf '%s\n' "$claim_unknown" | sed "s/${TASK_CHECKPOINT_HISTORY_MARK}/${TASK_CHECKPOINT_MARK}/")" claim "")"
+expect_true "claim stamp 写 role=claim" \
+  'printf "%s\n" "$claim_stamped" | grep -Fxq "role=claim"'
+expect_true "claim stamp 保持 unknown-unverified" \
+  'printf "%s\n" "$claim_stamped" | grep -Fxq "verification_state=unknown-unverified"'
+expect_false "claim stamp 不伪造 source_ref" \
+  'printf "%s\n" "$claim_stamped" | grep -q "^source_ref="'
 
 fail_review="$(cat <<EOF
 ${TASK_REVIEW_MARK}
@@ -599,6 +641,188 @@ task_facts_review_applicability "$dup_conflict" "$HEAD1" "$BLOB" "$WT"
 expect_eq "conflicting duplicate applicability=conflict" conflict "$FACT_REVIEW_APPLICABILITY"
 expect_false "conflicting duplicate 不能 silently 取第一个而独立" \
   'task_facts_reviewer_independent "$dup_conflict" "$HEAD1" "$WT" "$FACT_COMMENTS_JSON"'
+
+# F16-RA-01：claim-only 不得污染 reviewer independence；真实 dev/fix unknown 仍 fail-closed。
+ra_pass_b="$(printf '%s\n' "$pass_review" | awk '
+  {print}
+  $0=="<!-- new-task-review -->" {
+    print "provenance_version=1"
+    print "source_type=codex-session"
+    print "source_ref=codex-review-session-bbbbbbb"
+    print "role=review"
+    print "verification_state=verified"
+  }
+')"
+ra_rev_b="$(cat <<EOF
+${TASK_REVIEW_MARK}
+review_actor=same@example.test
+claim_actor=same@example.test
+Self-review=no
+provenance_version=1
+source_type=codex-session
+source_ref=codex-review-session-bbbbbbb
+role=review
+verification_state=verified
+EOF
+)"
+a_dev_verified="$(cat <<EOF
+${TASK_CHECKPOINT_HISTORY_MARK}
+claim_actor=same@example.test
+provenance_version=1
+source_type=codex-session
+source_ref=codex-dev-session-aaaaaaa
+role=dev
+verification_state=verified
+## Checkpoint
+| 项 | 值 |
+| --- | --- |
+| HEAD | \`${HEAD1}\` |
+| Contract | \`${BLOB}\` |
+| 交接状态 | review-ready |
+| HEAD 持久化 | committed + clean HEAD |
+| 工作树分类 | untracked=0 / unstaged=0 / staged=0 |
+EOF
+)"
+c_fix_verified="$(cat <<EOF
+${TASK_CHECKPOINT_MARK}
+claim_actor=same@example.test
+provenance_version=1
+source_type=codex-session
+source_ref=codex-fix-session-ccccccc
+role=fix
+verification_state=verified
+## Checkpoint
+| 项 | 值 |
+| --- | --- |
+| HEAD | \`${HEAD1}\` |
+| Contract | \`${BLOB}\` |
+| 交接状态 | review-ready |
+| HEAD 持久化 | committed + clean HEAD |
+| 工作树分类 | untracked=0 / unstaged=0 / staged=0 |
+EOF
+)"
+a_dev_unknown="$(printf '%s\n' "$a_dev_verified" \
+  | sed -e 's/source_type=codex-session/source_type=unknown/' \
+        -e '/^source_ref=/d' \
+        -e 's/verification_state=verified/verification_state=unknown-unverified/')"
+c_fix_unknown="$(printf '%s\n' "$c_fix_verified" \
+  | sed -e 's/source_type=codex-session/source_type=unknown/' \
+        -e '/^source_ref=/d' \
+        -e 's/verification_state=verified/verification_state=unknown-unverified/')"
+claim_unknown2="$(printf '%s\n' "$claim_unknown" \
+  | sed -e 's/2026-09-01T00:00:00+0000/2026-09-02T00:00:00+0000/' \
+        -e "s/${BASE}/${HEAD1}/")"
+claim_role="$(printf '%s\n' "$claim_unknown" | sed 's/role=unknown/role=claim/')"
+unclassified="$(cat <<EOF
+${TASK_CHECKPOINT_MARK}
+provenance_version=1
+source_type=unknown
+role=unknown
+verification_state=unknown-unverified
+## Checkpoint
+| 项 | 值 |
+| --- | --- |
+| HEAD | \`${HEAD1}\` |
+| leftover | unclassified provenance residue |
+EOF
+)"
+review_hist="$(printf '%s\n' "$fail_review" | sed "s/${TASK_REVIEW_MARK}/${TASK_REVIEW_HISTORY_MARK}/")"
+review_hist="${TASK_REVIEW_HISTORY_MARK}"$'\n'"role=review"$'\n'"${review_hist#*$'\n'}"
+
+comment_obj 601 "$claim_unknown" > "$TDIR/c-601.json"
+comment_obj 602 "$a_dev_verified" > "$TDIR/c-602.json"
+comment_obj 603 "$c_fix_verified" > "$TDIR/c-603.json"
+comment_obj 604 "$ra_pass_b" > "$TDIR/c-604.json"
+set_comments "$TDIR/c-601.json" "$TDIR/c-602.json" "$TDIR/c-603.json" "$TDIR/c-604.json"
+FACT_COMMENTS_JSON="$(cat "$COMMENTS")"
+RA_EXECS="$(task_facts_executions_for_candidate "$FACT_COMMENTS_JSON" "$HEAD1" "$WT")"
+expect_false "F16-RA-01 Case1 claim 不进 independence set" \
+  'printf "%s\n" "$RA_EXECS" | awk -F "\t" "\$1==601{found=1} END{exit found?0:1}"'
+expect_true "F16-RA-01 Case1 纳入 verified A" \
+  'printf "%s\n" "$RA_EXECS" | awk -F "\t" "\$1==602{found=1} END{exit found?0:1}"'
+expect_true "F16-RA-01 Case1 纳入 verified C" \
+  'printf "%s\n" "$RA_EXECS" | awk -F "\t" "\$1==603{found=1} END{exit found?0:1}"'
+expect_true "F16-RA-01 Case1 B independent = YES" \
+  'task_facts_reviewer_independent "$ra_rev_b" "$HEAD1" "$WT" "$FACT_COMMENTS_JSON"'
+task_facts_review_applicability "$ra_pass_b" "$HEAD1" "$BLOB" "$WT"
+expect_eq "F16-RA-01 Case1 允许 Self-review=no" pass "$FACT_REVIEW_APPLICABILITY"
+expect_true "F16-RA-01 Case1 applicable pass" \
+  'task_facts_review_is_applicable_pass "$ra_pass_b" "$HEAD1" "$BLOB" "$WT"'
+WT_RA="$TDIR/wt-ra01"
+git clone -q "$WT" "$WT_RA"
+rm -f "$(task_facts_capture_path "$WT_RA")" "$(task_facts_trusted_capture_path "$WT_RA")"
+task_facts_write_verified_capture "$WT_RA" codex-session 'codex-review-session-bbbbbbb' '' review
+expect_true "F16-RA-01 Case1 current reviewer independent" \
+  'task_facts_current_reviewer_independent "$WT_RA" "$HEAD1" "$FACT_COMMENTS_JSON"'
+
+comment_obj 611 "$claim_unknown" > "$TDIR/c-611.json"
+comment_obj 612 "$a_dev_unknown" > "$TDIR/c-612.json"
+set_comments "$TDIR/c-611.json" "$TDIR/c-612.json"
+FACT_COMMENTS_JSON="$(cat "$COMMENTS")"
+expect_false "F16-RA-01 Case2 A unknown 不能 independent PASS" \
+  'task_facts_reviewer_independent "$ra_rev_b" "$HEAD1" "$WT" "$FACT_COMMENTS_JSON"'
+
+comment_obj 621 "$claim_unknown" > "$TDIR/c-621.json"
+comment_obj 622 "$a_dev_verified" > "$TDIR/c-622.json"
+comment_obj 623 "$c_fix_unknown" > "$TDIR/c-623.json"
+set_comments "$TDIR/c-621.json" "$TDIR/c-622.json" "$TDIR/c-623.json"
+FACT_COMMENTS_JSON="$(cat "$COMMENTS")"
+expect_false "F16-RA-01 Case3 C unknown 不能 independent PASS" \
+  'task_facts_reviewer_independent "$ra_rev_b" "$HEAD1" "$WT" "$FACT_COMMENTS_JSON"'
+
+comment_obj 631 "$claim_unknown" > "$TDIR/c-631.json"
+comment_obj 632 "$claim_unknown2" > "$TDIR/c-632.json"
+comment_obj 633 "$claim_role" > "$TDIR/c-633.json"
+comment_obj 634 "$a_dev_verified" > "$TDIR/c-634.json"
+set_comments "$TDIR/c-631.json" "$TDIR/c-632.json" "$TDIR/c-633.json" "$TDIR/c-634.json"
+FACT_COMMENTS_JSON="$(cat "$COMMENTS")"
+RA_EXECS="$(task_facts_executions_for_candidate "$FACT_COMMENTS_JSON" "$HEAD1" "$WT")"
+expect_false "F16-RA-01 Case4 多轮 claim 不进 set" \
+  'printf "%s\n" "$RA_EXECS" | awk -F "\t" "\$1==631||\$1==632||\$1==633{found=1} END{exit found?0:1}"'
+expect_true "F16-RA-01 Case4 多轮 claim 不污染 independence" \
+  'task_facts_reviewer_independent "$ra_rev_b" "$HEAD1" "$WT" "$FACT_COMMENTS_JSON"'
+set_comments "$TDIR/c-631.json" "$TDIR/c-632.json" "$TDIR/c-633.json"
+FACT_COMMENTS_JSON="$(cat "$COMMENTS")"
+expect_false "F16-RA-01 Case4 仅 claim 不能独立" \
+  'task_facts_reviewer_independent "$ra_rev_b" "$HEAD1" "$WT" "$FACT_COMMENTS_JSON"'
+
+comment_obj 641 "$v1_ck_filled" > "$TDIR/c-641.json"
+set_comments "$TDIR/c-641.json"
+FACT_COMMENTS_JSON="$(cat "$COMMENTS")"
+expect_eq "F16-RA-01 Case5 v1 class=unknown" unknown \
+  "$(task_facts_independence_class "$v1_ck_filled")"
+expect_false "F16-RA-01 Case5 v1 缺 provenance fail-closed" \
+  'task_facts_reviewer_independent "$ra_rev_b" "$HEAD1" "$WT" "$FACT_COMMENTS_JSON"'
+comment_obj 642 "$completion" > "$TDIR/c-642.json"
+set_comments "$TDIR/c-642.json"
+FACT_COMMENTS_JSON="$(cat "$COMMENTS")"
+expect_false "F16-RA-01 Case5 legacy completion 缺 provenance fail-closed" \
+  'task_facts_reviewer_independent "$ra_rev_b" "$HEAD1" "$WT" "$FACT_COMMENTS_JSON"'
+
+comment_obj 651 "$claim_unknown" > "$TDIR/c-651.json"
+comment_obj 652 "$a_dev_verified" > "$TDIR/c-652.json"
+comment_obj 653 "$delivery" > "$TDIR/c-653.json"
+comment_obj 654 "$review_hist" > "$TDIR/c-654.json"
+set_comments "$TDIR/c-651.json" "$TDIR/c-652.json" "$TDIR/c-653.json" "$TDIR/c-654.json"
+FACT_COMMENTS_JSON="$(cat "$COMMENTS")"
+RA_EXECS="$(task_facts_executions_for_candidate "$FACT_COMMENTS_JSON" "$HEAD1" "$WT")"
+expect_false "F16-RA-01 Case6 delivery 不进 set" \
+  'printf "%s\n" "$RA_EXECS" | awk -F "\t" "\$1==653{found=1} END{exit found?0:1}"'
+expect_false "F16-RA-01 Case6 review history 不进 set" \
+  'printf "%s\n" "$RA_EXECS" | awk -F "\t" "\$1==654{found=1} END{exit found?0:1}"'
+expect_true "F16-RA-01 Case6 review/delivery 不污染 independence" \
+  'task_facts_reviewer_independent "$ra_rev_b" "$HEAD1" "$WT" "$FACT_COMMENTS_JSON"'
+
+comment_obj 661 "$unclassified" > "$TDIR/c-661.json"
+comment_obj 662 "$a_dev_verified" > "$TDIR/c-662.json"
+set_comments "$TDIR/c-661.json" "$TDIR/c-662.json"
+FACT_COMMENTS_JSON="$(cat "$COMMENTS")"
+expect_eq "F16-RA-01 Case7 无法分类 class=unknown" unknown \
+  "$(task_facts_independence_class "$unclassified")"
+expect_true "F16-RA-01 Case7 无法分类仍纳入 set" \
+  'task_facts_executions_for_candidate "$FACT_COMMENTS_JSON" "$HEAD1" "$WT" | awk -F "\t" "\$1==661{found=1} END{exit found?0:1}"'
+expect_false "F16-RA-01 Case7 无法分类 fail-closed" \
+  'task_facts_reviewer_independent "$ra_rev_b" "$HEAD1" "$WT" "$FACT_COMMENTS_JSON"'
 
 echo "facts.test.sh: 通过 ${pass}，失败 ${fail}"
 [ "$fail" -eq 0 ]

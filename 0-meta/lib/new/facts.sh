@@ -72,7 +72,12 @@ task_facts_role_from_entry() {
     *'/zdev/'*) printf '%s\n' dev ;;
     *'/zfix/'*) printf '%s\n' fix ;;
     *'/zreview/'*) printf '%s\n' review ;;
-    *) printf '%s\n' unknown ;;
+    *)
+      case "${TASK_FACT_STAMP_ROLE:-}" in
+        claim|dev|fix|review) printf '%s\n' "$TASK_FACT_STAMP_ROLE" ;;
+        *) printf '%s\n' unknown ;;
+      esac
+      ;;
   esac
 }
 
@@ -382,10 +387,11 @@ task_facts_stamp_provenance() {
 }
 
 task_facts_classify_checkpoint() {
-  local body="$1" agent delivery completion
+  local body="$1" agent delivery completion start
   agent="$(task_review_table_field "$body" Agent)"
   delivery="$(task_review_table_field "$body" "交付时间")"
   completion="$(task_review_table_field "$body" "交接状态")"
+  start="$(task_review_table_field "$body" "启动时间")"
   if [ -n "$delivery" ] && [ -z "$agent" ]; then
     printf '%s\n' delivery
     return 0
@@ -394,7 +400,70 @@ task_facts_classify_checkpoint() {
     printf '%s\n' completion
     return 0
   fi
-  if [ -n "$agent" ]; then
+  if [ -n "$start" ]; then
+    printf '%s\n' claim
+    return 0
+  fi
+  printf '%s\n' unknown
+}
+
+# claim-only：领取记录，不是形成 candidate 的 dev/fix execution。
+# 不能把「没有 role」当成 claim；v1.0.0 / #13 completion 仍可能没有新 role。
+task_facts_is_claim_only() {
+  local body="$1" role start completion delivery
+  role="$(task_machine_field "$body" role)"
+  case "$role" in
+    dev|fix|review) return 1 ;;
+    claim) return 0 ;;
+  esac
+  completion="$(task_review_table_field "$body" "交接状态")"
+  delivery="$(task_review_table_field "$body" "交付时间")"
+  [ -n "$completion" ] && return 1
+  [ -n "$delivery" ] && return 1
+  start="$(task_review_table_field "$body" "启动时间")"
+  [ -n "$start" ] && return 0
+  case "$body" in
+    *'由 `new task claim`'*|*'由 `new task grok`'*|*'由 `new task codex`'*)
+      return 0 ;;
+  esac
+  return 1
+}
+
+# Reviewer independence 只覆盖形成当前 candidate 的 dev/fix execution。
+# 打印：dev | fix | claim | review | delivery | unknown
+# unknown = recognized legacy 或无法分类；调用方必须纳入并 fail-closed。
+task_facts_independence_class() {
+  local body="$1" shape
+  task_facts_parse_provenance "$body" || return 1
+  case "$FACT_PROV_ROLE" in
+    dev) printf '%s\n' dev; return 0 ;;
+    fix) printf '%s\n' fix; return 0 ;;
+    review) printf '%s\n' review; return 0 ;;
+    claim)
+      shape="$(task_facts_classify_checkpoint "$body")"
+      case "$shape" in
+        completion) printf '%s\n' unknown; return 0 ;;
+        delivery) printf '%s\n' delivery; return 0 ;;
+      esac
+      printf '%s\n' claim
+      return 0
+      ;;
+  esac
+  case "$body" in
+    *"$TASK_REVIEW_MARK"*|*"$TASK_REVIEW_HISTORY_MARK"*)
+      printf '%s\n' review
+      return 0
+      ;;
+  esac
+  shape="$(task_facts_classify_checkpoint "$body")"
+  case "$shape" in
+    delivery) printf '%s\n' delivery; return 0 ;;
+    completion)
+      printf '%s\n' unknown
+      return 0
+      ;;
+  esac
+  if task_facts_is_claim_only "$body"; then
     printf '%s\n' claim
     return 0
   fi
@@ -711,7 +780,7 @@ task_facts_tokens_overlap() {
 
 task_facts_executions_for_candidate() {
   local js="$1" current_head="$2" wt="$3"
-  local ids id c body role head tokens state kind
+  local ids id c body class role head tokens state kind
   ids="$(task_facts_comment_ids_with_mark "$js" "$TASK_CHECKPOINT_MARK")"
   ids="$(printf '%s\n%s\n' "$ids" "$(task_facts_comment_ids_with_mark "$js" "$TASK_CHECKPOINT_HISTORY_MARK")")"
   while IFS= read -r id; do
@@ -719,11 +788,16 @@ task_facts_executions_for_candidate() {
     c="$(task_facts_comment_by_id "$js" "$id")"
     [ -n "$c" ] || continue
     body="$(printf '%s' "$c" | jq -r '.body // empty')"
+    # 必须在当前 shell 解析：$(class) 子进程里的 FACT_PROV_* 不能带回来。
     task_facts_parse_provenance "$body" || return 1
-    role="${FACT_PROV_ROLE:-unknown}"
-    case "$role" in
-      review) continue ;;
+    class="$(task_facts_independence_class "$body")" || return 1
+    case "$class" in
+      claim|review|delivery) continue ;;
+      dev|fix|unknown) ;;
+      *) return 1 ;;
     esac
+    role="$class"
+    [ "$role" = unknown ] && role="${FACT_PROV_ROLE:-unknown}"
     head="$(task_review_table_field "$body" HEAD)"
     [ -n "$head" ] || continue
     kind="$(task_facts_head_kind "$wt" "$head" "$current_head")"
@@ -732,7 +806,7 @@ task_facts_executions_for_candidate() {
       *) continue ;;
     esac
     state="${FACT_PROV_STATE:-unknown-unverified}"
-    tokens="$(task_facts_lineage_tokens "$FACT_PROV_SOURCE_REF" "$FACT_PROV_LINEAGE_REF")"
+    tokens="$(task_facts_lineage_tokens "${FACT_PROV_SOURCE_REF:-}" "${FACT_PROV_LINEAGE_REF:-}")"
     printf '%s\t%s\t%s\t%s\n' "$id" "$role" "$state" "$(printf '%s' "$tokens" | tr '\n' ' ')"
   done <<< "$ids"
 }

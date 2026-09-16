@@ -24,7 +24,7 @@ canonical `new z review` 接受 `0-meta/templates/task-contract-review-input.md`
 
 Contract A 只能通过 `validator:<id>` 引用固定 registry，不携带 shell 命令。当前 registry 至少包含 `new-check-commit`、`contract-test`、`bash-syntax`。canonical Review 在当前 task worktree 中执行登记项，记录 validator id、exit code 和截断输出；结果追加到对应 A 的证据，validator 失败可将 A 置为不通过并阻止 Verdict=通过，validator 成功不覆盖 reviewer 的语义状态。未知 validator 在 approve 或消费 Contract 前拒绝。
 
-actor 只是领取/展示身份，不是 execution provenance，也不是认证。缺省链仍是 `--actor` → `NEW_TASK_ACTOR` → 当前 worktree 的 `git config user.email`；全空或非法 fail-closed。换 `--actor`、新 UUID、PID、机器名、模型名或终端名都不能单独证明独立 Reviewer。独立性必须相对形成当前 candidate 的全部 dev/fix execution 及其 continuation/fork lineage。只有宿主或受控 launcher/hook 捕获的 `source_ref` 为 `verified`，且与这些开发来源无交集，才能写 `Self-review=no`。无法证明时写 `unknown` / `unknown-unverified`，不得自动宣称独立 PASS。`--allow-self` + `human-merge` 只是显式人工 self-review（`Self-review=yes`），不是未知身份的 fallback。zmerge 看到 `Self-review=yes` 或缺少可证明的 `no` 都拒绝自动 squash。
+actor 只是领取/展示身份，不是 execution provenance，也不是认证。缺省链仍是 `--actor` → `NEW_TASK_ACTOR` → 当前 worktree 的 `git config user.email`；全空或非法 fail-closed。换 `--actor`、新 UUID、PID、机器名、模型名或终端名都不能单独证明独立 Reviewer。独立性必须相对形成当前 candidate 的全部 dev/fix execution 及其 continuation/fork lineage。claim-only 领取记录不是 candidate-forming execution，即使 provenance 为 `unknown` 也不进入 independence 集合；recognized legacy dev/fix 即使没有新 `role` 字段仍计入，缺 provenance 则 fail-closed。无法分类的历史 provenance 不得忽略。只有宿主或受控 launcher/hook 捕获的 `source_ref` 为 `verified`，且与这些开发来源无交集，才能写 `Self-review=no`。无法证明时写 `unknown` / `unknown-unverified`，不得自动宣称独立 PASS。`--allow-self` + `human-merge` 只是显式人工 self-review（`Self-review=yes`），不是未知身份的 fallback。zmerge 看到 `Self-review=yes` 或缺少可证明的 `no` 都拒绝自动 squash。
 
 ## 阶段事实与 tip / history
 

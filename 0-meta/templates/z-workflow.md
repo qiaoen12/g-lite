@@ -25,7 +25,7 @@ new task claim
 - 有界 loader：Contract、binding、HEAD、有界 diff、当前 Checkpoint/Review tip、findings、PR、provenance、next command。完整历史按 comment id 追溯。
 - 当前 tip 由 `<!-- new-task-checkpoint -->` / `<!-- new-task-review -->` 唯一标识。新写入归档上一轮为 `*-history`，tip 留 `prev_fact_id`。重复 tip、分叉、损坏引用 fail-closed，不按 `created_at` 猜最新。
 - 适用 PASS 绑定精确 HEAD SHA + 当前 origin/main Contract blob + 合法 provenance/独立性 + current fact 无冲突。`zsync=noop` 且条件未变则保留 PASS；rebase/HEAD SHA 变化或 Contract-only change 使 Review stale。ancestry 只诊断，不继承 PASS。
-- `review_actor != claim_actor` 不能证明独立。actor 不是 execution identity。独立性相对全部 candidate dev/fix execution 及其 lineage；verified `source_ref` 且无交集才写 `Self-review=no`。无法证明写 `unknown`/`unknown-unverified`，fail-closed。`Self-review=yes` 不得自动 squash。
+- `review_actor != claim_actor` 不能证明独立。actor 不是 execution identity。独立性相对全部 candidate dev/fix execution 及其 lineage，不含 claim-only / review / delivery-only；recognized legacy dev/fix 缺 provenance 仍 fail-closed。verified `source_ref` 且无交集才写 `Self-review=no`。无法证明写 `unknown`/`unknown-unverified`，fail-closed。`Self-review=yes` 不得自动 squash。
 
 ## 最小审查输入
 
