@@ -333,14 +333,29 @@ else
     && ok || bad "orphan 应报告 fork"
 fi
 
-# 写入归档：旧 tip 变为 history
+comment_fact_id() {
+  local id="$1"
+  jq -r --argjson id "$id" '.[] | select(.id == $id) | .body' "$COMMENTS" \
+    | awk -F= '/^fact_id=/{print $2; exit}'
+}
+history_ids() {
+  jq -r '.[] | select(.body | contains("<!-- new-task-checkpoint-history -->")) | .id' "$COMMENTS"
+}
+tip_id() {
+  jq -r '.[] | select(.body | contains("<!-- new-task-checkpoint -->") and (contains("<!-- new-task-checkpoint-history -->") | not)) | .id' "$COMMENTS"
+}
+
+# 写入归档：旧 tip 变为 history；fact_id 必须等于实际 comment id。
 printf '%s\n' '[]' > "$COMMENTS"
 printf '%s\n' 400 > "$NEXT_ID_FILE"
+rm -f "$(task_facts_capture_path "$WT")" "$(task_facts_trusted_capture_path "$WT")"
 task_write_marked_comment o r 16 "$TASK_CHECKPOINT_MARK" Checkpoint "$v1_ck_filled"
 expect_eq "首次写入后只有一条 tip" 1 \
   "$(jq '[.[] | select(.body | contains("<!-- new-task-checkpoint -->"))] | length' "$COMMENTS")"
 uniq1="$(task_unique_marked_comment o r 16 "$TASK_CHECKPOINT_MARK" Checkpoint || true)"
 expect_true "首次写入后 unique tip 可读" '[ -n "$uniq1" ]'
+first_tip="$(tip_id)"
+expect_eq "第 1 次 tip fact_id == comment id" "$first_tip" "$(comment_fact_id "$first_tip")"
 task_write_marked_comment o r 16 "$TASK_CHECKPOINT_MARK" Checkpoint "$completion"
 expect_eq "第二次写入归档历史" 1 \
   "$(jq '[.[] | select(.body | contains("<!-- new-task-checkpoint-history -->"))] | length' "$COMMENTS")"
@@ -348,6 +363,25 @@ expect_eq "tip 仍唯一" 1 \
   "$(jq '[.[] | select(.body | contains("<!-- new-task-checkpoint -->") and (contains("<!-- new-task-checkpoint-history -->") | not))] | length' "$COMMENTS")"
 expect_true "新 tip 含 prev_fact_id" \
   'jq -r ".[].body" "$COMMENTS" | grep -q "^prev_fact_id="'
+hid2="$(history_ids | awk 'NR==1{print}')"
+expect_eq "第 2 次归档 fact_id == 新 history comment id" "$hid2" "$(comment_fact_id "$hid2")"
+expect_eq "第 2 次后 tip fact_id 仍是 tip comment id" "$first_tip" "$(comment_fact_id "$(tip_id)")"
+
+# 第 3 次归档：旧 tip 已有 fact_id，必须改写成新 history id。
+task_write_marked_comment o r 16 "$TASK_CHECKPOINT_MARK" Checkpoint "$delivery"
+expect_eq "第三次写入后 history 为 2" 2 \
+  "$(jq '[.[] | select(.body | contains("<!-- new-task-checkpoint-history -->"))] | length' "$COMMENTS")"
+expect_eq "第三次后 tip 仍唯一" 1 \
+  "$(jq '[.[] | select(.body | contains("<!-- new-task-checkpoint -->") and (contains("<!-- new-task-checkpoint-history -->") | not))] | length' "$COMMENTS")"
+while IFS= read -r hid; do
+  [ -n "$hid" ] || continue
+  expect_eq "history ${hid} fact_id == comment id" "$hid" "$(comment_fact_id "$hid")"
+done < <(history_ids)
+expect_eq "第三次后 tip fact_id == tip comment id" "$(tip_id)" "$(comment_fact_id "$(tip_id)")"
+task_facts_load o r 16 "$WT" "$BASE"
+expect_eq "三轮归档后 current tip 可加载" 1 "$TASK_FACTS_READY"
+expect_true "三轮归档后可按 id 读 history" \
+  'task_facts_load_history_body "$hid2" | grep -Fq "<!-- new-task-checkpoint-history -->"'
 
 # provenance / independence
 dev_body="$(cat <<EOF
@@ -414,9 +448,14 @@ expect_false "继承开发上下文的 fork 不能独立" \
 expect_false "legacy unknown 不能独立" \
   'task_facts_reviewer_independent "$pass_review" "$HEAD1" "$WT" "$FACT_COMMENTS_JSON"'
 
-task_facts_write_capture "$WT" cursor-conversation 'cursor-review-session-bbbbbbb' '' review hook
+rm -f "$(task_facts_capture_path "$WT")" "$(task_facts_trusted_capture_path "$WT")"
+task_facts_write_verified_capture "$WT" cursor-conversation 'cursor-review-session-bbbbbbb' '' review
 task_facts_read_capture "$WT"
-expect_eq "受控 hook capture 为 verified" verified "$FACT_CAPTURE_STATE"
+expect_eq "受控 hook writer 的 capture 为 verified" verified "$FACT_CAPTURE_STATE"
+task_facts_write_capture "$WT" cursor-conversation 'cursor-review-session-bbbbbbb' '' review hook
+rm -f "$(task_facts_trusted_capture_path "$WT")"
+task_facts_read_capture "$WT"
+expect_eq "仅 captured_by=hook 字符串不能 verified" unknown-unverified "$FACT_CAPTURE_STATE"
 printf '%s\n' '{"source_type":"cursor-conversation","source_ref":"x","captured_by":"user"}' \
   > "$(task_facts_capture_path "$WT")"
 task_facts_read_capture "$WT"
@@ -428,6 +467,138 @@ expect_true "dev/fix/review 共用 task_facts_load" \
   'grep -Fq "z_cli_load_facts" "$ROOT/0-meta/lib/new/z-cli.sh"'
 expect_true "next command 含 fix 常量" \
   'grep -Fq "TASK_BOOTSTRAP_NEXT_FIX" "$ROOT/0-meta/lib/new/bootstrap.sh"'
+
+# 10 轮 writer：每条 history 的 fact_id == comment id，tip 唯一，整条 history 可读。
+printf '%s\n' '[]' > "$COMMENTS"
+printf '%s\n' 500 > "$NEXT_ID_FILE"
+rm -f "$(task_facts_capture_path "$WT")" "$(task_facts_trusted_capture_path "$WT")"
+round=1
+while [ "$round" -le 10 ]; do
+  task_write_marked_comment o r 16 "$TASK_CHECKPOINT_MARK" Checkpoint \
+    "$(printf '%s\nwriter_round=%s\n' "$v1_ck_filled" "$round")"
+  round=$((round + 1))
+done
+expect_eq "10 轮 writer 后 tip 唯一" 1 \
+  "$(jq '[.[] | select(.body | contains("<!-- new-task-checkpoint -->") and (contains("<!-- new-task-checkpoint-history -->") | not))] | length' "$COMMENTS")"
+expect_eq "10 轮 writer 后 history 为 9" 9 \
+  "$(jq '[.[] | select(.body | contains("<!-- new-task-checkpoint-history -->"))] | length' "$COMMENTS")"
+expect_eq "10 轮 tip fact_id == tip comment id" "$(tip_id)" "$(comment_fact_id "$(tip_id)")"
+task_facts_load o r 16 "$WT" "$BASE"
+expect_eq "10 轮 writer 后整条 history 可加载" 1 "$TASK_FACTS_READY"
+while IFS= read -r hid; do
+  [ -n "$hid" ] || continue
+  expect_eq "10 轮 history ${hid} fact_id == comment id" "$hid" "$(comment_fact_id "$hid")"
+  expect_true "10 轮 history ${hid} 可按 id 读取" \
+    "task_facts_load_history_body \"$hid\" | grep -Fq '<!-- new-task-checkpoint-history -->'"
+done < <(history_ids)
+expect_eq "10 轮 writer 后 current tip 唯一" 1 \
+  "$(printf '%s\n' "$FACT_CK_ID" | awk 'NF{c++} END{print c+0}')"
+
+# F16-A3-01：不能信 captured_by=hook；同 worktree 换 source_ref 无 lineage 不能独立。
+comment_obj 50 "$dev_body" > "$TDIR/c-50.json"
+set_comments "$TDIR/c-50.json"
+FACT_COMMENTS_JSON="$(cat "$COMMENTS")"
+rm -f "$(task_facts_capture_path "$WT")" "$(task_facts_trusted_capture_path "$WT")"
+expect_false "missing capture 不能独立" \
+  'task_facts_current_reviewer_independent "$WT" "$HEAD1" "$FACT_COMMENTS_JSON"'
+
+task_facts_write_verified_capture "$WT" cursor-conversation 'cursor-dev-session-aaaaaaa' '' dev
+task_facts_read_capture "$WT"
+expect_eq "resume 同 source_ref 仍 verified" verified "$FACT_CAPTURE_STATE"
+expect_false "resume 不能变成独立 Reviewer" \
+  'task_facts_current_reviewer_independent "$WT" "$HEAD1" "$FACT_COMMENTS_JSON"'
+
+printf '%s\n' '{"source_type":"cursor-conversation","source_ref":"cursor-forged-session-zzzzzzz","lineage_ref":"","role":"review","captured_by":"hook"}' \
+  > "$(task_facts_capture_path "$WT")"
+task_facts_read_capture "$WT"
+expect_eq "同 worktree 换 UUID + captured_by=hook 不能 verified" unknown-unverified "$FACT_CAPTURE_STATE"
+expect_eq "换 UUID 后保留原 lineage" cursor-dev-session-aaaaaaa "$FACT_CAPTURE_SOURCE_REF"
+expect_false "换 UUID + captured_by=hook 不能独立" \
+  'task_facts_current_reviewer_independent "$WT" "$HEAD1" "$FACT_COMMENTS_JSON"'
+
+task_facts_write_verified_capture "$WT" cursor-conversation 'cursor-forged-session-yyyyyyy' '' review
+task_facts_read_capture "$WT"
+expect_eq "同 worktree 换 source_ref 无 lineage 不能 verified" unknown-unverified "$FACT_CAPTURE_STATE"
+expect_eq "无 lineage 时保留原 source_ref" cursor-dev-session-aaaaaaa "$FACT_CAPTURE_SOURCE_REF"
+expect_false "同 worktree 换 source_ref 无 lineage 不能独立" \
+  'task_facts_current_reviewer_independent "$WT" "$HEAD1" "$FACT_COMMENTS_JSON"'
+
+task_facts_write_verified_capture "$WT" cursor-conversation 'cursor-fork-session-ccccccc' \
+  'cursor-dev-session-aaaaaaa' review
+task_facts_read_capture "$WT"
+expect_eq "fork 带 parent lineage 为 verified" verified "$FACT_CAPTURE_STATE"
+expect_eq "fork 的 source_ref 是新会话" cursor-fork-session-ccccccc "$FACT_CAPTURE_SOURCE_REF"
+expect_false "fork with parent lineage 不能独立" \
+  'task_facts_current_reviewer_independent "$WT" "$HEAD1" "$FACT_COMMENTS_JSON"'
+
+WT2="$TDIR/wt-independent"
+git clone -q "$WT" "$WT2"
+rm -f "$(task_facts_capture_path "$WT2")" "$(task_facts_trusted_capture_path "$WT2")"
+task_facts_write_verified_capture "$WT2" cursor-conversation 'cursor-review-session-bbbbbbb' '' review
+task_facts_read_capture "$WT2"
+expect_eq "独立 worktree 的 hook capture 为 verified" verified "$FACT_CAPTURE_STATE"
+expect_true "genuine independent source 可通过" \
+  'task_facts_current_reviewer_independent "$WT2" "$HEAD1" "$FACT_COMMENTS_JSON"'
+expect_false "同 session 改 actor 名不能独立" \
+  'task_facts_reviewer_independent "$rev_same" "$HEAD1" "$WT" "$FACT_COMMENTS_JSON"'
+
+# F16-A3-03：provenance machine fields 必须唯一，重复 fail-closed。
+ok_prov_review="$(printf '%s\n' "$pass_review" | awk '
+  {print}
+  $0=="<!-- new-task-review -->" {
+    print "provenance_version=1"
+    print "source_type=cursor-conversation"
+    print "source_ref=cursor-review-session-bbbbbbb"
+    print "role=review"
+    print "verification_state=verified"
+  }
+')"
+expect_true "合法单值 provenance 可解析" \
+  'task_facts_parse_provenance "$ok_prov_review"'
+task_facts_parse_provenance "$ok_prov_review"
+expect_eq "合法单值 verification_state" verified "$FACT_PROV_STATE"
+expect_eq "可选 lineage_ref 缺失仍合法" "" "$FACT_PROV_LINEAGE_REF"
+comment_obj 50 "$dev_body" > "$TDIR/c-50.json"
+comment_obj 80 "$ok_prov_review" > "$TDIR/c-80.json"
+set_comments "$TDIR/c-50.json" "$TDIR/c-80.json"
+FACT_COMMENTS_JSON="$(cat "$COMMENTS")"
+Z_HEAD="$HEAD1"
+Z_CONTRACT_BLOB="$BLOB"
+task_facts_load o r 16 "$WT" "$BASE"
+expect_eq "合法单值 Review applicability=pass" pass "$FACT_REVIEW_APPLICABILITY"
+
+dup_source="${ok_prov_review}"$'\n'"source_ref=cursor-review-session-bbbbbbb"
+expect_false "duplicate source_ref fail-closed" \
+  'task_facts_parse_provenance "$dup_source"'
+task_facts_review_applicability "$dup_source" "$HEAD1" "$BLOB" "$WT"
+expect_eq "duplicate source_ref applicability=conflict" conflict "$FACT_REVIEW_APPLICABILITY"
+comment_obj 81 "$dup_source" > "$TDIR/c-81.json"
+set_comments "$TDIR/c-50.json" "$TDIR/c-81.json"
+if task_facts_load o r 16 "$WT" "$BASE" 2>"$TDIR/dup-source.err"; then
+  bad "duplicate source_ref 的 loader 应 fail-closed"
+else
+  grep -Fq 'provenance 字段' "$TDIR/dup-source.err" && ok || bad "duplicate source_ref 应报告冲突"
+fi
+
+dup_role="${ok_prov_review}"$'\n'"role=dev"
+expect_false "duplicate role fail-closed" \
+  'task_facts_parse_provenance "$dup_role"'
+task_facts_review_applicability "$dup_role" "$HEAD1" "$BLOB" "$WT"
+expect_eq "duplicate role applicability=conflict" conflict "$FACT_REVIEW_APPLICABILITY"
+
+dup_state="${ok_prov_review}"$'\n'"verification_state=unknown-unverified"
+expect_false "duplicate verification_state fail-closed" \
+  'task_facts_parse_provenance "$dup_state"'
+task_facts_review_applicability "$dup_state" "$HEAD1" "$BLOB" "$WT"
+expect_eq "duplicate verification_state applicability=conflict" conflict "$FACT_REVIEW_APPLICABILITY"
+
+dup_conflict="${ok_prov_review}"$'\n'"source_ref=cursor-other-session-zzzzzzz"
+expect_false "conflicting duplicate source_ref fail-closed" \
+  'task_facts_parse_provenance "$dup_conflict"'
+task_facts_review_applicability "$dup_conflict" "$HEAD1" "$BLOB" "$WT"
+expect_eq "conflicting duplicate applicability=conflict" conflict "$FACT_REVIEW_APPLICABILITY"
+expect_false "conflicting duplicate 不能 silently 取第一个而独立" \
+  'task_facts_reviewer_independent "$dup_conflict" "$HEAD1" "$WT" "$FACT_COMMENTS_JSON"'
 
 echo "facts.test.sh: 通过 ${pass}，失败 ${fail}"
 [ "$fail" -eq 0 ]

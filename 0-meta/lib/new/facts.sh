@@ -114,10 +114,34 @@ task_facts_capture_path() {
   printf '%s\n' "$gd/g-lite/execution.json"
 }
 
-# 只接受受控 hook/launcher 写入的 capture。不从 --actor、PID、机器名、
-# 模型名、终端名或用户环境变量补造 source_ref。
+# 受控 hook/launcher 的 receipt。任务 Agent 改 execution.json 或
+# captured_by=hook 字符串本身不能把它变成新的 verified identity。
+task_facts_trusted_capture_path() {
+  local wt="$1" gd
+  [ -n "$wt" ] || return 1
+  gd="$(git -C "$wt" rev-parse --absolute-git-dir 2>/dev/null)" || return 1
+  printf '%s\n' "$gd/g-lite/execution.trusted.json"
+}
+
+task_facts_capture_json_get() {
+  local js="$1" key="$2"
+  printf '%s' "$js" | jq -r --arg k "$key" '.[$k] // empty'
+}
+
+task_facts_capture_lineage_connects() {
+  local lineage_ref="$1" old_ref="$2" old_lin="$3"
+  [ -n "$lineage_ref" ] || return 1
+  [ "$lineage_ref" = "$old_ref" ] && return 0
+  [ -n "$old_lin" ] && [ "$lineage_ref" = "$old_lin" ] && return 0
+  return 1
+}
+
+# 不信任文件自报的 captured_by。verified 只来自受控 writer 的 trusted
+# receipt，且必须与当前 capture 的 type/ref/lineage 一致。
+# 同 worktree 已有 trusted identity 时，换 source_ref 且无 parent
+# lineage → unknown-unverified，并保留原 identity。
 task_facts_read_capture() {
-  local wt="$1" path js
+  local wt="$1" path trusted_path js trusted t_type t_ref t_lin t_role
   FACT_CAPTURE_SOURCE_TYPE=
   FACT_CAPTURE_SOURCE_REF=
   FACT_CAPTURE_LINEAGE_REF=
@@ -132,18 +156,36 @@ task_facts_read_capture() {
     err_code facts.capture_invalid "execution capture 不是合法 JSON，拒绝猜测"
     return 1
   }
-  FACT_CAPTURE_SOURCE_TYPE="$(printf '%s' "$js" | jq -r '.source_type // empty')"
-  FACT_CAPTURE_SOURCE_REF="$(printf '%s' "$js" | jq -r '.source_ref // empty')"
-  FACT_CAPTURE_LINEAGE_REF="$(printf '%s' "$js" | jq -r '.lineage_ref // empty')"
-  FACT_CAPTURE_ROLE="$(printf '%s' "$js" | jq -r '.role // empty')"
-  FACT_CAPTURE_BY="$(printf '%s' "$js" | jq -r '.captured_by // empty')"
-  case "$FACT_CAPTURE_BY" in
-    hook|launcher) ;;
-    *)
-      FACT_CAPTURE_STATE=unknown-unverified
-      return 0
-      ;;
-  esac
+  FACT_CAPTURE_SOURCE_TYPE="$(task_facts_capture_json_get "$js" source_type)"
+  FACT_CAPTURE_SOURCE_REF="$(task_facts_capture_json_get "$js" source_ref)"
+  FACT_CAPTURE_LINEAGE_REF="$(task_facts_capture_json_get "$js" lineage_ref)"
+  FACT_CAPTURE_ROLE="$(task_facts_capture_json_get "$js" role)"
+  FACT_CAPTURE_BY="$(task_facts_capture_json_get "$js" captured_by)"
+  trusted_path="$(task_facts_trusted_capture_path "$wt" 2>/dev/null)" || return 0
+  [ -f "$trusted_path" ] || return 0
+  trusted="$(cat "$trusted_path" 2>/dev/null || true)"
+  [ -n "$trusted" ] || return 0
+  printf '%s' "$trusted" | jq -e . >/dev/null 2>&1 || {
+    err_code facts.capture_invalid "trusted execution receipt 不是合法 JSON，拒绝猜测"
+    return 1
+  }
+  t_type="$(task_facts_capture_json_get "$trusted" source_type)"
+  t_ref="$(task_facts_capture_json_get "$trusted" source_ref)"
+  t_lin="$(task_facts_capture_json_get "$trusted" lineage_ref)"
+  t_role="$(task_facts_capture_json_get "$trusted" role)"
+  if [ "$FACT_CAPTURE_SOURCE_TYPE" != "$t_type" ] \
+     || [ "$FACT_CAPTURE_SOURCE_REF" != "$t_ref" ] \
+     || [ "$FACT_CAPTURE_LINEAGE_REF" != "$t_lin" ]; then
+    if ! task_facts_capture_lineage_connects \
+         "$FACT_CAPTURE_LINEAGE_REF" "$t_ref" "$t_lin"; then
+      FACT_CAPTURE_SOURCE_TYPE="$t_type"
+      FACT_CAPTURE_SOURCE_REF="$t_ref"
+      FACT_CAPTURE_LINEAGE_REF="$t_lin"
+      [ -n "$t_role" ] && FACT_CAPTURE_ROLE="$t_role"
+    fi
+    FACT_CAPTURE_STATE=unknown-unverified
+    return 0
+  fi
   case "$FACT_CAPTURE_SOURCE_TYPE" in
     cursor-conversation|codex-session) ;;
     *)
@@ -163,13 +205,15 @@ task_facts_read_capture() {
   return 0
 }
 
-# 测试与受控 hook/launcher 共用。调用方必须传入真实宿主引用。
+# 普通 task runtime / 测试夹具写入。无论 captured_by 填什么，
+# 都不能单独产生 verified receipt。
 task_facts_write_capture() {
   local wt="$1" source_type="$2" source_ref="$3" lineage_ref="$4" role="$5" captured_by="$6"
   local path dest
   path="$(task_facts_capture_path "$wt")" || return 1
   dest="$(dirname "$path")"
   mkdir -p "$dest" || return 1
+  [ -n "$captured_by" ] || captured_by=runtime
   jq -n \
     --arg provenance_version "$TASK_FACT_PROVENANCE_VERSION" \
     --arg source_type "$source_type" \
@@ -187,8 +231,72 @@ task_facts_write_capture() {
     }' > "$path"
 }
 
+# 仅受控 hook/launcher（及模拟它们的测试）可写 verified receipt。
+# 同 worktree 已有 trusted identity 时，更换 source_ref 必须显式带
+# parent/continuation lineage；否则只写 unverified 文件，保留原 receipt。
+task_facts_write_verified_capture() {
+  local wt="$1" source_type="$2" source_ref="$3" lineage_ref="$4" role="$5"
+  local trusted_path old old_ref old_lin allow=1
+  task_facts_write_capture "$wt" "$source_type" "$source_ref" "$lineage_ref" "$role" hook \
+    || return 1
+  trusted_path="$(task_facts_trusted_capture_path "$wt")" || return 1
+  if [ -f "$trusted_path" ]; then
+    old="$(cat "$trusted_path" 2>/dev/null || true)"
+    old_ref="$(task_facts_capture_json_get "$old" source_ref)"
+    old_lin="$(task_facts_capture_json_get "$old" lineage_ref)"
+    if [ -n "$old_ref" ] && [ "$source_ref" != "$old_ref" ]; then
+      if ! task_facts_capture_lineage_connects "$lineage_ref" "$old_ref" "$old_lin"; then
+        allow=0
+      fi
+    fi
+  fi
+  [ "$allow" = 1 ] || return 0
+  mkdir -p "$(dirname "$trusted_path")" || return 1
+  cp "$(task_facts_capture_path "$wt")" "$trusted_path"
+}
+
+# 必填字段出现时必须恰好 1 个；可选字段最多 1 个。重复/冲突 fail-closed，
+# 不 silently 取第一个。legacy 正文完全没有这些字段时保持 unknown。
+task_facts_check_provenance_fields() {
+  local body="$1"
+  local key n any=0
+  local required="provenance_version source_type role verification_state"
+  local optional="source_ref lineage_ref repository task issue contract contract_blob head candidate_head"
+  for key in $required $optional; do
+    n="$(task_machine_field_count "$body" "$key")"
+    if [ "$n" -gt 1 ]; then
+      return 1
+    fi
+  done
+  for key in provenance_version source_type source_ref lineage_ref role verification_state; do
+    n="$(task_machine_field_count "$body" "$key")"
+    if [ "$n" -ge 1 ]; then
+      any=1
+      break
+    fi
+  done
+  [ "$any" = 1 ] || return 0
+  for key in $required; do
+    n="$(task_machine_field_count "$body" "$key")"
+    if [ "$n" != 1 ]; then
+      return 1
+    fi
+  done
+  return 0
+}
+
 task_facts_parse_provenance() {
   local body="$1"
+  FACT_PROV_VERSION=
+  FACT_PROV_SOURCE_TYPE=
+  FACT_PROV_SOURCE_REF=
+  FACT_PROV_LINEAGE_REF=
+  FACT_PROV_ROLE=
+  FACT_PROV_STATE=
+  if ! task_facts_check_provenance_fields "$body"; then
+    FACT_PROV_STATE=conflict
+    return 1
+  fi
   FACT_PROV_VERSION="$(task_machine_field "$body" provenance_version)"
   FACT_PROV_SOURCE_TYPE="$(task_machine_field "$body" source_type)"
   FACT_PROV_SOURCE_REF="$(task_machine_field "$body" source_ref)"
@@ -372,6 +480,16 @@ task_facts_set_prev_fields() {
   '
 }
 
+# 归档或首次 POST 后，fact_id 必须等于实际 GitHub comment id。
+task_facts_stamp_fact_id() {
+  local body="$1" mark="$2" id="$3"
+  body="$(task_facts_strip_machine_keys "$body" fact_id)"
+  printf '%s\n' "$body" | awk -v m="$mark" -v id="$id" '
+    { print }
+    $0==m { print "fact_id=" id }
+  '
+}
+
 task_facts_replace_mark() {
   local body="$1" from="$2" to="$3"
   printf '%s\n' "$body" | awk -v from="$from" -v to="$to" '
@@ -506,24 +624,20 @@ task_facts_archive_tip() {
       return 1
       ;;
   esac
+  archived="$(task_facts_strip_machine_keys "$archived" fact_id)"
   hid="$(task_facts_post_comment "$owner" "$repo" "$number" "$archived")" || {
     err_code facts.archive_failed "无法归档上一轮 ${label}，拒绝覆盖当前 tip"
     return 1
   }
-  if [ -z "$(task_machine_field "$archived" fact_id)" ]; then
-    archived="$(printf '%s\n' "$archived" | awk -v m="$history_mark" -v id="$hid" '
-      { print }
-      $0==m { print "fact_id=" id }
-    ')"
-    payload="$(jq -n --arg body "$archived" '{body: $body}')"
-    printf '%s\n' "$payload" \
-      | GH_PAGER=cat gh api -X PATCH "repos/${owner}/${repo}/issues/comments/${hid}" --input - >/dev/null \
-      || {
-        err_code facts.archive_stamp_failed "历史 ${label} ${hid} 无法写入 fact_id"
-        return 1
-      }
-  fi
-  task_facts_parse_provenance "$old_body"
+  archived="$(task_facts_stamp_fact_id "$archived" "$history_mark" "$hid")"
+  payload="$(jq -n --arg body "$archived" '{body: $body}')"
+  printf '%s\n' "$payload" \
+    | GH_PAGER=cat gh api -X PATCH "repos/${owner}/${repo}/issues/comments/${hid}" --input - >/dev/null \
+    || {
+      err_code facts.archive_stamp_failed "历史 ${label} ${hid} 无法写入 fact_id=${hid}"
+      return 1
+    }
+  task_facts_parse_provenance "$old_body" || true
   kind="$(task_facts_kind_for_mark "$tip_mark")"
   role="${FACT_PROV_ROLE:-unknown}"
   if [ "$kind" = review ]; then
@@ -605,7 +719,7 @@ task_facts_executions_for_candidate() {
     c="$(task_facts_comment_by_id "$js" "$id")"
     [ -n "$c" ] || continue
     body="$(printf '%s' "$c" | jq -r '.body // empty')"
-    task_facts_parse_provenance "$body"
+    task_facts_parse_provenance "$body" || return 1
     role="${FACT_PROV_ROLE:-unknown}"
     case "$role" in
       review) continue ;;
@@ -628,13 +742,13 @@ task_facts_executions_for_candidate() {
 task_facts_reviewer_independent() {
   local review_body="$1" current_head="$2" wt="$3" js="${4:-$FACT_COMMENTS_JSON}"
   local rev_tokens execs id role state tokens unknown=0
-  task_facts_parse_provenance "$review_body"
+  task_facts_parse_provenance "$review_body" || return 1
   if [ "$FACT_PROV_STATE" != verified ]; then
     return 1
   fi
   rev_tokens="$(task_facts_lineage_tokens "$FACT_PROV_SOURCE_REF" "$FACT_PROV_LINEAGE_REF")"
   [ -n "$rev_tokens" ] || return 1
-  execs="$(task_facts_executions_for_candidate "$js" "$current_head" "$wt")"
+  execs="$(task_facts_executions_for_candidate "$js" "$current_head" "$wt")" || return 1
   if [ -z "$execs" ]; then
     return 1
   fi
@@ -701,6 +815,10 @@ task_facts_review_applicability() {
   if [ "$(task_machine_field_count "$body" review_actor)" != 1 ] \
      || [ "$(task_machine_field_count "$body" claim_actor)" != 1 ] \
      || [ "$(task_machine_field_count "$body" Self-review)" != 1 ]; then
+    FACT_REVIEW_APPLICABILITY=conflict
+    return 0
+  fi
+  if ! task_facts_parse_provenance "$body"; then
     FACT_REVIEW_APPLICABILITY=conflict
     return 0
   fi
@@ -806,6 +924,10 @@ task_facts_load() {
       err_code facts.checkpoint_conflict "Checkpoint tip 的 claim_actor 缺失或重复"
       return 1
     fi
+    if ! task_facts_check_provenance_fields "$FACT_CK_BODY"; then
+      err_code facts.checkpoint_conflict "Checkpoint tip 的 provenance 字段缺失、重复或冲突"
+      return 1
+    fi
     task_facts_validate_history "$js" "$FACT_CK_BODY" \
       "$TASK_CHECKPOINT_MARK" "$TASK_CHECKPOINT_HISTORY_MARK" "Checkpoint" \
       || return 1
@@ -823,6 +945,10 @@ task_facts_load() {
        || [ "$(task_machine_field_count "$FACT_RV_BODY" claim_actor)" != 1 ] \
        || [ "$(task_machine_field_count "$FACT_RV_BODY" Self-review)" != 1 ]; then
       err_code facts.review_conflict "Review tip 的 actor / Self-review 缺失或重复"
+      return 1
+    fi
+    if ! task_facts_check_provenance_fields "$FACT_RV_BODY"; then
+      err_code facts.review_conflict "Review tip 的 provenance 字段缺失、重复或冲突"
       return 1
     fi
     task_facts_validate_history "$js" "$FACT_RV_BODY" \

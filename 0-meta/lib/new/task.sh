@@ -1051,7 +1051,19 @@ task_write_marked_comment() {
   if [ -z "$c" ]; then
     payload="$(jq -n --arg body "$body" '{body: $body}')"
     printf '%s\n' "$payload" \
-      | GH_PAGER=cat gh api -X POST "repos/${owner}/${repo}/issues/${number}/comments" --input - >/dev/null
+      | GH_PAGER=cat gh api -X POST "repos/${owner}/${repo}/issues/${number}/comments" --input - >/dev/null \
+      || return 1
+    if [ "$(type -t task_facts_stamp_fact_id)" = function ]; then
+      c="$(task_unique_marked_comment "$owner" "$repo" "$number" "$mark" "$label" 2>/dev/null || true)"
+      cid="$(printf '%s' "$c" | jq -r '.id // empty' 2>/dev/null || true)"
+      if [[ "$cid" =~ ^[1-9][0-9]*$ ]]; then
+        body="$(task_facts_stamp_fact_id "$body" "$mark" "$cid")"
+        payload="$(jq -n --arg body "$body" '{body: $body}')"
+        printf '%s\n' "$payload" \
+          | GH_PAGER=cat gh api -X PATCH "repos/${owner}/${repo}/issues/comments/${cid}" --input - >/dev/null \
+          || return 1
+      fi
+    fi
     return
   fi
   cid="$(printf '%s' "$c" | jq -r '.id // empty')"
