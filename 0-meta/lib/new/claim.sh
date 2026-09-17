@@ -384,7 +384,7 @@ ${TASK_CHECKPOINT_MARK}
 claim_actor=${TASK_CLAIM_ACTOR}
 ## Checkpoint
 
-由 \`${by_cmd}\` 写入或更新，同一条评论反复覆盖，不另开新楼。
+由 \`${by_cmd}\` 写入或更新。当前 Checkpoint tip 唯一；上一轮正文归档为 historical fact，不按时间戳猜最新。
 
 | 项 | 值 |
 | --- | --- |
@@ -411,7 +411,7 @@ ${evidence}领取以 refs/claims/${number} 为准；Status 是视图
 \`\`\`
 EOF
 )"
-  task_write_checkpoint "$owner" "$repo" "$number" "$ck_body"
+  TASK_FACT_STAMP_ROLE=claim task_write_checkpoint "$owner" "$repo" "$number" "$ck_body"
 }
 
 task_claim_try_status_progress() {

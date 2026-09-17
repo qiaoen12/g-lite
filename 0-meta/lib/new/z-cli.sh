@@ -11,8 +11,8 @@ z_cli_usage() {
                          未通过 completion gate 时下一步是继续开发，不是 Review。
   new z fix              修复入口：同一加载与门禁，不打印开发摘要。
   new z sync             将任务分支 rebase 到最新 origin/main
-  new z review [--actor <id>] [--allow-self] <review-input>
-                         写入唯一 Review 评论
+  new z review [--actor <id>] [--allow-self] [review-input]
+                         无输入：加载当前阶段事实。有输入：写入 Review tip。
   new z pr               调用 new task review 送出标题一致的 PR
   new z merge            squash merge（无 human-merge 时）
 
@@ -27,6 +27,11 @@ z_cli_source_lib() {
   . "$lib"
 }
 
+z_cli_load_facts() {
+  task_facts_load "$Z_OWNER" "$Z_REPO" "$Z_NUMBER" "$Z_WT" \
+    "${Z_BASE:-origin/${Z_MAIN:-main}}" || return 1
+}
+
 z_cli_gate() {
   local verb="$1"
   case "$verb" in
@@ -36,6 +41,7 @@ z_cli_gate() {
   z_cli_source_lib
   z_load
   z_require_dev_status
+  z_cli_load_facts
 }
 
 z_cli_dev_summary() {
@@ -45,6 +51,8 @@ z_cli_dev_summary() {
     "$Z_CONTRACT_BLOB" "$Z_WT" "$Z_LOGICAL_BR" "$Z_GIT_BR" \
     "${Z_DERIVED:-${Z_STATUS:-unknown}}" "$Z_SCOPE" \
     "$next" "$Z_HEAD"
+  echo
+  task_facts_print_card
   if [ "$next" = "$TASK_BOOTSTRAP_NEXT_DEV" ]; then
     echo
     task_developer_handoff_text
@@ -65,6 +73,13 @@ z_cli_review() {
   # shellcheck source=/dev/null
   . "$ROOT/0-meta/lib/new/review.sh"
   z_load
+  z_cli_load_facts || return 1
+  task_facts_print_card
+  if [ "$#" -eq 0 ]; then
+    echo "Status=${Z_STATUS:-unknown}，已加载当前阶段事实。"
+    echo "下一步：${FACT_NEXT}"
+    return 0
+  fi
   review_publish "$@"
 }
 
@@ -83,6 +98,8 @@ cmd_z() {
     fix)
       z_cli_gate fix
       echo "Status=${Z_STATUS}，允许 zdev/zfix/zreview。"
+      task_facts_print_card
+      echo "下一步：${FACT_NEXT}"
       ;;
     sync)
       z_cli_exec_skill .agents/skills/zsync/scripts/sync-main.sh "$@"

@@ -17,7 +17,7 @@ user-invocable: true
 new z dev
 ```
 
-canonical CLI 读取 binding + origin/main Contract，执行状态与范围门禁，并输出开工摘要/start card。
+canonical CLI 读取 binding + origin/main Contract，执行状态与范围门禁，并输出开工摘要/start card 与有界 stage facts。
 
 ## 返回用户
 
@@ -25,7 +25,7 @@ canonical CLI 读取 binding + origin/main Contract，执行状态与范围门�
 
 ## 开工后
 
-start card / zdev gate PASS 只表示允许开发且 execution 已交接，不是开发完成，也不是下一步只能 Review。若 Next canonical command 是 `continue development`：读取 Contract，在允许范围内实现 R/A，验证并提交，直到 completion gate。Agent 退出码 0 不是 completion。只有 completion gate 通过后，下一步才是 `new z review`。
+start card / zdev gate PASS 只表示允许开发且 execution 已交接，不是开发完成。Next canonical command 由当前事实派生：未完成则继续开发；适用 FAIL Review 则 `new z fix`；否则才是 `new z review`。Agent 退出码 0 不是 completion。
 
 ## 完成态
 

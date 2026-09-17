@@ -255,6 +255,13 @@ z_has_label() {
 
 z_require_passing_review() {
   local title c body rblob
+  if [ "${TASK_FACTS_READY:-0}" != 1 ] && [ "$(type -t task_facts_load)" = function ] \
+     && [ -n "${Z_OWNER:-}" ] && [ -n "${Z_REPO:-}" ] && [ -n "${Z_NUMBER:-}" ] && [ -n "${Z_WT:-}" ]; then
+    task_facts_load "$Z_OWNER" "$Z_REPO" "$Z_NUMBER" "$Z_WT" \
+      "${Z_BASE:-origin/${Z_MAIN:-main}}" \
+      || die_code facts.comments_unreadable "无法加载当前阶段事实，拒绝把 Review 当适用 PASS。
+下一步：new z review <review-input>"
+  fi
   if ! title="$(task_passing_squash_title "$Z_OWNER" "$Z_REPO" "$Z_NUMBER" "$Z_HEAD" "$Z_BASE")"; then
     die_code z.review_unreadable "无法读取可用的通过 Review / Squash-Title"
   fi
@@ -276,6 +283,11 @@ z_require_passing_review() {
   contract_review_validate "$body" "$Z_CONTRACT_JSON" "$Z_CONTRACT_BLOB" "$Z_HEAD" \
     || die_code contract.review_invalid "Review 未通过当前 Contract 的完整校验。
 下一步：new z review <review-input>"
+  if [ "$(type -t task_facts_review_is_applicable_pass)" = function ] \
+     && ! task_facts_review_is_applicable_pass "$body" "$Z_HEAD" "$Z_CONTRACT_BLOB" "$Z_WT"; then
+    die_code z.review_not_applicable "当前 Review 不是适用的独立 PASS（HEAD/Contract/provenance/current-fact）。
+下一步：new z review <review-input>"
+  fi
   Z_REVIEW_BODY="$body"
   Z_REVIEW_ACTOR="$(task_machine_field "$body" review_actor)"
   Z_SELF_REVIEW="$(task_machine_field "$body" Self-review)"
@@ -430,18 +442,31 @@ z_write_review_file() {
     contract_require_diff_in_scope "$Z_WT" "$Z_BASE" "$Z_HEAD" "$Z_SCOPE" \
       || die_code z.diff_out_of_scope "真实 diff 越界，Review 拒绝"
   fi
+  if [ "$(task_machine_field "$body" Self-review)" = no ]; then
+    if [ "${TASK_FACTS_READY:-0}" != 1 ] && [ "$(type -t task_facts_load)" = function ] \
+       && [ -n "${Z_WT:-}" ]; then
+      task_facts_load "$Z_OWNER" "$Z_REPO" "$Z_NUMBER" "$Z_WT" \
+        "${Z_BASE:-origin/${Z_MAIN:-main}}" || die_code facts.comments_unreadable \
+        "无法加载当前阶段事实，拒绝写 Self-review=no。
+下一步：new z review <review-input>"
+    fi
+    if [ "$(type -t task_facts_reviewer_independent)" != function ] \
+       || ! task_facts_reviewer_independent "$body" "$Z_HEAD" "$Z_WT" "${FACT_COMMENTS_JSON:-}"; then
+      die_code review.independence_unproven \
+        "不能写 Self-review=no：execution provenance 无法证明相对当前 candidate 的全部 dev/fix 独立。
+下一步：new z review <review-input>"
+    fi
+  fi
   task_write_review "$Z_OWNER" "$Z_REPO" "$Z_NUMBER" "$body" \
     || die_code z.review_write_failed "Review 写入失败"
 }
 
 z_append_checkpoint_merge_gate() {
-  local note="$1" c body cid payload
+  local note="$1" c body
   c="$(task_unique_marked_comment "$Z_OWNER" "$Z_REPO" "$Z_NUMBER" \
       "$TASK_CHECKPOINT_MARK" "Checkpoint")" || die_code z.checkpoint_unreadable "无法读取 Checkpoint"
   [ -n "$c" ] || die_code z.checkpoint_missing "没有 Checkpoint，拒绝另开新楼"
   body="$(printf '%s' "$c" | jq -r '.body // empty')"
-  cid="$(printf '%s' "$c" | jq -r '.id // empty')"
-  [[ "$cid" =~ ^[1-9][0-9]*$ ]] || die_code z.checkpoint_id_invalid "Checkpoint id 不可用"
   if printf '%s\n' "$body" | grep -qx '### zmerge 门禁'; then
     body="$(printf '%s\n' "$body" | awk '
       BEGIN { skip=0 }
@@ -452,9 +477,8 @@ z_append_checkpoint_merge_gate() {
     ')"
   fi
   body="${body%$'\n'}"$'\n\n'"### zmerge 门禁"$'\n\n'"${note}"$'\n'
-  payload="$(jq -n --arg body "$body" '{body: $body}')"
-  printf '%s\n' "$payload" \
-    | GH_PAGER=cat gh api -X PATCH "repos/${Z_OWNER}/${Z_REPO}/issues/comments/${cid}" --input - >/dev/null \
+  task_write_marked_comment "$Z_OWNER" "$Z_REPO" "$Z_NUMBER" \
+    "$TASK_CHECKPOINT_MARK" "Checkpoint" "$body" \
     || die_code z.checkpoint_gate_write_failed "Checkpoint 门禁段写入失败"
 }
 

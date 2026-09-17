@@ -9,7 +9,7 @@ user-invocable: true
 
 ## 何时用
 
-人明确选择 `zfix`，且当前任务有未通过的唯一 Review。它只修 Review 指出的阻断项；新提交后由人重新选择 `zreview`。
+人明确选择 `zfix`，且当前适用 Review 为不通过。它只修当前 findings；新 candidate HEAD 之后下一步是 `new z review`。
 
 ## 调用
 
@@ -19,7 +19,7 @@ new z fix
 
 ## 返回用户
 
-返回 canonical CLI 的门禁结果、当前 Issue/Contract/HEAD、可执行下一步和验证证据；失败不修改工作树。
+返回共享 stage facts：当前 tip、当前 finding、历史引用和下一步；失败不修改工作树。不灌入全部历史正文。
 
 ## 完成态
 

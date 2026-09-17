@@ -5,6 +5,9 @@
 TASK_BOOTSTRAP_NEXT_DEV='continue development'
 TASK_BOOTSTRAP_NEXT_REVIEW='new z review <review-input>'
 TASK_BOOTSTRAP_NEXT_CLAIM='new z dev'
+TASK_BOOTSTRAP_NEXT_FIX='new z fix'
+TASK_BOOTSTRAP_NEXT_PASS_HUMAN='new z pr'
+TASK_BOOTSTRAP_NEXT_PASS_AUTO='new z merge'
 
 # 框架必须可读、但不因此可写的根文件。cone 会带上根层文件；若 skip-worktree
 # 仍挡住，bootstrap / bind 负责 materialize，不要求用户手工 checkout。
@@ -255,10 +258,15 @@ task_bind_ensure_sparse() {
   task_framework_materialize "$wt" || return 1
 }
 
-# 只有 changed completion 成立才把 Review 当下一步。
+# 未加载阶段事实时：只有 changed completion 成立才把 Review 当下一步。
+# 已加载时由当前 Checkpoint / Review applicability 派生 fix / review / merge。
 # ahead=0 的干净树是尚未开发，不是已声明的 no-change。
 task_next_canonical_command() {
   local wt="$1" base="$2"
+  if [ "${TASK_FACTS_READY:-0}" = 1 ] && [ "$(type -t task_facts_derive_next)" = function ]; then
+    task_facts_derive_next "$wt" "$base"
+    return 0
+  fi
   if [ -n "$wt" ] && [ -n "$base" ] \
      && task_completion_gate "$wt" "$base" changed >/dev/null 2>&1; then
     printf '%s\n' "$TASK_BOOTSTRAP_NEXT_REVIEW"

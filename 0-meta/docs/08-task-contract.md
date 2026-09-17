@@ -20,11 +20,25 @@ Ready 的含义是：契约文件已经在 origin/main。没有这份文件就�
 
 canonical `new z review` 接受 `0-meta/templates/task-contract-review-input.md` 所定义的逐行输入：`verdict`、`title`、`notes`，以及每个 Contract R/A 各一行的 `状态 | 证据`。空行和注释行以外的非法行按准确行号拒绝；不从 notes、证据或其它散文反向猜测 R/A。未知、重复、缺失 R/A，空证据和纯状态词都拒绝。
 
-工具从 `origin/main` 的 Contract 补齐 Issue、Contract blob、当前 `HEAD` 和真实 diff 路径，再渲染唯一 Review。Review 的 `review_actor=<id>`、`claim_actor=<id>`、`Self-review=yes|no` 是 marker 块内的精确 machine fields；Review 不重新声明 Contract 之外的 R/A。
+工具从 `origin/main` 的 Contract 补齐 Issue、Contract blob、当前 `HEAD` 和真实 diff 路径，再渲染当前 Review tip。Review 的 `review_actor=<id>`、`claim_actor=<id>`、`Self-review=yes|no|unknown` 是 marker 块内的精确 machine fields；Review 不重新声明 Contract 之外的 R/A。
 
 Contract A 只能通过 `validator:<id>` 引用固定 registry，不携带 shell 命令。当前 registry 至少包含 `new-check-commit`、`contract-test`、`bash-syntax`。canonical Review 在当前 task worktree 中执行登记项，记录 validator id、exit code 和截断输出；结果追加到对应 A 的证据，validator 失败可将 A 置为不通过并阻止 Verdict=通过，validator 成功不覆盖 reviewer 的语义状态。未知 validator 在 approve 或消费 Contract 前拒绝。
 
-actor 是 provenance，不是认证。缺省链固定为显式 `--actor` → `NEW_TASK_ACTOR` → 当前 worktree 生效的 `git config user.email`；全空或非法即 fail-closed。claim 写 `claim_actor`，Review 写 `review_actor`；二者不同才是独立 Review。相同 actor 只有显式 `--allow-self` 才允许，且 Issue 必须已有 `human-merge` 标签并写 `Self-review=yes`。zmerge 读取唯一 Review 的这个 machine field，看到 `Self-review=yes` 就以稳定 `z.self_review_forbidden` 拒绝自动 squash。
+actor 只是领取/展示身份，不是 execution provenance，也不是认证。缺省链仍是 `--actor` → `NEW_TASK_ACTOR` → 当前 worktree 的 `git config user.email`；全空或非法 fail-closed。换 `--actor`、新 UUID、PID、机器名、模型名或终端名都不能单独证明独立 Reviewer。独立性必须相对形成当前 candidate 的全部 dev/fix execution 及其 continuation/fork lineage。claim-only 领取记录不是 candidate-forming execution，即使 provenance 为 `unknown` 也不进入 independence 集合；recognized legacy dev/fix 即使没有新 `role` 字段仍计入，缺 provenance 则 fail-closed。无法分类的历史 provenance 不得忽略。只有宿主或受控 launcher/hook 捕获的 `source_ref` 为 `verified`，且与这些开发来源无交集，才能写 `Self-review=no`。无法证明时写 `unknown` / `unknown-unverified`，不得自动宣称独立 PASS。`--allow-self` + `human-merge` 只是显式人工 self-review（`Self-review=yes`），不是未知身份的 fallback。zmerge 看到 `Self-review=yes` 或缺少可证明的 `no` 都拒绝自动 squash。
+
+## 阶段事实与 tip / history
+
+`new z dev` / `new z fix` / `new z review` 共用一个有界 loader，恢复 Contract、binding、当前 HEAD、有界 diff、当前 Checkpoint tip、当前 Review tip、未关闭 findings、PR、provenance 摘要和 next canonical command。正常恢复不灌入全部历史正文；完整历史按 comment id 按需追溯。
+
+Checkpoint / Review 的当前 tip 仍由 `<!-- new-task-checkpoint -->` / `<!-- new-task-review -->` 唯一标识。新写入先把上一轮正文归档为 `*-history` 评论，并在 tip 上留下 `prev_fact_id` 与 Historical facts 引用。重复 tip、分叉、损坏引用、正文 `fact_id` 与 GitHub comment id 不一致 fail-closed，不按 `created_at` 猜最新。不引入新账户数据库。recognized legacy 无 `fact_id` 的正文保持只读兼容，不回填。
+
+v1.0.0 的 Contract / binding / Checkpoint / Review，以及 #13 completion 与 delivery shape，保持只读兼容。缺 #16 provenance 字段记为 `unknown-unverified`，不改写旧正文，不补造旧身份。
+
+## Review applicability 与下一步
+
+当前适用 PASS 至少要求：`reviewed HEAD ==` 当前 candidate HEAD，`reviewed Contract blob ==` 当前 `origin/main` Contract blob，Review 结构与 provenance 合法，current fact 无冲突。`zsync=noop` 且这些条件未变则保留 PASS。rebase 或其它操作改变 HEAD SHA、或 Contract-only change，都要求新 Review。ancestry 只诊断 HEAD 为何变化，祖先 PASS 不能覆盖后代 candidate。
+
+next canonical command 由当前事实派生：completion 未成立 → `continue development`；completion 已成立且无适用 Review → `new z review <review-input>`；适用 Review 为不通过 → `new z fix`；fix 形成新 HEAD → 再 review；适用独立 PASS → 按现有 `human-merge` / `new z pr` / `new z merge` 政策。
 
 ## 批准与版本
 
