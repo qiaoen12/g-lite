@@ -51,7 +51,7 @@ branch_merged() {
 worktree_always_include() {
   local always
   always="$(policy_get git.worktree.always_include)"
-  [ -n "$always" ] || always="0-meta .agents"
+  [ -n "$always" ] || always="0-meta"
   printf '%s\n' "$always"
 }
 
