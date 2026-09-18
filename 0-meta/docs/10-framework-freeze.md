@@ -2,11 +2,30 @@
 
 操作说明。理由见 [`4-know/decision/framework-freeze.md`](../../4-know/decision/framework-freeze.md)。Allowlist 见 [`11-extract-allowlist.md`](11-extract-allowlist.md)。
 
-## 本仓是什么
+## 当前执行路径
 
-`qiaoen12/g-lite` 是 canonical G-lite framework source：development + Issue + PR + Release + Template。
+当前执行只信根 [`AGENTS.md`](../../AGENTS.md) 与 [`08-task-contract.md`](08-task-contract.md)。
+
+当前 GitHub-native 路径：
+
+```
+Issue Contract + approved
+        → 普通 branch / worktree
+        → PR
+        → pr-gate
+        → 独立 qiaoen-reviewer
+        → GitHub squash merge
+```
+
+下文是 2026-09-09 Freeze 当时的历史约束，不再是当前执行路径。其中的 v1.0.0 / #1 旧阶段语境、canonical runtime、`g-lite-harness` → Draft PR → STOP、以及旧 P0 runtime 指令，均不得再当作现行命令。已删除的 `new task` / `new z` 不是当前执行路径。
+
+## 本仓是什么（Freeze 当时）
+
+`qiaoen12/g-lite` 是 canonical G-lite framework source：development + Issue + PR + Template。
 
 `qiaoen12/g-lite-harness` 是外部测试 / E2E / 故障注入，不是生产依赖。
+
+候选 runtime 不得管理自己。
 
 ## Provenance
 
@@ -36,7 +55,9 @@ v1.0.0   （人工 squash merge #1 之后，不由 candidate 自己打 tag）
 | `qiaoen12/g-lite-harness` | 外部测试仓。framework candidate 由这里控制。不是生产依赖。 |
 | `qiaoen12/Project-qiaoen` | Prototype Freeze source。已停止作为 framework 开发上游。未来将成为 `qiaoen12/g-lite-personal`。现在不改名。 |
 
-## 本仓还允许改什么
+## 本仓还允许改什么（Freeze 当时，历史）
+
+以下是 Freeze 当时对 v1.0.0 / #1 与 canonical runtime 的约束，不再是当前执行路径。当前改动走上一节的 GitHub-native 路径。
 
 在 `v1.0.0` 发布之前，#1 只做提取、泛化、验证。发布后 canonical runtime 至少再冻 15 天。
 
@@ -44,9 +65,9 @@ P0：runtime 不可用、数据丢失、错误 merge / 错误删 ref、credentia
 
 不是 P0：prompt 长短、CLI 步数、输出格式、Harness 泛化、rename、自动升级、PowerShell、GitLab、merge queue、强 actor 认证。只记录。
 
-P0 也必须：g-lite-harness → vanilla worktree → Draft PR → 独立 Review → STOP → 人工 squash merge。候选 runtime 不得管理自己。
+P0 也必须：g-lite-harness → vanilla worktree → Draft PR → 独立 Review → STOP → 人工 squash merge。候选 runtime 不得管理自己。这条是 Freeze 当时的控制链，不是当前命令。
 
-## 30-task 和 15 天
+## 30-task 和 15 天（Freeze 当时，历史）
 
 30 个 distinct 已完成 business Issue 是使用量 / 证据强度，不是解冻硬门槛。
 

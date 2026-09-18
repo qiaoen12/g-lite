@@ -14,7 +14,7 @@
 
 | 决策 | 主归属 | 状态 | 记于 |
 | --- | --- | --- | --- |
-| [Project-qiaoen 停止作为 G-lite framework 上游](../4-know/decision/framework-freeze.md) | `repo` | active | 2026-09-09 |
+| [Project-qiaoen 停止作为 G-lite framework 上游](../4-know/decision/framework-freeze.md) | `repo` | archived | 2026-09-09 |
 | [整个工作区一个私有仓库，项目不各自建 repo](../4-know/decision/monorepo.md) | `repo` | active | 2026-08-31 |
 | [备份与同步清单由 policy.yaml 推导，落成进 git 的 lock 文件](../4-know/decision/policy-single-source.md) | `meta` | active | 2026-08-31 |
 | [顶层固定八个域，保留名在任意深度覆盖继承](../4-know/decision/workspace-topology.md) | `repo` | active | 2026-08-31 |
@@ -48,4 +48,4 @@
 - **2026-08-31** `体系级` [备份与同步清单由 policy.yaml 推导，落成进 git 的 lock 文件](../4-know/decision/policy-single-source.md) — `meta`，active
 - **2026-08-31** `单元级` [冷备用 restic，两个不相关的异地目的地](../4-know/decision/restic-cold-backup.md) — `infra.backup`，active
 - **2026-08-31** `体系级` [顶层固定八个域，保留名在任意深度覆盖继承](../4-know/decision/workspace-topology.md) — `repo`，active
-- **2026-09-09** `体系级` [Project-qiaoen 停止作为 G-lite framework 上游](../4-know/decision/framework-freeze.md) — `repo`，active
+- **2026-09-09** `体系级` [Project-qiaoen 停止作为 G-lite framework 上游](../4-know/decision/framework-freeze.md) — `repo`，archived

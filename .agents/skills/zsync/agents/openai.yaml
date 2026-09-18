@@ -1,5 +1,0 @@
-interface:
-  display_name: zsync
-  short_description: 安全 rebase 最新 main，成功后要求重新 zreview
-policy:
-  allow_implicit_invocation: false

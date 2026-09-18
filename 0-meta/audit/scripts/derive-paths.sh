@@ -230,11 +230,6 @@ echo
 echo "prompt_budget.root_agents_bytes = $(one '.prompt_budget.root_agents_bytes')"
 echo "prompt_budget.meta_agents_bytes = $(one '.prompt_budget.meta_agents_bytes')"
 echo "prompt_budget.agent_card_bytes = $(one '.prompt_budget.agent_card_bytes')"
-echo "prompt_budget.start_card_bytes = $(one '.prompt_budget.start_card_bytes')"
-echo "prompt_budget.skill_card_bytes = $(one '.prompt_budget.skill_card_bytes')"
-echo "prompt_budget.skill_card_lines = $(one '.prompt_budget.skill_card_lines')"
-echo "prompt_budget.workflow_bytes = $(one '.prompt_budget.workflow_bytes')"
-echo "prompt_budget.skill_paths = $(flat '.prompt_budget.skill_paths[]')"
 echo
 
 # 交叉校验一：reserved_dirs 里 vcs:forbidden 的名字，必须全部出现在 git.never_reserved。
@@ -428,25 +423,7 @@ for d in $(jq -r '.naming.applies | keys[]' <<<"$J" | sort); do
 done
 echo
 
-# ── GitHub Project / Status（任务运行时视图，不是身份 SSOT）──────────────
-# repo 身份从 origin 推导；此处只导出 Project 编号/标题与 Status 名称。
-if ! jq -e '.github.project.number and (.github.project.title | type == "string" and length > 0)' \
-    <<<"$J" >/dev/null; then
-  echo "policy.yaml 缺少 github.project.number / title" >&2
-  exit 1
-fi
-gh_num="$(one '.github.project.number')"
-case "$gh_num" in
-  ''|*[!0-9]*|0) echo "policy.yaml 的 github.project.number 不合法：$gh_num" >&2; exit 1 ;;
-esac
-echo "# ── GitHub Project（运行时视图；身份仍从 origin 推导）────────────────"
-echo "github.project.number = $gh_num"
-echo "github.project.title = $(one '.github.project.title')"
-gh_over="$(jq -r '.github.repo_override // empty' <<<"$J")"
-echo "github.repo_override = $gh_over"
-for k in backlog ready progress review done; do
-  v="$(jq -r --arg k "$k" '.github.status[$k] // empty' <<<"$J")"
-  [ -n "$v" ] || { echo "policy.yaml 缺少 github.status.$k" >&2; exit 1; }
-  echo "github.status.${k} = $v"
-done
+# repo 身份从 origin 推导。github.repo_override 可选，供测试/镜像脱钩。
+echo "# ── GitHub identity override（可选；缺省只信 origin）────────────────"
+echo "github.repo_override = $(jq -r '.github.repo_override // empty' <<<"$J")"
 echo

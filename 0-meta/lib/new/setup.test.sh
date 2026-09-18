@@ -1,13 +1,10 @@
 #!/usr/bin/env bash
-# 41c：fresh clone 上 new setup 不要求 Orca / 固定绝对路径；
-# setup 之后 bind → new task → new z 可用。不写真实 Project。
+# fresh clone 上 new setup 不要求 Orca / 固定绝对路径；shim 从 PWD 解析工作区。
 set -Eeuo pipefail
 export LC_COLLATE=C
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 # shellcheck source=/dev/null
 . "$ROOT/0-meta/lib/new/core.sh"
-# shellcheck source=/dev/null
-. "$ROOT/0-meta/lib/new/task.sh"
 trap 'rt_cleanup; tmp_cleanup' EXIT
 
 fail=0
@@ -19,7 +16,6 @@ expect_eq() {
   else bad "$1: 期望 [$2] 实际 [$3]"; fi
 }
 expect_true() { if eval "$2"; then ok; else bad "$1"; fi; }
-last_line() { printf '%s\n' "$1" | awk 'NF{last=$0} END{print last}'; }
 
 TDIR=""
 tmp_mkd TDIR setup-runtime
@@ -64,6 +60,10 @@ expect_true "setup 声明不要求 Orca" \
   'grep -Fq "不要求 Orca" "$ROOT/0-meta/lib/new/setup.sh"'
 expect_true "setup 缺 .aiignore/.claude 不 fail=1" \
   '! grep -A8 "for f in .aiignore .claude/settings.json" "$ROOT/0-meta/lib/new/setup.sh" | grep -q fail=1'
+expect_true "入口不再提供 new task" \
+  '! grep -Eq "^[[:space:]]+task\\)" "$ROOT/0-meta/bin/new"'
+expect_true "入口不再提供 new z" \
+  '! grep -Eq "^[[:space:]]+z\\)" "$ROOT/0-meta/bin/new"'
 
 # ── 夹具：另一路径的 fresh clone，无 2-infra，无 orca ────────────────
 SEED="$TDIR/fresh"
@@ -71,37 +71,18 @@ mkdir -p "$SEED"
 git init --bare -b main "$SEED/origin.git" >/dev/null
 git clone "$SEED/origin.git" "$SEED/clone" >/dev/null 2>&1
 git_cfg "$SEED/clone"
-mkdir -p "$SEED/clone/0-meta/tasks/99" "$SEED/clone/.agents/skills" \
-  "$SEED/clone/0-meta/bin" "$SEED/clone/0-meta/lib" "$SEED/clone/0-meta/schema" \
-  "$SEED/clone/0-meta/templates"
+mkdir -p "$SEED/clone/0-meta/bin" "$SEED/clone/0-meta/lib" "$SEED/clone/0-meta/templates"
 cp "$ROOT/0-meta/policy.yaml" "$SEED/clone/0-meta/"
 cp "$ROOT/0-meta/derived.lock" "$SEED/clone/0-meta/"
 cp "$ROOT/0-meta/bin/new" "$SEED/clone/0-meta/bin/"
 chmod +x "$SEED/clone/0-meta/bin/new"
 cp -R "$ROOT/0-meta/lib/new" "$SEED/clone/0-meta/lib/"
-cp -R "$ROOT/0-meta/schema/." "$SEED/clone/0-meta/schema/"
 cp "$ROOT/0-meta/templates/new-shim.sh" "$SEED/clone/0-meta/templates/"
-cp "$ROOT/.agents/skills/z-lib.sh" "$SEED/clone/.agents/skills/"
 cp "$ROOT/.pre-commit-config.yaml" "$SEED/clone/"
-printf 'keep\n' > "$SEED/clone/.agents/.keep"
-cat > "$SEED/clone/0-meta/tasks/99/contract.json" <<'JSON'
-{
-  "schema_version": "task-contract/v1",
-  "issue": "#99",
-  "title": "setup",
-  "goal": "g",
-  "requirements": [{"id": "R1", "text": "x"}],
-  "acceptances": [{"id": "A1", "text": "y", "requires": ["R1"], "applicable_when": null}],
-  "scope": ["0-meta/lib/new"]
-}
-JSON
 printf 'base\n' > "$SEED/clone/README.md"
 git -C "$SEED/clone" add -A
 git -C "$SEED/clone" commit -m seed >/dev/null
 git -C "$SEED/clone" push -u origin main >/dev/null 2>&1
-bare="$(cd "$SEED/origin.git" && pwd)"
-git -C "$SEED/clone" remote set-url origin https://github.com/o/r.git
-git -C "$SEED/clone" config "url.${bare}.insteadOf" https://github.com/o/r.git
 
 expect_true "夹具路径不是 /Users/qiaoen/Projects2" \
   '[[ "$SEED/clone" != /Users/qiaoen/Projects2 ]]'
@@ -111,58 +92,9 @@ expect_true "夹具没有 .claude/settings.json" '[ ! -e "$SEED/clone/.claude/se
 
 MOCK="$TDIR/mockbin"
 mkdir -p "$MOCK" "$TDIR/home"
-GH_ISSUE="$TDIR/issue.json"
-GH_PR="$TDIR/prs.json"
-GH_LOG="$TDIR/gh.log"
-: > "$GH_LOG"
-printf '%s\n' '[]' > "$GH_PR"
-cat > "$GH_ISSUE" <<'JSON'
-{
-  "data": {
-    "repository": {
-      "issue": {
-        "id": "I99",
-        "title": "setup",
-        "url": "https://github.com/o/r/issues/99",
-        "body": "",
-        "labels": {"nodes": []},
-        "projectItems": {
-          "nodes": [{
-            "id": "it1",
-            "project": {"id": "p1", "number": 1, "title": "Tasks"},
-            "fieldValueByName": {
-              "name": "Ready",
-              "optionId": "opt-r",
-              "field": {
-                "id": "f1",
-                "options": [
-                  {"id": "opt-b", "name": "Backlog"},
-                  {"id": "opt-r", "name": "Ready"},
-                  {"id": "opt-p", "name": "In progress"},
-                  {"id": "opt-v", "name": "In review"},
-                  {"id": "opt-d", "name": "Done"}
-                ]
-              }
-            }
-          }]
-        }
-      }
-    }
-  }
-}
-JSON
-cat > "$MOCK/gh" <<EOF
+cat > "$MOCK/gh" <<'EOF'
 #!/bin/bash
-printf '%s\n' "\$*" >> "$GH_LOG"
-if [ "\$1" = pr ] && [ "\$2" = list ]; then
-  cat "$GH_PR"
-  exit 0
-fi
-if [ "\$1" = api ] && [ "\$2" = graphql ]; then
-  cat "$GH_ISSUE"
-  exit 0
-fi
-echo "unexpected gh \$*" >&2
+echo "unexpected gh $*" >&2
 exit 1
 EOF
 cat > "$MOCK/pre-commit" <<'EOF'
@@ -185,7 +117,6 @@ chmod +x "$MOCK/gh" "$MOCK/pre-commit" "$MOCK/gitleaks"
 CLEAN_PATH="$MOCK:$(path_without_orca)"
 expect_true "PATH 看不到 orca" '! env PATH="$CLEAN_PATH" command -v orca >/dev/null'
 
-# setup 之前 shim 还不存在，只能走 clone 内的 0-meta/bin/new。
 run_new() {
   local wt="$1"; shift
   env -u NEW_WORKSPACE_ROOT -u PROJECTS2_ROOT \
@@ -194,7 +125,6 @@ run_new() {
     "$wt/0-meta/bin/new" "$@"
 }
 
-# setup 之后必须走安装到 HOME 的 shim，证明它能从 worktree PWD 找到 clone。
 run_shim() {
   env -u NEW_WORKSPACE_ROOT -u PROJECTS2_ROOT \
     PATH="$CLEAN_PATH" HOME="$TDIR/home" XDG_STATE_HOME="$TDIR/state" \
@@ -213,8 +143,6 @@ expect_true "setup 不要求 orca" \
 expect_true "setup 装了 shim" '[ -x "$TDIR/home/.local/bin/new" ]'
 expect_true "shim 来自模板" \
   'cmp -s "$SEED/clone/0-meta/templates/new-shim.sh" "$TDIR/home/.local/bin/new"'
-expect_true "setup 建立本机 state" \
-  'printf "%s\n" "$setup_out" | grep -Fq "本机 state"'
 expect_true "无 2-infra 时 setup 仍成功" \
   'printf "%s\n" "$setup_out" | grep -Fq "无冷备脚本" || printf "%s\n" "$setup_out" | grep -Fq "跳过 launchd"'
 expect_true "setup 缺 .aiignore 只 warning" \
@@ -222,7 +150,6 @@ expect_true "setup 缺 .aiignore 只 warning" \
 expect_true "setup 缺 .claude/settings.json 只 warning" \
   'printf "%s\n" "$setup_out" | grep -Fq "缺 .claude/settings.json"'
 
-# 种一个 ~/Projects2 decoy：若 shim 仍默认 fallback，会命中它。
 mkdir -p "$TDIR/home/Projects2/0-meta/bin" "$TDIR/outside"
 cat > "$TDIR/home/Projects2/0-meta/bin/new" <<'EOF'
 #!/bin/bash
@@ -233,28 +160,29 @@ chmod +x "$TDIR/home/Projects2/0-meta/bin/new"
 
 git -C "$SEED/clone" worktree add -b meta/setup-full "$SEED/wt" >/dev/null 2>&1
 set +e
-bind_out="$(cd "$SEED/wt" && run_shim task bind 99 2>&1)"
-bind_rc=$?
+help_out="$(cd "$SEED/wt" && run_shim help 2>&1)"
+help_rc=$?
 task_out="$(cd "$SEED/wt" && run_shim task 2>&1)"
 task_rc=$?
 z_out="$(cd "$SEED/wt" && run_shim z 2>&1)"
 z_rc=$?
-zdev_out="$(cd "$SEED/wt" && run_shim z dev 2>&1)"
-zdev_rc=$?
-outside_out="$(cd "$TDIR/outside" && run_shim task 2>&1)"
+outside_out="$(cd "$TDIR/outside" && run_shim help 2>&1)"
 outside_rc=$?
 set -e
-expect_eq "安装后 shim bind 退出 0" 0 "$bind_rc"
-if [ "$bind_rc" != 0 ]; then printf '%s\n' "$bind_out" >&2; fi
-expect_eq "安装后 shim new task 预检退出 0" 0 "$task_rc"
-expect_eq "安装后 shim new z 用法退出 0" 0 "$z_rc"
-expect_true "安装后 shim new z 列出 dev" 'printf "%s\n" "$z_out" | grep -Fq "new z dev"'
-expect_true "安装后 shim new z dev 已加载契约" \
-  'printf "%s\n" "$zdev_out" | grep -Fq "须先 new task claim"'
-expect_true "安装后 shim 预检未领取" \
-  'printf "%s\n" "$task_out" | grep -Fq "预检通过。未领取"'
+expect_eq "安装后 shim help 退出 0" 0 "$help_rc"
+if [ "$help_rc" != 0 ]; then printf '%s\n' "$help_out" >&2; fi
+expect_true "shim help 不含 new task" \
+  '! printf "%s\n" "$help_out" | grep -Fq "new task"'
+expect_true "shim help 不含 new z" \
+  '! printf "%s\n" "$help_out" | grep -Fq "new z"'
+expect_true "new task 已移除" \
+  'printf "%s\n" "$task_out" | grep -Fq "未知类型"'
+expect_true "new z 已移除" \
+  'printf "%s\n" "$z_out" | grep -Fq "未知类型"'
+expect_eq "未知类型退出 1" 1 "$task_rc"
+expect_eq "未知类型 z 退出 1" 1 "$z_rc"
 expect_true "worktree 里 shim 不落到 ~/Projects2" \
-  '! printf "%s\n" "$bind_out$task_out$z_out$zdev_out" | grep -Fq "DECOY_PROJECTS2"'
+  '! printf "%s\n" "$help_out$task_out$z_out" | grep -Fq "DECOY_PROJECTS2"'
 expect_eq "非 clone 目录 shim 退出 127" 127 "$outside_rc"
 expect_true "非 clone 不落到 ~/Projects2" \
   '! printf "%s\n" "$outside_out" | grep -Fq "DECOY_PROJECTS2"'

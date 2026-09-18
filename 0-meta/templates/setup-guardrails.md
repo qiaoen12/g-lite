@@ -11,7 +11,7 @@ brew install pre-commit gitleaks jq yq gh
 0-meta/bin/new setup
 ```
 
-跑完之后，在工作区及其子目录里可以直接调用 `new`（`~/.local/bin` 需在 PATH）。它装的是 `~/.local/bin/new`——从当前目录逐级往上找所属工作区的转发脚本，而不是把某个 clone 的 `0-meta/bin` 写死进 PATH。理由见 [`new-shim.sh`](new-shim.sh) 抬头。下一步：任务 worktree 里 `new task bind <n>`，然后 `new task` / `new z dev`。
+跑完之后，在工作区及其子目录里可以直接调用 `new`（`~/.local/bin` 需在 PATH）。它装的是 `~/.local/bin/new`——从当前目录逐级往上找所属工作区的转发脚本，而不是把某个 clone 的 `0-meta/bin` 写死进 PATH。理由见 [`new-shim.sh`](new-shim.sh) 抬头。下一步：读取 GitHub Issue Contract，确认 `approved`，从最新 main 开普通 branch / worktree。不要调用已删除的 `new task` / `new z`。
 
 下面是它背后各部分的细节，以及它代劳不了的部分。
 
@@ -81,15 +81,15 @@ gitleaks **不会**报。它的 `private-key` 规则连带熵阈值一起判定�
 
 ### 已知缺口
 
-`git commit --no-verify` 绕过以上全部，`SKIP=gitleaks git commit` 能单独跳过 gitleaks。这不是配置问题，本地补不了——第三道门在服务端：
+`git commit --no-verify` 绕过以上全部，`SKIP=gitleaks git commit` 能单独跳过 gitleaks。本地 editor / pre-commit 只是 defense-in-depth，不能替代 GitHub server-side gate。
+
+当前服务端门已经是 GitHub PR + Required Check `pr-gate` + Required Review + Ruleset。R2/R3 已验证它们会 BLOCK 不合规 merge。
 
 ```text
 第一道  编辑器 / Agent   .cursorignore、.claude/settings.json    只对认它的工具生效
 第二道  本地 git         pre-commit                              --no-verify 可绕
-第三道  GitHub           CI + branch protection                  绕不过
+第三道  GitHub           PR + Required Check + Required Review + Ruleset  绕不过
 ```
-
-第三道等有真实项目、需要 PR 流程时再上。个人单人阶段，前两道够用。
 
 ## 3　launchd（每天自动审计）
 

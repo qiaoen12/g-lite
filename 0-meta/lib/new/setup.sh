@@ -1,4 +1,4 @@
-# 本机 setup：依赖、PATH 入口、hook、local state、适配器状态。
+# 本机 setup：依赖、PATH 入口、hook、适配器状态。
 # 由 0-meta/bin/new 加载，不要单独执行。
 
 # ─────────────────────────────────────────────── setup
@@ -17,15 +17,6 @@ setup_install_hint() {
     Linux)  printf '      安装%s（apt/dnf/pacman 或上游二进制）\n' "$1" ;;
     *)      printf '      安装%s\n' "$1" ;;
   esac
-}
-
-setup_ensure_state_dir() {
-  local file dir
-  file="$(metrics_file)"
-  dir="$(dirname "$file")"
-  mkdir -p "$dir" \
-    || { c_err "    ✗ 无法创建本机 state ${dir}"; return 1; }
-  c_ok "    ✓ 本机 state ${dir}"
 }
 
 cmd_setup() {
@@ -102,10 +93,7 @@ cmd_setup() {
     fi
   fi
 
-  echo "── 4. 本机 state ────────────────────────"
-  setup_ensure_state_dir || fail=1
-
-  echo "── 5. 适配器状态 ────────────────────────"
+  echo "── 4. 适配器状态 ────────────────────────"
   if command -v orca >/dev/null 2>&1; then
     c_ok "    ✓ orca 在 PATH（可选 adapter，核心路径不依赖）"
   else
@@ -132,7 +120,7 @@ cmd_setup() {
     fi
   done
 
-  echo "── 6. 本机调度（可选 adapter）───────────"
+  echo "── 5. 本机调度（可选 adapter）───────────"
   case "$(uname -s)" in
     Darwin)
       local plist="$HOME/Library/LaunchAgents/com.g-lite.workspace-audit.plist"
@@ -182,8 +170,8 @@ cmd_setup() {
   echo
   echo "    echo 'update: 随便改改' > /tmp/m && 0-meta/audit/scripts/check-commit-msg.sh /tmp/m"
   echo
-  echo "  核心入口：在任务 worktree 里"
-  echo "    new task bind <n> && new task && new z dev"
+  echo "  核心入口：读取 GitHub Issue Contract，确认 approved，从最新 main 开普通 branch/worktree。"
+  echo "    不要调用已删除的 new task / new z。"
   echo
   c_warn "  已知缺口：git commit --no-verify 绕过以上全部。"
   echo "  本地补不了这个洞。提交语言那层由 daily 档回扫事后发现（自查 commit_convention），"

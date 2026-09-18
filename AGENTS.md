@@ -4,16 +4,17 @@
 ## 开工
 
 - 只读目标目录最近的 `AGENTS.md`；README、policy 与 docs 按需读取，不泛读整棵树。
-- 任务身份、Contract 与允许范围只信 `origin/main:0-meta/tasks/<n>/contract.json`；不从目录名、分支名或自然语言猜。
-- 仓库身份从当前 Git origin / durable facts 推导，不依赖固定本机路径或旧上游仓库名。
-- 机器能判定的规则交给 canonical CLI 门禁，不在本卡重复算法。
+- 任务身份、Contract 与允许范围只信当前 GitHub Issue 正文。开工前确认 Issue 为 OPEN，且有有效 `approved`。
+- 仓库身份从当前 Git origin 推导，不依赖固定本机路径。
+- GitHub 是 PR、Checks、Review、merge eligibility 与 merge result 的 SSOT。
 
 ## 硬边界
 
 - 不写明文凭据；不读 `5-record/`；个人档案只进 `5-record/`。
 - 产物进 `_out/` 或 `_cache/`，不混入源码；不手写备份/同步清单。
 - 不在根递归删除；不在 `1-code/` 内 `git init`；不建按目录切的长期分支。
-- 本仓是 canonical G-lite framework source。候选 runtime 不得管理、review 或 merge 自己。外部控制走 `qiaoen12/g-lite-harness` + vanilla `git`/`gh`。
+- Developer Actor ≠ Reviewer Actor。写/实质修改 Contract 的 Actor 不能批准同一 Contract。Contract 实质修改后旧 `approved` 失效。
+- 本仓是 canonical G-lite framework source。候选 runtime 不得管理、review 或 merge 自己。
 
 ## 落点
 
@@ -21,9 +22,14 @@
 
 ## 交付
 
-- 只在任务 worktree、只改 Contract 允许范围；提交前运行 `new check --tier commit`。
-- canonical 链：`new task claim` → `new z dev` / `new z fix` → `new z review` → `new z sync` / `new z pr` / `new z merge`；`zdev`、`zfix`、`zreview`、`zsync`、`zpr`、`zmerge` 只作 adapter。
-- human-merge 由人决定；完成时报告实际文件、HEAD、验证与未验证项。
+1. 读取当前 GitHub Issue Contract，确认有效 `approved`。
+2. Developer 从最新 `origin/main` 创建普通 branch / worktree。
+3. 只改 Contract 允许范围；提交前运行 `new check --tier commit`。
+4. push 并开 PR；等待 `pr-gate`。
+5. 独立 Reviewer（`qiaoen-reviewer`）读取 Contract、`approved`、当前 HEAD/diff、Checks，再 GitHub APPROVE / REQUEST_CHANGES。
+6. GitHub squash merge。Developer 不 merge、不给自己的 PR 做 Required Review。
+
+Codex / Cursor / Claude Code / Grok 等只是可替换工作台。开发不需要旧 `new task` / `new z`。
 
 <!-- END agent-card -->
 
@@ -31,8 +37,8 @@
 
 - 权限与凭据边界：[`0-meta/docs/06-权限边界.md`](0-meta/docs/06-权限边界.md)
 - Git、提交、同步与恢复：[`0-meta/docs/07-git-工作流.md`](0-meta/docs/07-git-工作流.md)
-- Contract、Checkpoint、Review 与 merge：[`0-meta/docs/08-task-contract.md`](0-meta/docs/08-task-contract.md)
-- start card、分层与 thin adapter 的 rationale：[`0-meta/docs/09-agent-card.md`](0-meta/docs/09-agent-card.md)
+- GitHub-native Contract、Review 与 merge：[`0-meta/docs/08-task-contract.md`](0-meta/docs/08-task-contract.md)
+- agent-card 与工作台：[`0-meta/docs/09-agent-card.md`](0-meta/docs/09-agent-card.md)
 - Framework freeze 与提取：[`0-meta/docs/10-framework-freeze.md`](0-meta/docs/10-framework-freeze.md)
 - Allowlist：[`0-meta/docs/11-extract-allowlist.md`](0-meta/docs/11-extract-allowlist.md)
 

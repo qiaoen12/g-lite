@@ -1,5 +1,0 @@
-interface:
-  display_name: zdev
-  short_description: 开发并在可提交时建立本地 wip commit
-policy:
-  allow_implicit_invocation: false
