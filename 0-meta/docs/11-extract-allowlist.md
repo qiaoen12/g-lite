@@ -1,5 +1,9 @@
 # G-lite v1.0 extract allowlist
 
+This file is freeze-time extract evidence for `qiaoen12/g-lite#1`. Paths listed below describe what was extracted from Project-qiaoen; they are **not** current execution instructions.
+
+R4 later removed the extracted z\* / task / git-guard runtime. Do not treat those INCLUDE rows as a reason to restore them.
+
 Source Freeze (only this SHA):
 
 ```text

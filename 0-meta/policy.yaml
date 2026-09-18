@@ -24,37 +24,15 @@ schema_version: workspace-policy/v2.2
 # derived.lock 的 root 因此为空；备份脚本在 root 为空时用脚本位置反推仓库根。
 root: "."
 
-# repo / workspace 身份从 origin fetch URL 推导（task_github_nwo），不在这里写 workspace.id。
+# repo / workspace 身份从 origin fetch URL 推导，不在这里写 workspace.id。
 # github.repo_override 可选，仅供测试/镜像与 origin 脱钩；省略则只信 origin。
-github:
-  project:
-    # Consumer GitHub Project. Framework default is a template; set to your Project.
-    number: 1
-    title: Tasks
-  status:
-    backlog: Backlog
-    ready: Ready
-    progress: In progress
-    review: In review
-    done: Done
 
-# 开工加载预算。只约束明确交给 Agent 的卡片/adapter，不把按需 docs 算入。
+# 开工加载预算。只约束明确交给 Agent 的 AGENTS.md / agent-card，不把按需 docs 算入。
 # 数值以字节计；new check --tier commit 读取 derived.lock 后执行。
 prompt_budget:
   root_agents_bytes: 4096
   meta_agents_bytes: 4096
   agent_card_bytes: 2048
-  start_card_bytes: 2048
-  skill_card_bytes: 2048
-  skill_card_lines: 48
-  workflow_bytes: 4096
-  skill_paths:
-    - .agents/skills/zdev/SKILL.md
-    - .agents/skills/zfix/SKILL.md
-    - .agents/skills/zreview/SKILL.md
-    - .agents/skills/zsync/SKILL.md
-    - .agents/skills/zpr/SKILL.md
-    - .agents/skills/zmerge/SKILL.md
 
 
 # ── 一、策略域 ────────────────────────────────────────────────────────
@@ -1228,14 +1206,9 @@ git:
     root: '../worktrees'
     # 注意这是仓库根的兄弟目录，不是子目录。放在子目录里会被 topology
     # 检查判为「顶层多出一个未声明的域」，还会被同步和备份重复收录。
-    always_include: [0-meta, ".agents"]
-    # 固定公共可见：治理层（AGENTS / policy / schema / 审计工具）和
-    # z 系列 Skills。普通任务不声明 `.agents` 也要能读到 zdev / zreview。
-    #
+    always_include: [0-meta]
+    # 固定公共可见：治理层（AGENTS / policy / schema / 审计工具）。
     # 能看见 ≠ 允许修改。本列表只进入 sparse-checkout，不构成写授权。
-    # 可写范围只来自 Issue「允许改动范围」；未写入该段时，Agent 不得改
-    # 0-meta 或 .agents。new task 的稀疏校验不得把这两项判为越界，
-    # 也不得把它们当成所有任务的默认可写目录。
     sparse_mode: cone
     external_backup: true
     # ↑ v2.2 新增，且是规格里漏掉的一条。

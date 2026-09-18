@@ -4,9 +4,11 @@
 
 ## 本仓是什么
 
-`qiaoen12/g-lite` 是 canonical G-lite framework source：development + Issue + PR + Release + Template。
+`qiaoen12/g-lite` 是 canonical G-lite framework source：development + Issue + PR + Template。
 
 `qiaoen12/g-lite-harness` 是外部测试 / E2E / 故障注入，不是生产依赖。
+
+当前交付路径是 GitHub-native：Issue Contract + `approved` → 普通 branch/PR → `pr-gate` → 独立 `qiaoen-reviewer` Review → GitHub squash merge。候选 runtime 不得管理自己。已删除的 `new task` / `new z` 不是当前执行路径。
 
 ## Provenance
 

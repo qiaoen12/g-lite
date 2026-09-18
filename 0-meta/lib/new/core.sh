@@ -6,25 +6,13 @@ c_ok()   { printf '\033[32m%s\033[0m\n' "$*"; }
 # 最后仍然打绿色「自查通过」——一个会替你消化告警的判决行，等于把告警删掉。
 WARN_N=0
 c_warn() { WARN_N=$((WARN_N+1)); printf '\033[33m%s\033[0m\n' "$*"; }
-# 最后一条错误留在 LAST_ERR：入口结束时度量用它当 detail。
-# die 的消息另记 DIE_MSG，优先级更高。reason_code 由 err_code / die_code 写入
-# METRICS_REASON_CODE；裸 c_err / die 不改这个变量，避免收尾句盖掉具体故障码。
 LAST_ERR=""
 DIE_MSG=""
-METRICS_REASON_CODE=""
-metrics_record_field() {
-  # metrics.sh 在 task.sh/core.sh 之后加载；运行时再探测，避免把核心
-  # 原语绑死在可选的本机度量实现上。metrics_set 会把值同步到 state file，
-  # 因而 $(...) 子 shell 中产生的失败归因也能被最终 EXIT trap 读回。
-  if [ "$(type -t metrics_set 2>/dev/null)" = function ]; then
-    metrics_set "$1" "$2" || true
-  fi
-}
 
-c_err()  { LAST_ERR="$*"; metrics_record_field last_error "$*"; printf '\033[31m%s\033[0m\n' "$*" >&2; }
-die()    { DIE_MSG="$*"; metrics_record_field die_message "$*"; c_err "$*"; exit 1; }
-err_code() { METRICS_REASON_CODE="$1"; metrics_record_field reason_code "$1"; shift; c_err "$@"; }
-die_code() { METRICS_REASON_CODE="$1"; metrics_record_field reason_code "$1"; shift; die "$@"; }
+c_err()  { LAST_ERR="$*"; printf '\033[31m%s\033[0m\n' "$*" >&2; }
+die()    { DIE_MSG="$*"; c_err "$*"; exit 1; }
+err_code() { shift; c_err "$@"; }
+die_code() { shift; die "$@"; }
 
 slug_ok() { [[ "$1" =~ ^[a-z0-9][a-z0-9._-]*$ ]]; }
 exists()  { if [ -e "$1" ]; then die "已存在：$1"; fi; return 0; }

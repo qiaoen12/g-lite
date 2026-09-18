@@ -8,7 +8,7 @@
 # ═══════════════════════════════════════════════════════════════════════════
 
 schema = derived/v1
-policy_sha256 = 47538d97d3c35ded05047d3ec083394a5911ce0b1e96bca9a02b5f0c32922483
+policy_sha256 = 428e6d5fc9cc36415090fa8c26c8d5709ef5331ad363510ee21caa36774aa79e
 # root 为空：运行时用 git toplevel；禁止 tracked 本机绝对路径（#41 A5）
 root =
 
@@ -87,7 +87,7 @@ git.branch.prefixes = code data inbox infra know meta record repo research vendo
 git.branch.naming_regex = ^(code|data|inbox|infra|know|meta|record|repo|research|vendor)/[a-z0-9][a-z0-9._-]*$
 git.branch.merge_strategy = squash
 git.worktree.root = ../worktrees
-git.worktree.always_include = .agents 0-meta
+git.worktree.always_include = 0-meta
 git.worktree.sparse_mode = cone
 git.worktree.external_backup = true
 git.standalone.count = 0
@@ -96,11 +96,6 @@ git.standalone.paths =
 prompt_budget.root_agents_bytes = 4096
 prompt_budget.meta_agents_bytes = 4096
 prompt_budget.agent_card_bytes = 2048
-prompt_budget.start_card_bytes = 2048
-prompt_budget.skill_card_bytes = 2048
-prompt_budget.skill_card_lines = 48
-prompt_budget.workflow_bytes = 4096
-prompt_budget.skill_paths = .agents/skills/zdev/SKILL.md .agents/skills/zfix/SKILL.md .agents/skills/zmerge/SKILL.md .agents/skills/zpr/SKILL.md .agents/skills/zreview/SKILL.md .agents/skills/zsync/SKILL.md
 
 # ── 提交语言 ─────────────────────────────────────────────────────────
 git.commit.format = <type>(<scope>): <描述>
@@ -216,13 +211,6 @@ naming.5-record = free
 naming._inbox = free
 naming._vendor = strict-ascii
 
-# ── GitHub Project（运行时视图；身份仍从 origin 推导）────────────────
-github.project.number = 1
-github.project.title = Tasks
+# ── GitHub identity override（可选；缺省只信 origin）────────────────
 github.repo_override = 
-github.status.backlog = Backlog
-github.status.ready = Ready
-github.status.progress = In progress
-github.status.review = In review
-github.status.done = Done
 

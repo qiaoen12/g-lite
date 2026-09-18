@@ -4,20 +4,21 @@
 ## 定位与事实源
 
 - `policy.yaml` 是机器可读策略事实源；`derived.lock` 是其生成结果，改策略后必须一起更新。
-- `0-meta/tasks/<n>/contract.json` 只从 `origin/main` 读取，是任务 R/A、scope 与 Contract blob 的 SSOT；该目录不可写。
+- 任务 R/A、scope 与授权只信当前 GitHub Issue Contract 与有效 `approved`。不要把 `0-meta/tasks/` 或本地 Contract blob 当 SSOT。
 - 治理工具、模板、审计和 docs 落在 `0-meta/`；不要把业务代码或个人档案放进这里。
 
 ## 硬边界
 
-- 本仓是 canonical G-lite framework source。候选 runtime 不得管理、review 或 merge 自己。P0 仍走稳定外部 `g-lite-harness` 与 vanilla `git`/`gh`。
-- canonical 协议只有 `new z dev|fix|sync|review|pr|merge`；六张 Skill `zdev` `zfix` `zreview` `zsync` `zmerge` `zpr` 只转发命令和结果，不复制算法。
-- 只改当前任务 Contract 声明的 scope；不得自行扩大 scope 或改变当前 Contract 的业务语义。
+- 本仓是 canonical G-lite framework source。候选 runtime 不得管理、review 或 merge 自己。
+- Developer Actor ≠ Reviewer Actor。写/实质修改 Contract 的 Actor 不能批准同一 Contract。
+- GitHub 是 PR、Checks、Review 与 merge 的 SSOT。不要调用已删除的 `new task` / `new z`。
+- 只改当前 Issue Contract 声明的范围；不得自行扩大 scope 或改变当前 Contract 的业务语义。
 
 ## 交付
 
 - 改 `policy.yaml` 后在稳定 main 运行 `new plan --apply`，确认生成器再次运行无 diff。
 - 提交前运行 `new check --tier commit`；预算超限必须指出对象并失败。
-- 任务交付走 Draft PR → 独立 Review → STOP；保持 `human-merge`，不在这里 squash、关闭 Issue 或启动下一任务。
+- 交付走普通 branch → PR → `pr-gate` → 独立 `qiaoen-reviewer` Review → GitHub squash merge。Developer 不 merge。
 
 <!-- END agent-card -->
 
@@ -25,8 +26,8 @@
 
 - 权限边界：[`docs/06-权限边界.md`](docs/06-权限边界.md)
 - Git、worktree、同步与恢复：[`docs/07-git-工作流.md`](docs/07-git-工作流.md)
-- Contract、Checkpoint、Review 与 merge：[`docs/08-task-contract.md`](docs/08-task-contract.md)
-- start card、预算与 thin adapter rationale：[`docs/09-agent-card.md`](docs/09-agent-card.md)
+- GitHub-native Contract、Review 与 merge：[`docs/08-task-contract.md`](docs/08-task-contract.md)
+- agent-card 与工作台：[`docs/09-agent-card.md`](docs/09-agent-card.md)
 - Framework freeze 与提取：[`docs/10-framework-freeze.md`](docs/10-framework-freeze.md)
 - Allowlist：[`docs/11-extract-allowlist.md`](docs/11-extract-allowlist.md)
 

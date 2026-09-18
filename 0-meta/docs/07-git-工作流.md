@@ -16,9 +16,9 @@
 
 ```
 完整事实源            任务视图
-workspace      ──┬──  reddit worktree    0-meta + .agents + 1-code/reddit
-（main）          ├──  discord worktree   0-meta + .agents + 1-code/discord
-                 └──  vps3 worktree      0-meta + .agents + 2-infra/vps3
+workspace      ──┬──  reddit worktree    0-meta + 1-code/reddit
+（main）          ├──  discord worktree   0-meta + 1-code/discord
+                 └──  vps3 worktree      0-meta + 2-infra/vps3
 ```
 
 每个 worktree 都只是同一个 monorepo 的一个切面，不是副本。git 的对象库是共用的。
@@ -269,59 +269,20 @@ commit-msg 跑的时候索引已经就绪，所以「先看实际改了什么」
 
 ## 六、完整流程
 
-Orca 已经建好的任务工作树，不要再跑 `new worktree`。在那棵树里：
+GitHub 管事实和门；Agent 干活；G-lite 只规定协作。不要安装或调用已删除的 `new task` / `new z`。
 
-```bash
-new task worktree <n>
-                    # 正常路径：只要任务号。从 origin/main Contract 派生
-                    # exact sparse、worktree、合法 task branch、自动 bind。
-                    # 不手写 --path，不扩大到父目录，不关闭 sparse。
-                    # 结束态 clean / bound / unclaimed；不 claim、不启动 Agent
-new task            # 只预检；不领取、不改 GitHub、不启动 Agent
-new task approve <n>
-                    # 人在主工作区、main 上把 Issue 正文写成 origin/main
-                    # 上的契约文件。Backlog → Ready；在途任务只换契约、不动 Status
-new task claim [--actor <id>]
-                    # claim remote 上原子创建 refs/claims/<n> 后才算领取；
-                    # 再写 Status / Checkpoint，不启动 Agent。下一步：new z dev
-new task grok       # 同一 claim 核心，成功后当前终端启动 grok 并自动执行 /zdev
-new task codex      # 同一 claim 核心，成功后启动 codex 并自动 $zdev
-new z dev|fix|sync|review|pr|merge
-                    # canonical z；Skill 只是 adapter
-new task review     # In progress：push → 创建或复用 base=main 的非 Draft PR
-                    # → Checkpoint → In progress → In review
-                    # In review：仅当存在唯一属于当前任务的未关闭 PR 时，
-                    # 更新原 PR 并保持 In review；否则硬停止，不新建 PR
-                    # PR 标题必须通过现有 commit-msg 校验；有通过 Review 时用
-                    # Squash-Title，否则不得直接使用不合规 Issue 标题
-                    # 不合并 PR、不关闭 Issue、不向 main push、不改 Done
-```
+1. 读取当前 GitHub Issue Contract，确认 OPEN 且有有效 `approved`。
+2. Developer Actor 从最新 `origin/main` 创建普通 branch / worktree。
+3. 只改 Contract 允许范围；提交前 `new check --tier commit`。
+4. push 并开 PR；等待 Required Check `pr-gate`。
+5. 独立 Reviewer Actor 读取 Contract、`approved`、当前 HEAD/diff、Checks，再 GitHub APPROVE / REQUEST_CHANGES。
+6. GitHub squash merge。Developer 不 merge。
 
-开工之后的开发、审查与合并入口是 canonical `new z dev|fix|sync|review|pr|merge`。`.agents/skills/` 里的 `zdev` `zfix` `zreview` `zsync` `zmerge` `zpr` 只做 thin adapter（Codex `$zdev`，Grok `/zdev`，均关闭隐式调用）。`new task grok` / `new task codex` 在领取成功后自动执行 `zdev`，并把 Developer execution handoff 交给唯一 claim winner；loser 不启动 Agent。`new z dev` / `zdev` 先输出开工摘要再开发：门禁 PASS 不是开发完成，未通过 completion gate 时下一步是继续开发而不是 Review。人也可再次显式选择。默认链路：`zdev`（实际开发至 #13 completion）→ `zreview` → 通过则 `zmerge`（推导 In progress 或 In review 时都调 `new task review`：前者创建或复用 PR，后者只更新唯一已有 PR，并以 Squash-Title squash merge）。required checks 读取失败必须停止，不得当成「没有 checks」。有 `human-merge` 标签时 `zreview` 不进入 `zmerge`，由人明确选 `zpr` 送 PR。`zmerge` 在同一 git common dir 上互斥，持锁后复读再 merge；只有 `headRefOid` 等于当前 `Z_HEAD`、branch/base 与当前任务一致且 merge proof 完整的 MERGED PR，或「确认无 PR 且 HEAD 已在 origin/main」才只 finalize，不二次 merge。PR 列表读取失败必须停止，不得当成无 PR 去 finalize。finalize 删远端任务分支（删除前证明 tip 已是 `origin/main` 的祖先，并用 `--force-with-lease`；lease stale 不得改成无 lease 重试），并在条件满足时把本地主工作区 `ff-only` 到 origin/main，否则只报告「本地 main 未同步」。merge 后收尾失败输出「远端已合并;finalize 未完成:<步骤>」。`refs/claims/<n>` 与任务同寿，finalize 不删除；它是任务身份和 `derive_task_state` 的耐久锚点。协议见 [`templates/z-workflow.md`](../templates/z-workflow.md)。Task Contract（approve 进 main、blob SHA、五处门禁只读 origin/main）见 [`08-task-contract.md`](08-task-contract.md)。
+Developer Actor ≠ Reviewer Actor。写/实质修改 Contract 的 Actor 不能批准同一 Contract。Contract 实质修改后旧 `approved` 失效。
 
-通用领取不启动 Agent。`new task grok` / `new task codex` 才启动已登记产品；其它名字直接拒绝。预检失败、推导状态不能领取、claim push 被拒，都不会启动 Agent。领取以 `claim` remote 上创建 `refs/claims/<n>` 为准：空树 orphan commit 记录 `host` / `worktree` / `branch`（winner 身份）和 `at`（诊断），再 `git push --porcelain --force-with-lease=refs/claims/<n>: claim <lock>:refs/claims/<n>`。porcelain `*` 才是本次 winner，`=` / `!` 都是「已被领取」。`claim` 等于 origin 的 fetch URL，不受 origin push URL 影响；缺失或指错时预检自动修正。其后普通任务分支 push 走 origin 的 push URL。被拒则不写 Status、不写 Checkpoint。
+GitHub 是 PR / Checks / Review / merge eligibility / merge result 的 SSOT。协议见 [`08-task-contract.md`](08-task-contract.md)。
 
-成功后任一步失败都不删锁、不把 Status 退回 Ready；只有锁内 winner 能 resume。ownership 不符只拒绝接管，不回退、不删锁。领取时若分支名不以 `-<n>` 结尾，先改成 `<当前名>-<n>`；有 orca 时同步 displayName，没有 orca 时 git 改名仍然成立。该后缀不再当锁。`refs/claims/<n>` 与任务同寿，finalize 不删除。
-
-`new guard install` 之后，任务 worktree 由 bind / 预检把 origin push URL 接到本机 staging，并把 `receivepack` 指到 guard wrapper；这两项以及 `claim` remote 都写入该 linked worktree 的 `config.worktree`，不写 shared `.git/config`。fetch 与 claim 仍直达 GitHub。wrapper 从发起 push 的 worktree 读取显式 Binding，在 `git-receive-pack` 之前把 GitHub refs 镜像进 `refs/guard/github/`（失败 fail-closed）；pre-receive 只从这份 snapshot main 读契约和策略，拒绝 main、非法 message、越界及 hard-deny 路径，连最终被 revert 的任务历史也检查；staging 收下后 post-receive 用一次 `--atomic` 加每条 `--force-with-lease=<old>` 转发；wrapper 把转发失败变成客户端非 0。主工作区不接线。shared transport 若已有 v1.0 legacy、混合值或用户自定义值，bind/approve 不覆盖，先用 `new guard recover --preview` 核对；默认 `new guard recover` 只解除可证明的 legacy 值，第二次是 no-op。
-
-放行判定（zsync、zdev/zfix/zreview、`new task review` 的创建/复用 PR）只用 `derive_task_state`：origin/main 无契约 → Backlog；有契约、无 `refs/claims/<n>` 且无历史 `-<n>` 事实 → Ready；有 claim → 按锁内 winner branch 精确匹配 PR（无开放非 Draft PR → In progress；有开放非 Draft PR → In review；该分支 PR 已合并 → Done）。claim 不可读或 winner branch 缺失则 hard stop，不得退化成 Ready。Status 是视图，放行判定只用推导状态；与 Project Status 不一致只警告，不阻断、不写回。`new task review` 已由耐久事实决定可交付后，末段 Status 漂移不得 return 1、不得写回。互斥由所有机器共同的 `claim` remote 上 `refs/claims/<n>` 原子创建保证。
-
-`zsync` 在 rebase 前检查远端任务分支 SHA 是否为同步前本地 HEAD 的祖先。不是则 hard stop。随后仍用同步前 SHA 做 `--force-with-lease`，不得裸 `--force`。只接受推导为 In progress / In review 的任务。
-
-Issue 绑定只读 worktree-local `new task bind`，读不到就拒绝，不从目录名或分支名猜。
-
-`new task grok` / `new task codex` 在分支预检时，若 Orca displayName 已是合法的 `<domain>/<slug>`，而当前 git 分支恰好等于把其中 `/` 换成 `-` 的结果（例如 displayName `meta/z-agent-workflow`、git `meta-z-agent-workflow`），则在工作树受 Orca 管理且安全、无进行中的 git 操作、目标本地分支不存在、当前分支没有 upstream、源与目标远端分支都不存在时，把本地分支改回 displayName，然后重新读取 git 分支并重跑现有分支与基线校验。已经是规范名则不改。其它不匹配不猜测、不改名。扁平化恢复不改 Orca displayName、Issue 绑定或 worktree 路径；领取加 `-<n>` 后缀时除外，那一步会把 displayName 改成与 git 分支同名。只预检的 `new task` 和 `new task review` 都不改名。
-
-这些命令的授权对象是精确名称本身。只有人在当前已 bind 的任务工作树里实际输入 `new task claim`、`new task grok`、`new task codex`、`new task review` 或 `new z …`，或在 Skill 搜索里明确选择 `zdev` `zfix` `zreview` `zsync` `zmerge` `zpr`，才触发对应动作。人可以用自然语言要求 Agent「输入并执行 `zreview`」或「输入并执行 `new z review`」；真正被授权的仍是那个精确名称。普通自然语言（「开发一下」「帮我审查」「可以交付」「可以合并」「同步一下 main」）不得让任何 Agent 猜测、自动启动或调用 `new task` / z 系列。`new task grok` / `new task codex` 成功领取后自动执行 `zdev`，属于该命令自身的固定后续动作。
-
-`new task review` 只在推导状态为 In progress 或 In review 的受管理 Orca 工作树中运行。工作区必须干净，当前分支相对 `main` 必须有待交付提交。In progress：已有符合条件的 PR 则复用，否则创建。In review：仅当存在唯一、可证明属于当前任务的未关闭 PR 时，重新 push 已审查 HEAD 并更新原 PR；没有匹配 PR 或多个候选 PR 时硬停止，不新建第二个 PR。Project Status 是视图：push 前不探写、不因字段不完整或写入失败停止；PR 建成后 best-effort 写一次 In review，回读不是 In review 只警告，不写回、不失败。复用时只替换 `<!-- new-task-pr -->` 到 `<!-- /new-task-pr -->` 的自动交付区块，区块外的人工说明保留。为修正标题只改 PR 的 title，不覆盖区块外的人工说明。PR 标题必须通过现有 `check-commit-msg.sh --title`：有当前 HEAD 的通过 Review 时用 Squash-Title；没有适用 Review 时，已有 PR 标题或 Issue 标题也必须合法，否则停止。In review 重交付必须已有当前 HEAD 的通过 Review。读取 PR 正文失败或标记不成对则不覆盖。读取 Checkpoint 评论失败、空输出、非数组响应或多条 Checkpoint 时不得另开新楼。不得把任意 In review 当作 `new task review` 的入口。`zmerge` / `zpr` 在 In progress 或 In review 时都调用 `new task review`。Checkpoint 记录交付前 Status 与目标，不把尚未改写的状态写成已经 In review。布尔字段不能用 jq 的 `//` 读取，否则 `isDraft=false` 会被当成空。
-
-`new task review` 不会合并 PR、不会关闭 Issue、不会向 `main` push、不会把状态改为 Done。默认由 `zmerge` 在门禁通过后 squash merge；最终提交标题必须是已校验的 Squash-Title。PR 正文含 `Fixes #号`；合并后由 GitHub 关闭 Issue，Project 的关闭→Done 工作流再改状态。本流程不删除工作树或本地分支。
-
-若 candidate 已含最新 main、当前 HEAD 的 Review 仍有效，但 Guard staging 的 main mirror 单向落后，Issue #14 的 recovery 状态机固定经过 `PRE_REFRESH → REFRESH → POST_REFRESH → PRE_RETRY → RETRY → PR/REVIEW → PRE_MERGE → MERGE → FINALIZE`。关系是封闭枚举 `pre-refresh-stale | synced | guard-disabled | post-refresh-ahead | post-refresh-diverged | missing | unknown`：只有 `PRE_REFRESH` 接受 `pre-refresh-stale`（已安全同步时可返回 refresh `noop`），`POST_REFRESH`、`PRE_RETRY`、final merge 都只接受重新读取出的 `synced`；任何未知值、回退 stale、ahead、diverged、missing 或 active recovery 下的 `guard-disabled` 都停止。refresh 只更新目标 `refs/heads/main`，返回包含 target snapshot/staging OID、transaction、route/identity、unrelated-ref fingerprint 的 structured proof，但 proof 不能替代 durable-state reread。拿 Guard lock 后会重新核对 candidate/staging identity、effective route、claim provenance、transaction/lease、目标 refs、unrelated refs 和 relation；任一变化不产生 refresh 副作用。PR lane 在 refresh 前固定：no-PR 变为 PR、PR 消失，或 matching PR 的 head/base/body/title/Fixes/Draft/state 改变，都不得 retry。实际 task push 前还要重读全部 transport layer/value/multiplicity、canonical destination、receivepack、claim 和 Guard wiring。finalize 的 merged PR proof 必须同时绑定当前 branch、base、`Z_HEAD`、`headRefOid` 和 merge proof，不能使用历史同名 branch 的 merged PR。pending/failed/unknown transaction、lease 歧义、unrelated ref 或非 fast-forward 都 fail-closed；candidate 真落后明确执行 `new z sync`，HEAD 改变必须重新 `zreview`。这条内部 refresh 不 replay forwarding transaction。
-
-下面是用 `new worktree` 自己开视图的流程（非 Orca 的并行工作）。
+可选：用 `new worktree` 开稀疏视图（不是任务授权，也不替代 GitHub PR）。
 
 ```bash
 # 1. 开工
@@ -334,23 +295,23 @@ git commit -m "wip: dedup"
 git commit -m "test(code.reddit): 补 fixtures"
 
 # 3. 收工前自查
-new check
+new check --tier commit
 
-# 4. 回主工作区，压成一个提交
-cd <workspace-root>
-git merge --squash code/reddit-v3
-git commit -m "feat(code.reddit): 发布 collector v3"
+# 4. push 并开 PR。不要直接向 main push。
+git push -u origin HEAD
+gh pr create --base main
 
-# 5. 清理
+# 5. GitHub squash merge 之后再清理 worktree
 new worktree-clean reddit-v3
-git push
 ```
 
-main 上最后只留一行 `feat(code.reddit): 发布 collector v3`，而不是十几个 `wip`。主线整洁靠的是**短分支 + squash merge**，不是三级合并层级。
+main 上最后只留 GitHub squash 产生的那一条，而不是十几个 `wip`。主线整洁靠的是**短分支 + GitHub squash merge**，不是本地向 main 直推。
 
-第 2 步的「可以碎」有前提：**它成立的唯一理由是第 4 步会压扁。**直接在 main 上干活时这个前提不存在，那里每一条都要是完整的语义单元。上一版这里写的是「过程中随便提交，反正会被压扁」，而实际用法里大量提交是直接落在 main 上的——前提不成立，那句话就成了裸奔许可。
+第 2 步的「可以碎」有前提：**它成立的唯一理由是 GitHub squash 会压扁。**直接在 main 上干活时这个前提不存在，那里每一条都要是完整的语义单元。
 
 ### 跨域分支怎么拆提交
+
+合入 `main` 仍是 GitHub squash merge。下面只用于在开 PR 之前把分支历史拆成可读提交，不替代 GitHub merge，也不向 `main` 直推。
 
 `merge --squash` 把整个分支的改动一次摊进暂存区，然后一条 `git commit`。如果这个分支跨了 `code` / `infra` / `data` 三个域，照这么走只能产出一条多 scope 提交——而多 scope 是例外，不是常态。
 
@@ -384,23 +345,21 @@ new worktree --list
 ```
 
 1. 按第一个 `--path` 的域推断分支前缀（`1-code/` → `code`，`4-know/research/` → `research`…），也可以 `--branch` 显式指定。映射读自 `derived.lock` 的 `git.commit.scope_src`，与 commit-msg 钩子和 daily 回扫共用同一张表
-2. 校验每个 `--path` 以及公共可见目录（`0-meta` `.agents`）在基点里**真实存在**
+2. 校验每个 `--path` 以及公共可见目录（`0-meta`）在基点里**真实存在**
 3. 在 `../worktrees/<name>` 建 worktree，`--no-checkout`
 4. `sparse-checkout init --cone`
-5. `sparse-checkout set 0-meta .agents <你给的路径…>`
+5. `sparse-checkout set 0-meta <你给的路径…>`
 6. `checkout`
 
-第 2 步是刻意加的。`sparse-checkout` 对不存在的路径**静默通过**，打错一个字得到的是一个空工作区，而错误要等 AI 干了半天才暴露。这条检查只约束**手工** `--path`。`new task worktree <n>` 从已批准 Contract 识别「获准但基点尚不存在」的目录，不得因此扩大到父目录、关闭 sparse，或用 `--skip-checks` 绕过手工路径检查。
+第 2 步是刻意加的。`sparse-checkout` 对不存在的路径**静默通过**，打错一个字得到的是一个空工作区，而错误要等 AI 干了半天才暴露。这条检查只约束**手工** `--path`。
 
-### 为什么无条件带上 `0-meta` 和 `.agents`
+### 为什么无条件带上 `0-meta`
 
-AI 至少要能读到 `AGENTS.md`、`policy.yaml`、schema、审计工具，以及 z 系列 Skills。切掉这些省下的那点体积，换来的是一个在没有规则、也调不了 `zdev` 的空间里工作的 agent。
+AI 至少要能读到 `AGENTS.md`、`policy.yaml`、schema 和审计工具。切掉这些省下的那点体积，换来的是一个在没有规则的空间里工作的 agent。
 
-这两项是**公共可见**，不是默认可写。可写范围只来自 Issue「允许改动范围」。`new task` 不得把它们判成稀疏越界，也不得因为它们固定可见就扩大业务写入范围。
+`0-meta` 是**公共可见**，不是默认可写。可写范围只来自当前 GitHub Issue Contract。不要因为公共可见就扩大业务写入范围。
 
-仓库根层的 `AGENTS.md` 是框架必需输入：task-aware bootstrap / bind 必须让它自动可读，无需 `git checkout --ignore-skip-worktree-bits`。它仍不是任务写授权；修改 scope 外的根 `AGENTS.md` 继续被 commit / diff 门禁拒绝。其它根层文件（`README.md` `.gitignore` `.aiignore` `.cursorignore`）由 cone 模式自动带上，不用单独指定。
-
-`new task worktree <n>` 用 `origin/main` 的 OID 建分支，避免 fresh task branch 误跟踪 `origin/main`。已有真实 remote tracking、同名远端分支或冲突 binding 时保留并诊断，不自动覆盖。
+仓库根层的 `AGENTS.md` 由 cone 模式自动带上，仍不是写授权。其它根层文件（`README.md` `.gitignore` `.aiignore` `.cursorignore`）同样由 cone 带上。
 
 > `.cursorignore` 只有被 git 跟踪才会出现在 worktree 里。没跟踪的话，那个 worktree 里 Cursor 的访问边界是失效的——`new worktree` 会就这一点告警。
 
@@ -468,50 +427,14 @@ git filter-repo --path 1-code/foo --path-rename 1-code/foo/:
 
 ```bash
 git clone --filter=blob:none --sparse <url>
-cd <workspace-root> && git sparse-checkout set 0-meta .agents 1-code/foo
+cd <workspace-root> && git sparse-checkout set 0-meta 1-code/foo
 ```
 
 `--filter=blob:none` 只拉需要的文件内容，历史元数据仍然完整。现在不用配，等真有这个需求再说。
 
-## 十三、度量
+## 十三、度量（历史）
 
-每个受管理入口结束时追加一行 JSON 到本机 `${XDG_STATE_HOME:-~/.local/state}/<origin-id>/metrics.jsonl`（`<origin-id>` 由 origin 推导，例如 `github.com-owner-repo`）。
-只追加、不改写、不进 git、不在任何任务的允许范围内；写失败只打一行警告，入口的退出码和行为不变；
-度量代码不联网，Issue 标签取自入口本来就要读的那份 Issue JSON。
-
-入口名是 `<命令>.<动作>`：`new-task.precheck` / `new-task.claim` / `new-task.review`，
-以及 `.agents/skills/<skill>/scripts/<action>.sh` 派生的 `zdev.wip-commit`、`zsync.sync-main`、
-`zreview.publish-review`、`zpr.open-pr`、`zmerge.squash-merge` 等。`zfix` 复用 zdev 的脚本，
-所以它的事件记为 `zdev.*`。
-
-一行的字段：`ts`（UTC）、`issue`、`entry`、`result`（ok|fail）、`reason_code`、`detail`、
-`duration_ms`、`agent`（由 `new task grok|codex` 通过 `NEW_TASK_AGENT` 传给会话内的 z 脚本）、
-`head`、`labels`、`task_class`、`loaded_bytes`。
-
-`reason_code` 只在 fail 时非空：稳定标识符，形如 `<action>.<snake_case>`（例 `claim.remote_ref_exists`）。
-同一类故障全库一个 code，不写自然语言，不含空格和中文。ok 时为空。未赋码的失败落成
-`<action>.unclassified`（action 是 entry 点号后的段）。`detail` 是去掉颜色和「✗」后的自由文本。
-
-事件先按入口分类：`new-task.approve` 与 `new-task.bind` 是尚未绑定任务的
-`control-plane` 事件；其余 `new-task.*` 与 canonical `z*` 是 `task-runtime` 事件。
-其它入口不参与受管理事件健康判定。control-plane 事件允许 `issue`、`task_class` 为空，
-也不进入 `framework:business` 统计；task-runtime 事件仍要求这些字段完整。
-
-`task_class` 对 task-runtime 事件是 `framework` 或 `business`，按契约允许改动范围推导：
-任一路径等于或位于 `0-meta/`、`.agents/` 之下，或是它们的祖先（如 `.`），就是 framework；
-否则 business。不按 Issue 标签。scope 解析不到则留空。
-
-`loaded_bytes` 只在 `new-task.claim` 有值：开工 prompt 的字节数，加上 prompt 明确要求 Agent 阅读的
-每个文件在工作树里的实际字节数。文件清单与 prompt 文本共用 `task.sh` 里的 `TASK_PROMPT_READS`，
-改一处两边同变。这是「agent 开工前被要求读多少」的直接度量，也是提示词瘦身的验收口径。
-
-```bash
-new metrics             # 入口 × 结果、耗时 p50/p90、开工加载中位数、framework:business、reason_code 计数
-new metrics --since 7d  # 只看最近 7 天
-```
-
-用法：顾虑清单里的事项，只有同一 `reason_code` 的失败在度量里出现 ≥ 2 次，或造成一次 P0，才进入下一轮。
-framework 与 business 任务比按允许改动范围算，不按标签。
+本地 `new metrics` 与 task / z 事件日志已随 R4 删除。PR、Checks、Review、merge 以 GitHub 为准。不要重建第二份本地状态。
 
 ## 检查清单
 

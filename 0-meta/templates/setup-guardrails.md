@@ -11,7 +11,7 @@ brew install pre-commit gitleaks jq yq gh
 0-meta/bin/new setup
 ```
 
-跑完之后，在工作区及其子目录里可以直接调用 `new`（`~/.local/bin` 需在 PATH）。它装的是 `~/.local/bin/new`——从当前目录逐级往上找所属工作区的转发脚本，而不是把某个 clone 的 `0-meta/bin` 写死进 PATH。理由见 [`new-shim.sh`](new-shim.sh) 抬头。下一步：任务 worktree 里 `new task bind <n>`，然后 `new task` / `new z dev`。
+跑完之后，在工作区及其子目录里可以直接调用 `new`（`~/.local/bin` 需在 PATH）。它装的是 `~/.local/bin/new`——从当前目录逐级往上找所属工作区的转发脚本，而不是把某个 clone 的 `0-meta/bin` 写死进 PATH。理由见 [`new-shim.sh`](new-shim.sh) 抬头。下一步：读取 GitHub Issue Contract，确认 `approved`，从最新 main 开普通 branch / worktree。不要调用已删除的 `new task` / `new z`。
 
 下面是它背后各部分的细节，以及它代劳不了的部分。
 

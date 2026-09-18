@@ -212,8 +212,7 @@ prompt_budget_block_bytes() {
   body="$(prompt_budget_file_content "$root" "$rel")" || return 1
   printf '%s\n' "$body" | grep -Fxq '<!-- BEGIN agent-card -->' || return 1
   printf '%s\n' "$body" | grep -Fxq '<!-- END agent-card -->' || return 1
-  printf '%s\n' "$body" | awk -v b="$TASK_START_CARD_BEGIN" \
-    -v e='<!-- END agent-card -->' '
+  printf '%s\n' "$body" | awk -v e='<!-- END agent-card -->' '
       $0 == "<!-- BEGIN agent-card -->" { on=1 }
       on { print }
       on && $0 == e { exit }
@@ -243,29 +242,12 @@ prompt_budget_assert() {
   c_ok "    ✓ ${label} ${actual}/${budget} bytes"
 }
 
-prompt_budget_assert_lines() {
-  local label="$1" actual="$2" budget="$3"
-  if ! [[ "$actual" =~ ^[0-9]+$ ]] || ! [[ "$budget" =~ ^[1-9][0-9]*$ ]]; then
-    c_err "    ✗ prompt budget 无法测量：${label}（actual=${actual:-空} budget=${budget:-空}）"
-    return 1
-  fi
-  if [ "$actual" -gt "$budget" ]; then
-    c_err "    ✗ prompt budget 超限：${label} ${actual} > ${budget} lines"
-    return 1
-  fi
-  c_ok "    ✓ ${label} ${actual}/${budget} lines"
-}
-
 prompt_budget_check() {
-  local root="${1:-$ROOT}" lock="${2:-$LOCK}" fail=0 rel actual budget lines
-  local root_budget meta_budget card_budget start_budget skill_budget skill_lines workflow_budget
+  local root="${1:-$ROOT}" lock="${2:-$LOCK}" fail=0 actual
+  local root_budget meta_budget card_budget
   root_budget="$(prompt_budget_value "$lock" prompt_budget.root_agents_bytes)" || fail=1
   meta_budget="$(prompt_budget_value "$lock" prompt_budget.meta_agents_bytes)" || fail=1
   card_budget="$(prompt_budget_value "$lock" prompt_budget.agent_card_bytes)" || fail=1
-  start_budget="$(prompt_budget_value "$lock" prompt_budget.start_card_bytes)" || fail=1
-  skill_budget="$(prompt_budget_value "$lock" prompt_budget.skill_card_bytes)" || fail=1
-  skill_lines="$(prompt_budget_value "$lock" prompt_budget.skill_card_lines)" || fail=1
-  workflow_budget="$(prompt_budget_value "$lock" prompt_budget.workflow_bytes)" || fail=1
   [ "$fail" = 0 ] || return 1
 
   actual="$(prompt_budget_file_bytes "$root" AGENTS.md 2>/dev/null || true)"
@@ -276,27 +258,6 @@ prompt_budget_check() {
   prompt_budget_assert "AGENTS.md agent-card" "$actual" "$card_budget" || fail=1
   actual="$(prompt_budget_block_bytes "$root" 0-meta/AGENTS.md 2>/dev/null || true)"
   prompt_budget_assert "0-meta/AGENTS.md agent-card" "$actual" "$card_budget" || fail=1
-
-  actual="$(prompt_budget_file_bytes "$root" 0-meta/templates/z-workflow.md 2>/dev/null || true)"
-  prompt_budget_assert "0-meta/templates/z-workflow.md" "$actual" "$workflow_budget" || fail=1
-
-  local start_card
-  start_card="$(task_start_card owner repo 28 https://example.invalid/28 main \
-    0000000000000000000000000000000000000000 /tmp/worktree meta/example-28 \
-    meta/example-28 "$TASK_STATUS_PROGRESS" "0-meta/lib/new/" "new z dev" \
-    0000000000000000000000000000000000000000 2>/dev/null || true)"
-  actual="$(printf '%s' "$start_card" | wc -c | tr -d ' ')"
-  prompt_budget_assert "canonical start card" "$actual" "$start_budget" || fail=1
-
-  local skills
-  skills="$(lock_get "$lock" prompt_budget.skill_paths)"
-  [ -n "$skills" ] || { c_err "    ✗ prompt budget 没有 skill_paths"; fail=1; }
-  for rel in $skills; do
-    actual="$(prompt_budget_file_bytes "$root" "$rel" 2>/dev/null || true)"
-    prompt_budget_assert "$rel" "$actual" "$skill_budget" || fail=1
-    lines="$(prompt_budget_file_content "$root" "$rel" 2>/dev/null | wc -l | tr -d ' ' || true)"
-    prompt_budget_assert_lines "$rel" "$lines" "$skill_lines" || fail=1
-  done
   [ "$fail" = 0 ]
 }
 
@@ -363,12 +324,8 @@ verdict() {
 commit_tier_completion_note() {
   local head
   head="$(git -C "$ROOT" rev-parse --verify HEAD 2>/dev/null || true)"
-  if task_worktree_status_counts "$ROOT"; then
-    printf '    说明：commit 档只检查暂存区；HEAD=%s；untracked=%s；unstaged=%s；staged=%s。即使本档返回 PASS，也不构成开发完成、修复完成或 review-ready；必须形成 committed + clean HEAD。\n' \
-      "${head:-空}" "$TASK_WORKTREE_UNTRACKED" "$TASK_WORKTREE_UNSTAGED" "$TASK_WORKTREE_STAGED"
-  else
-    printf '    说明：commit 档只检查暂存区；无法读取当前工作树状态，不构成开发完成、修复完成或 review-ready 证据。\n'
-  fi
+  printf '    说明：commit 档只检查暂存区；HEAD=%s。即使本档返回 PASS，也不构成开发完成或 GitHub review-ready。\n' \
+    "${head:-空}"
 }
 
 # 每个段标题以 policy 的 audit.checks[].id 开头，不用序号。
@@ -601,7 +558,7 @@ cmd_check() {
 
   if [ "$tier" = commit ]; then
     echo
-    echo "── prompt_budget  agent-card / start card / Skill / workflow"
+    echo "── prompt_budget  AGENTS.md / agent-card"
     prompt_budget_check || fail=1
     echo
     verdict commit "$fail"

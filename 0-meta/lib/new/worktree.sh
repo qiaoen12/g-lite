@@ -118,7 +118,7 @@ cmd_worktree() {
 
   # 路径必须在基点里真实存在。sparse-checkout 对不存在的路径静默通过，
   # 打错一个字得到的是一个空工作区，而错误要等 AI 干了半天才暴露。
-  # 公共可见目录同样要存在，否则 cone 会静默给出空的 0-meta / .agents。
+  # 公共可见目录同样要存在，否则 cone 会静默给出空的 0-meta。
   local always; always="$(worktree_always_include)"
   local missing=()
   for p in "${paths[@]}"; do
@@ -139,8 +139,7 @@ cmd_worktree() {
   [ -e "$dest" ] && die "已存在：$dest"
   mkdir -p "$wtroot"
 
-  # 公共可见目录无条件带上（治理层 + z Skills）。只保证能读到，
-  # 不构成写授权；可写范围仍只来自 Issue「允许改动范围」。
+  # 公共可见目录无条件带上（治理层）。只保证能读到，不构成写授权。
 
   local sparse=()
   for a in $always; do sparse+=("$a"); done
@@ -171,8 +170,9 @@ cmd_worktree() {
   echo "    cursor \"$dest\"        # 或 codex / claude，各开各的，互不干扰"
   echo
   echo "  完事："
-  echo "    cd \"$dest\" && new check"
-  echo "    cd \"$ROOT\" && git merge --squash $branch && git commit"
+  echo "    cd \"$dest\" && new check --tier commit"
+  echo "    git push -u origin HEAD && gh pr create --base main"
+  echo "    # GitHub squash merge 之后："
   echo "    new worktree-clean $name"
   echo
 

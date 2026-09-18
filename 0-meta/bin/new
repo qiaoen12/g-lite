@@ -14,15 +14,10 @@ NEW_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib/new" && pwd)"
 . "$NEW_LIB/scaffold.sh"
 . "$NEW_LIB/decision.sh"
 . "$NEW_LIB/worktree.sh"
-. "$NEW_LIB/task.sh"
-. "$NEW_LIB/z-cli.sh"
-. "$NEW_LIB/metrics.sh"
 . "$NEW_LIB/check.sh"
 . "$NEW_LIB/setup.sh"
-. "$NEW_LIB/guard.sh"
 
-# 退出时先落度量（只有 new task 会开始计时，其它子命令是 no-op），再清临时文件。
-trap 'metrics_exit_trap $?' EXIT
+trap 'tmp_cleanup' EXIT
 trap 'tmp_cleanup; exit 130' INT
 trap 'tmp_cleanup; exit 143' TERM
 
@@ -55,46 +50,11 @@ usage() {
   new worktree-clean <name> [--force]
                             安全收尾：dirty / 未合入 / 未推送 任一命中即拒绝
 
-  new task                  预检当前已 bind 的 Git 工作树与 Issue；不改 GitHub、不启动 Agent
-  new task worktree <n>     从已批准 Contract 建立任务 worktree：exact sparse、
-                            合法 branch、自动 bind。只要任务号，不必手写 --path
-  new task bind <n>         在任务 worktree 显式绑定 Issue（本 worktree 的 git dir）
-  new task approve <n>      人在主工作区、main 上把 Issue 正文写成 origin/main
-                            上的契约文件。Backlog → Ready；在途任务只换契约、不动 Status。内容未变则 no-op
-  new task claim [--actor <id>]
-                            预检通过后领取（Ready → In progress）、写 Checkpoint，
-                            不启动 Agent。actor 只记 provenance，不是授权。
-  new task grok|codex       同一 claim 核心，成功后在当前终端启动对应 Agent，
-                            并把 zdev 作为首条指令。未登记的名字直接拒绝。
-                            若 git 分支恰好是 Orca 把合法 displayName 的 / 拍成 - 的
-                            结果，开工前在安全条件下改回规范名，再重跑分支校验。
-  new task review           预检通过后交付当前任务分支：push、创建或复用 base=main
-                            的非 Draft PR、写 Checkpoint，In progress → In review。
-                            PR 标题必须通过现有 commit-msg 校验：有通过 Review 时用
-                            Squash-Title；否则不得直接使用不合规 Issue 标题。
-                            写入后回读；改标题不覆盖人工正文。
-                            不合并 PR、不关闭 Issue、不向 main push、不把状态改为 Done。
-                            仅人实际输入本命令，或明确要求「输入并执行 new task review」
-                            时才可运行；「可以交付」「可以合并」不是授权。
-
-  new z dev|fix|sync|review|pr|merge
-                            canonical z 入口，不加载 Skill。Skill 只是 adapter。
-
   new plan                  重算 derived.lock，打印 diff 与危险变更
   new plan --apply          确认无误后写入 derived.lock
 
-  new metrics [--since 7d]  汇总本机度量：入口 × 结果、耗时 p50/p90、开工加载字节数、
-                            meta 与非 meta 任务比、失败原因 Top。数据在
-                            ~/.local/state/<origin-id>/metrics.jsonl，由 new task 与
-                            z 系列入口每次结束时追加，不进 git。
-  new metrics doctor       检查 metrics 目录、jq、JSONL schema 和同目录读写，
-                            不修改 GitHub / Project。
-
   new setup                 换机 / fresh clone 恢复：依赖、PATH 入口、hooks、
-                            本机 state、适配器状态。不要求 Orca 或固定绝对路径。
-  new guard install|status|sync
-                            本机 staging bare：fetch/claim 仍走 GitHub，
-                            普通 push 经 staging，lease/删除比较 GitHub 真实 tip
+                            适配器状态。不要求 Orca 或固定绝对路径。
   new check                 全量自查（daily 档）
   new check --tier commit   只看暂存区（commit 档，pre-commit hook 跑的就是它）
   new check --tier deep     备份闭环 + _raw 全量哈希（分钟级，每周日跑）
@@ -145,13 +105,9 @@ case "$sub" in
   infra)    [ $# -eq 1 ] || die "用法：new infra <name>";    cmd_infra "$1" ;;
   worktree) cmd_worktree "$@" ;;
   worktree-clean) cmd_worktree_clean "$@" ;;
-  task)     cmd_task "$@" ;;
-  z)        cmd_z "$@" ;;
-  metrics)  cmd_metrics "$@" ;;
   plan)     cmd_plan "${1:-}" ;;
   check)    cmd_check "$@" ;;
   setup)    [ $# -eq 0 ] || die "用法：new setup"; cmd_setup ;;
-  guard)    cmd_guard "$@" ;;
   help|-h|--help) usage ;;
   *) die "未知类型：${sub}（跑 \`new help\` 看用法）" ;;
 esac
