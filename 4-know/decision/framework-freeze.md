@@ -15,6 +15,8 @@ review: 2027-03-09
 # Project-qiaoen 停止作为 G-lite framework 上游
 
 > 2026-09-09 人工治理决定（human governance override）：当前原型已足够稳定，不再增加新的 Pre-Freeze framework 功能，直接完成本仓最终收尾并 prototype Freeze。原设计中的两天 Soak 与 30-task 硬门槛见下文「原设计为什么那样写」；那些理由仍然解释当初的选择，但不再是本决策的执行前置。
+>
+> R4（2026-09-18）已删除下文描述的本地 task / z / git-guard runtime。当前执行路径见根 `AGENTS.md` 与 [`0-meta/docs/08-task-contract.md`](../../0-meta/docs/08-task-contract.md)。下文保留 Freeze 当时的约束，不再作为当前 CLI 指令。
 
 ## 背景与约束
 
