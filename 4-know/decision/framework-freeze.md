@@ -1,7 +1,7 @@
 ---
 id: framework-freeze
 type: decision
-status: active
+status: archived
 topic: [g-lite, freeze, meta]
 scope:
   - repo
