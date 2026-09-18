@@ -1,0 +1,46 @@
+name: PR gate
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  pr-gate:
+    name: pr-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Shell syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' file; do
+            bash -n "$file"
+          done < <(find 0-meta .agents -type f \( -name '*.sh' -o -path '0-meta/bin/new' \) -print0)
+
+      - name: CI-safe runtime regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          for test_file in \
+            0-meta/lib/new/agent-card.test.sh \
+            0-meta/lib/new/bootstrap.test.sh \
+            0-meta/lib/new/claim-resume.test.sh \
+            0-meta/lib/new/portable-runtime.test.sh \
+            0-meta/lib/new/setup.test.sh
+          do
+            echo "==> $test_file"
+            bash "$test_file"
+          done
+
+      # Some legacy runtime tests assume a named local branch/worktree.
+      # pull_request Actions checks out GitHub's synthetic merge ref in detached HEAD,
+      # so those tests remain local/runtime tests until R4 removes that legacy runtime.
