@@ -22,25 +22,39 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          roots=(0-meta)
+          if [ -d .agents ]; then roots+=(.agents); fi
           while IFS= read -r -d '' file; do
             bash -n "$file"
-          done < <(find 0-meta .agents -type f \( -name '*.sh' -o -path '0-meta/bin/new' \) -print0)
+          done < <(find "${roots[@]}" -type f \( -name '*.sh' -o -path '0-meta/bin/new' \) -print0)
 
-      - name: CI-safe runtime regression tests
+      - name: Anti-regression
         shell: bash
         run: |
           set -euo pipefail
-          for test_file in \
-            0-meta/lib/new/agent-card.test.sh \
-            0-meta/lib/new/bootstrap.test.sh \
-            0-meta/lib/new/claim-resume.test.sh \
-            0-meta/lib/new/portable-runtime.test.sh \
-            0-meta/lib/new/setup.test.sh
-          do
-            echo "==> $test_file"
-            bash "$test_file"
+          banned=(
+            0-meta/tasks
+            .agents/skills/zdev
+            .agents/skills/zfix
+            .agents/skills/zreview
+            .agents/skills/zsync
+            .agents/skills/zpr
+            .agents/skills/zmerge
+            .agents/skills/z-lib.sh
+            2-infra/git-guard
+            .github/workflows/main-guard.yml
+          )
+          fail=0
+          for p in "${banned[@]}"; do
+            if [ -e "$p" ]; then
+              echo "legacy path reappeared: $p"
+              fail=1
+            fi
           done
+          [ "$fail" = 0 ]
 
-      # Some legacy runtime tests assume a named local branch/worktree.
-      # pull_request Actions checks out GitHub's synthetic merge ref in detached HEAD,
-      # so those tests remain local/runtime tests until R4 removes that legacy runtime.
+      - name: Workspace setup regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash 0-meta/lib/new/setup.test.sh
