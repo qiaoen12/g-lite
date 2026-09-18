@@ -2,10 +2,12 @@
 
 Canonical G-lite framework source.
 
+GitHub 管事实和门；Agent 干活；G-lite 只规定协作。
+
 ```text
 qiaoen12/g-lite
 = canonical G-lite framework source
-= development + Issue + PR + Release + Template
+= development + Issue + PR + Template
 
 qiaoen12/g-lite-harness
 = external test / E2E / fault injection
@@ -13,6 +15,23 @@ qiaoen12/g-lite-harness
 ```
 
 > Fresh clone: `0-meta/bin/new setup` (installs `new` on PATH), then `new check --tier commit`.
+> Development does not require the retired `new task` / `new z` runtime.
+
+## Default workflow
+
+1. Read the current GitHub Issue Contract.
+2. Confirm the Issue is OPEN and has a valid `approved` label.
+3. Developer Actor (`qiaoen12`) creates an ordinary branch / worktree from latest `origin/main`.
+4. Make only in-scope changes; run `new check --tier commit` before commit.
+5. Push and open a PR.
+6. Wait for the required check `pr-gate`.
+7. Independent Reviewer Actor (`qiaoen-reviewer`) reads Contract, `approved`, current HEAD/diff, and Checks.
+8. GitHub `APPROVE` or `REQUEST_CHANGES`.
+9. GitHub squash merge.
+
+Developer Actor ≠ Reviewer Actor. The Actor that wrote or materially edited a Contract must not approve that same Contract. After a material Contract change, the old `approved` is invalid.
+
+GitHub is the source of truth for PR, Checks, Review, merge eligibility, and merge result. Codex / Cursor / Claude Code / Grok / WorkBuddy are interchangeable workbenches.
 
 ## Provenance
 
@@ -93,8 +112,6 @@ Git tracking and backup are independent questions. A git remote is not a backup.
 new code     my-app
 new data     reddit-posts
 new note     cf-waf-rules
-new task bind <n>
-new z dev
 new check --tier commit
 ```
 
@@ -102,8 +119,7 @@ Worktrees live in a sibling of the clone, default `../worktrees` (set `git.workt
 
 ```bash
 new worktree reddit-v3 --path 1-code/reddit --path 3-data/reddit-posts
-# then, from the main worktree:
-git merge --squash <branch> && git commit
+# then open a GitHub PR from that branch; squash merge on GitHub
 ```
 
 ## Version mark
@@ -122,7 +138,7 @@ A consumer that pins a release later adds `commit=<resolved tag SHA>`. This roun
 
 - Permissions: [`0-meta/docs/06-权限边界.md`](0-meta/docs/06-权限边界.md)
 - Git / worktree / sync / restore: [`0-meta/docs/07-git-工作流.md`](0-meta/docs/07-git-工作流.md)
-- Contract / checkpoint / review / merge: [`0-meta/docs/08-task-contract.md`](0-meta/docs/08-task-contract.md)
-- Start card / adapters: [`0-meta/docs/09-agent-card.md`](0-meta/docs/09-agent-card.md)
+- GitHub-native Contract / Review / merge: [`0-meta/docs/08-task-contract.md`](0-meta/docs/08-task-contract.md)
+- Agent-card and workbenches: [`0-meta/docs/09-agent-card.md`](0-meta/docs/09-agent-card.md)
 - Freeze and extract: [`0-meta/docs/10-framework-freeze.md`](0-meta/docs/10-framework-freeze.md)
 - Allowlist: [`0-meta/docs/11-extract-allowlist.md`](0-meta/docs/11-extract-allowlist.md)
