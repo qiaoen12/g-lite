@@ -15,3 +15,5 @@ review: 2027-03-18
 This document records the R3 validation of GitHub-native PR gates.
 
 Canonical merge eligibility comes from GitHub Pull Requests, Checks, Reviews, and Rulesets. G-lite does not persist a duplicate local merge or review state.
+
+The validation also confirms that review applicability follows the current PR HEAD.
