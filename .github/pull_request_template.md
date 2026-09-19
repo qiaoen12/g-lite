@@ -1,13 +1,13 @@
 ## Why
 
-<!-- Why is this change needed? Link the Issue Contract. -->
+Issue Contract: #
 
 ## What
 
-<!-- Summarize the actual change. -->
-
 ## Test
 
-<!-- Record the checks/tests actually run and any unverified items. -->
+## Unverified / Risks
+
+None.
 
 Fixes #

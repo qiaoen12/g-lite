@@ -1,5 +1,0 @@
-date,source,query,hits,screened_out,included,note
-2026-08-26,semantic-scholar,"(""LLM benchmark"" OR ""evaluation suite"") AND contamination",84,71,13,"排除主因：无第三方复现 42 篇、纯综述 19 篇、超期预印本 10 篇"
-2026-08-26,openalex,"benchmark contamination, 2024-",57,49,8,"与上一行去重后净增 8 篇"
-2026-08-26,arxiv-cs.CL,benchmark contamination,31,29,2,"净增 2 篇"
-2026-08-26,connected-papers,"以 3 篇种子展开二度引用",46,38,8,"净增 8 篇。关键词检索漏掉的都在这里 —— 引文图谱召回率明显更高"
