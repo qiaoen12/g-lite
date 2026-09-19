@@ -1,9 +1,0 @@
-# Framework repo identity. Do not put this commit's SHA here:
-# the SHA of a commit cannot be known before the commit exists.
-# Consumers record the resolved tag SHA after they pin a release:
-#   version=v1.0.0
-#   source=qiaoen12/g-lite
-#   commit=<v1.0.0 tag resolved SHA>
-kind=framework
-version=v1.0.0
-source=qiaoen12/g-lite

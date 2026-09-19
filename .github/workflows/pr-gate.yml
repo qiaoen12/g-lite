@@ -15,33 +15,82 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
 
-      - name: Shell syntax
+      - name: Required files
         shell: bash
         run: |
           set -euo pipefail
-          roots=(0-meta)
-          if [ -d .agents ]; then roots+=(.agents); fi
-          while IFS= read -r -d '' file; do
-            bash -n "$file"
-          done < <(find "${roots[@]}" -type f \( -name '*.sh' -o -path '0-meta/bin/new' \) -print0)
+          required=(
+            README.md
+            AGENTS.md
+            .github/ISSUE_TEMPLATE/task.md
+            .github/pull_request_template.md
+            .github/workflows/pr-gate.yml
+          )
+          fail=0
+          for f in "${required[@]}"; do
+            if [ ! -f "$f" ]; then
+              echo "missing required file: $f"
+              fail=1
+            fi
+          done
+          [ "$fail" = 0 ]
 
-      - name: Anti-regression
+      - name: Protocol headings
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail=0
+          need() {
+            local file="$1"
+            local pattern="$2"
+            if ! grep -Fq "$pattern" "$file"; then
+              echo "missing in ${file}: ${pattern}"
+              fail=1
+            fi
+          }
+          need README.md "核心闭环"
+          need README.md "Issue Contract"
+          need README.md "approved"
+          need README.md "pr-gate"
+          need README.md "squash"
+          need AGENTS.md "## 开工"
+          need AGENTS.md "## Reviewer protocol"
+          need AGENTS.md "lastEditedAt"
+          need AGENTS.md "Fresh authorization:"
+          need .github/ISSUE_TEMPLATE/task.md "## Contract"
+          need .github/ISSUE_TEMPLATE/task.md "### Goal"
+          need .github/ISSUE_TEMPLATE/task.md "### Acceptance"
+          need .github/ISSUE_TEMPLATE/task.md "### Out of scope"
+          need .github/ISSUE_TEMPLATE/task.md "### Authorization"
+          need .github/pull_request_template.md "## Why"
+          need .github/pull_request_template.md "Issue Contract:"
+          need .github/pull_request_template.md "## What"
+          need .github/pull_request_template.md "## Test"
+          need .github/pull_request_template.md "## Unverified / Risks"
+          need .github/pull_request_template.md "Fixes #"
+          [ "$fail" = 0 ]
+
+      - name: Banned legacy paths
         shell: bash
         run: |
           set -euo pipefail
           banned=(
-            0-meta/tasks
-            .agents/skills/zdev
-            .agents/skills/zfix
-            .agents/skills/zreview
-            .agents/skills/zsync
-            .agents/skills/zpr
-            .agents/skills/zmerge
-            .agents/skills/z-lib.sh
-            2-infra/git-guard
+            0-meta
+            1-code
+            2-infra
+            3-data
+            4-know
+            5-record
+            _inbox
+            _vendor
+            .agents
+            .pre-commit-config.yaml
+            .claude
+            .cursorignore
+            .aiignore
             .github/workflows/main-guard.yml
           )
           fail=0
@@ -52,9 +101,3 @@ jobs:
             fi
           done
           [ "$fail" = 0 ]
-
-      - name: Workspace setup regression
-        shell: bash
-        run: |
-          set -euo pipefail
-          bash 0-meta/lib/new/setup.test.sh
