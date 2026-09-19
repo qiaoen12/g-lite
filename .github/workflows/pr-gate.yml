@@ -25,8 +25,6 @@ jobs:
           required=(
             README.md
             AGENTS.md
-            .gitignore
-            .g-lite-version
             .github/ISSUE_TEMPLATE/task.md
             .github/pull_request_template.md
             .github/workflows/pr-gate.yml
@@ -94,18 +92,6 @@ jobs:
             .cursorignore
             .aiignore
             .github/workflows/main-guard.yml
-            0-meta/tasks
-            0-meta/bin/new
-            0-meta/lib/new
-            2-infra/git-guard
-            2-infra/backup
-            .agents/skills/zdev
-            .agents/skills/zfix
-            .agents/skills/zreview
-            .agents/skills/zsync
-            .agents/skills/zpr
-            .agents/skills/zmerge
-            .agents/skills/z-lib.sh
           )
           fail=0
           for p in "${banned[@]}"; do

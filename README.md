@@ -118,6 +118,8 @@ canonical G-lite 不提供、不维护：
 - Router / Controller / Worker / Reviewer App
 - stack-specific CI framework（研究见 [#34](https://github.com/qiaoen12/g-lite/issues/34)）
 - 编辑器 adapter 与本地 pre-commit 引擎
+- `.gitignore` / 仓库 hygiene（consumer repo 自己负责）
+- `.g-lite-version` 或任何 version state file（身份由 GitHub repo + 未来 tag/release 表达）
 
 这些能力若有价值，放在 consumer repo、独立工具或 GitHub 平台。
 
