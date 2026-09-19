@@ -12,13 +12,13 @@ qiaoen12/g-lite
 = Issue Contract + Actors + templates + Required Check `pr-gate`
 
 qiaoen12/ops-control
-= R5 业务 Pilot（ACTIVE）
+= 真实业务 Pilot（ACTIVE）
 
 qiaoen12/g-lite-harness
-= 历史 E2E 证据（RETIRED；不再是生产依赖）
+= 历史 E2E 证据（RETIRED / ARCHIVED；不再是生产依赖）
 
 qiaoen12/g-lite-p1-lab
-= 历史 PR / Issue 夹具（ARCHIVE）
+= 历史 PR / Issue 夹具（ARCHIVED）
 ```
 
 ## 核心闭环
@@ -28,13 +28,13 @@ Human
   ↓
 Issue Contract
   ↓
-independent approved
+fresh independent approved
   ↓
 ordinary Git branch / worktree
   ↓
 Developer Agent
   ↓
-PR + Required Check `pr-gate`
+PR + consumer Required Check
   ↓
 independent Reviewer
   ↓
@@ -49,14 +49,14 @@ squash merge
 
 | 角色 | GitHub Actor | 做什么 | 不做什么 |
 | --- | --- | --- | --- |
-| Developer | `qiaoen12` | 读 Contract、改范围内的代码、开 PR | 不给自己的 PR 做 Required Review，不 merge |
-| Reviewer | `qiaoen-reviewer` | 读 Contract、授权 freshness、HEAD/diff、Checks，然后 `APPROVE` 或 `REQUEST_CHANGES` | 不 `git push`，不改 git config |
+| Developer | `qiaoen12` | 读当前 Contract、验证授权 freshness、改范围内代码、开 PR | 不给自己的 PR 做 Required Review，不 merge |
+| Reviewer | `qiaoen-reviewer` | 重新读当前 Contract、验证 freshness、HEAD/diff、Checks，然后 `APPROVE` 或 `REQUEST_CHANGES` | 不 `git push`，不改 Developer 工作树 |
 
 Developer Actor ≠ Reviewer Actor。
 
 写或实质修改当前 Contract 的 Actor，不得批准同一份 Contract version。
 
-聊天里的「开始做」不是授权。授权只看 GitHub Issue 上的 `approved`。
+聊天里的「开始做」不是授权。授权只看 GitHub 当前事实。
 
 ## Issue Contract
 
@@ -72,29 +72,82 @@ Contract
 
 两种批准必须分开：
 
-- Issue `approved`：这件事、按这个范围，可以开始做。
-- PR Review `APPROVE`：当前这一个 PR HEAD 的代码，可以合并。
+- Issue `approved`：当前这份 Contract 可以开始做。
+- PR Review `APPROVE`：当前这一个 PR HEAD 的代码可以合并。
 
-GitHub `Dismiss stale reviews` 只处理 PR Review，不会因为 Issue 正文被编辑就自动摘掉 `approved`。Reviewer 必须在正式 Review 前按 [`AGENTS.md`](AGENTS.md) 计算 Contract 授权 freshness。不要把 freshness 写成仓库里的状态文件。
+GitHub `Dismiss stale reviews` 只处理 PR Review，不会因为 Issue 正文被编辑就自动摘掉 `approved`。
+
+因此 Developer 开工前与 Reviewer 正式 Review 前都必须按当前 GitHub 事实实时计算 Contract authorization freshness：
+
+```text
+approved 不存在
+→ INVALID
+
+lastEditedAt == null
+→ FRESH
+
+lastEditedAt <= approvedAt
+→ FRESH
+
+lastEditedAt > approvedAt
+→ STALE AUTHORIZATION
+```
+
+并且：
+
+```text
+写或实质修改当前 Contract version 的 Actor
+≠
+approved Actor
+```
+
+INVALID / STALE / Actor 不独立时都不得继续该角色的下一步动作。人必须重新确认当前 Contract，再由独立 Actor 重新 `approved`。
+
+不要把 freshness 写成仓库状态文件、hash DB、approval cache 或其他第二份状态。
 
 ## 开发
 
-不需要安装 G-lite CLI。用普通 `git` / `gh`。
+不需要安装 G-lite CLI。用普通 `git` / `gh` 或现成 Agent 工作台。
 
-1. 读当前 GitHub Issue 正文，不要用聊天摘要代替。
-2. 确认 Issue 为 OPEN，且 `approved` 真实存在。
-3. Developer 从最新 `origin/main` 创建普通 branch / worktree。
-4. 只改 Contract 允许的范围。
-5. push 并开 PR；PR 用 `Fixes #N` 关联 Issue。
-6. 等待 Required Check `pr-gate`。失败则修本 PR 引入的问题；不改名、不删除、不绕过该 check。
-7. 独立 Reviewer 按 `AGENTS.md` 做 freshness 检查和 GitHub Review。
-8. GitHub squash merge。
+1. 读取当前 GitHub Issue 正文，不要用聊天摘要代替。
+2. 确认 Issue 为 OPEN。
+3. 读取当前 `approved` 及最新 label event、Contract 最近 body edit；确认 authorization FRESH 且批准 Actor 独立。
+4. Developer 从最新 `origin/main` 创建普通 branch / worktree。
+5. 只改 Contract 允许的范围。
+6. push 并开 PR；PR 用 `Fixes #N` 关联 Issue。
+7. 等待 consumer repo 自己的 Required Check。失败则修本 PR 引入的问题，不绕过门。
+8. 独立 Reviewer 重新读取 Contract、fresh approval、当前 HEAD/diff、Checks。
+9. GitHub squash merge。
 
-Codex / Cursor / Claude Code / Grok 只是可替换工作台。
+Codex / Cursor / Claude Code / Grok 等只是可替换工作台。
+
+## G-lite-compatible adoption contract
+
+新仓库采用 G-lite，不靠安装 runtime，而靠「5-file protocol baseline + GitHub 平台设置」。
+
+可以从本仓 GitHub Template 创建，也可以把协议结构人工复制到已有仓库。是否兼容，以仓库实际 durable facts / gates 为准，而不是以“是否从模板创建”为准。
+
+一个 consumer repo 同时满足下面条件，才称为 G-lite-compatible：
+
+1. Issue Contract 至少包含 Goal / Acceptance / Out of scope / Authorization。
+2. GitHub Issue 上存在独立、当前有效的 `approved` 授权事实。
+3. Developer Actor 与 Reviewer Actor 分离。
+4. main 要求通过 PR 合入。
+5. Required approvals >= 1。
+6. stale review dismissal 开启。
+7. Required Check 存在，并检查该 consumer 自己真实需要的测试/构建/安全条件。
+8. merge method 收敛为 squash。
+9. 常规开发路径没有 bypass。
+10. GitHub 平台支持时开启 Secret scanning / Push protection。
+11. 不依赖 G-lite 自有 CLI、Router、Controller、Worker、Reviewer App 或第二份 GitHub 状态。
+
+canonical G-lite 的 Required Check 名为 `pr-gate`；consumer repo 可以使用自己的稳定 check 名，不需要复制 G-lite 的具体 CI 实现。
+
+自动 bootstrap / installer 如果未来有真实需求，应作为独立问题研究；不能为了方便重新把 runtime 塞回 G-lite core。
 
 ## GitHub 门
 
-`main` 由 GitHub Ruleset 保护：
+canonical `qiaoen12/g-lite/main` 由 GitHub Ruleset 保护：
 
 - Require pull request
 - Required approvals = 1
@@ -105,7 +158,7 @@ Codex / Cursor / Claude Code / Grok 只是可替换工作台。
 - force push / branch deletion blocked
 - bypass actors = none
 
-安全边界交给 GitHub Secret scanning / Push protection，以及每个 consumer repo 自己的 stack CI。
+安全边界交给 GitHub Secret scanning / Push protection，以及每个 consumer repo 自己的 stack-specific CI。
 
 ## 明确不负责
 
@@ -119,12 +172,30 @@ canonical G-lite 不提供、不维护：
 - stack-specific CI framework（研究见 [#34](https://github.com/qiaoen12/g-lite/issues/34)）
 - 编辑器 adapter 与本地 pre-commit 引擎
 - `.gitignore` / 仓库 hygiene（consumer repo 自己负责）
-- `.g-lite-version` 或任何 version state file（身份由 GitHub repo + 未来 tag/release 表达）
+- `.g-lite-version` 或任何 version state file（身份由 GitHub repo + tag/release 表达）
 
 这些能力若有价值，放在 consumer repo、独立工具或 GitHub 平台。
 
+## 版本与冻结
+
+`v1.0.0` 发布时的产品形态是 framework/runtime，并声明了至少 15 天 Freeze。
+
+随后人类通过 [#27](https://github.com/qiaoen12/g-lite/issues/27) 明确改变产品方向，提前进入 GitHub-native contraction。这个决策应被理解为对旧 runtime Freeze 的显式 supersede / override，而不是假装旧 Freeze 按原计划完整执行。
+
+R6 将 runtime/framework → protocol 作为 breaking architecture change，目标版本为 `v2.0.0`。
+
+`v2.0.0` 发布后重新开始至少 15 天 Freeze：
+
+- P0 / security blocker 可以立即修复；
+- 非 P0 friction / ergonomics 只记录，不立即扩 canonical core；
+- Router / Controller / Reviewer App / Worker / CLI / stack-specific CI framework 不得借普通修复重新进入 core。
+
+tag / Release 是 GitHub 上的人类发布动作，不由 G-lite runtime 自动生成。
+
 ## Provenance
 
-最初从 `qiaoen12/Project-qiaoen` @ `988ba573c8bc8b841539223e547e82f70719f52c`（Freeze UTC `2026-09-09T10:55:57Z`）按 allowlist 抽出。R0–R5 把 runtime 收缩为 GitHub-native 协议；R5.5 再删掉 workspace / scaffolding / backup / 本地治理。历史实现留在 Git history / tag，不留在当前产品树。
+最初从 `qiaoen12/Project-qiaoen` @ `988ba573c8bc8b841539223e547e82f70719f52c`（Freeze UTC `2026-09-09T10:55:57Z`）按 allowlist 抽出。
 
-本仓库不自己 tag / release。R6 才做版本收口。
+R0–R5 把 runtime 收缩为 GitHub-native 协议；R5.5 再删掉 workspace / scaffolding / backup / 本地治理；R6 只负责授权语义、adoption contract、最终 Pilot 与版本收口。
+
+历史实现留在 Git history / tag / archived repositories，不留在当前产品树。
