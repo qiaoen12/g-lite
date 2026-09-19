@@ -113,9 +113,9 @@ lastEditedAt > approvedAt
 → STALE AUTHORIZATION
 ```
 
-并确认写或实质修改当前 Contract version 的 Actor不是 approved Actor。
+并确认写或实质修改当前 Contract version 的 Actor 不是 approved Actor。
 
-INVALID / STALE / Actor 不独立时：不得 APPROVE PR。必须让人重新确认当前 Contract，然后由未写该版本的独立 Actor重新 `approved`。
+INVALID / STALE / Actor 不独立时：不得 APPROVE PR。必须让人重新确认当前 Contract，然后由未写该版本的独立 Actor 重新 `approved`。
 
 ### 最终报告至少包含
 
