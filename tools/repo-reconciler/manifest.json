@@ -1,0 +1,30 @@
+{
+  "schema_version": 2,
+  "baseline": "v2.6-thin-governance-reconciler",
+  "canonical": {"repo": "qiaoen12/g-lite", "ref": "main"},
+  "bootstrap": [
+    {"path": "AGENTS.md", "source": "tools/repo-reconciler/templates/minimal-consumer-AGENTS.md"},
+    {"path": ".github/ISSUE_TEMPLATE/task.md", "source": ".github/ISSUE_TEMPLATE/task.md"},
+    {"path": ".github/pull_request_template.md", "source": ".github/pull_request_template.md"}
+  ],
+  "protocol": {
+    "semantic": [
+      {"path": "AGENTS.md", "markers": ["Issue Contract", "approved", "g-lite-reviewer[bot]"]},
+      {"path": ".github/ISSUE_TEMPLATE/task.md", "markers": ["## Contract", "### Goal", "### Acceptance", "### Out of scope", "### Authorization"]},
+      {"path": ".github/pull_request_template.md", "markers": ["## Why", "Issue Contract:", "## What", "## Test", "## Unverified / Risks", "Fixes #"]}
+    ]
+  },
+  "required_label": {"name": "approved", "color": "0e8a16", "description": "Independent authorization for the current Issue Contract version"},
+  "reviewer_app": {"id": 5010632, "slug": "g-lite-reviewer", "actor": "g-lite-reviewer[bot]"},
+  "ruleset": {
+    "name": "G-lite main",
+    "required_approvals": 1,
+    "dismiss_stale_reviews_on_push": true,
+    "require_last_push_approval": false,
+    "allowed_merge_methods": ["squash"],
+    "block_deletions": true,
+    "block_non_fast_forward": true,
+    "bypass": "none"
+  },
+  "states": ["PASS", "DRIFT", "PLATFORM_BLOCKER", "PERMISSION_BLOCKER", "UNVERIFIED"]
+}

@@ -4,7 +4,7 @@ GitHub-native AI 协作协议。
 
 GitHub 管事实和门；Agent 干活；G-lite 只规定协作。
 
-本仓库是 canonical 协议源，不是 CLI、不是 workspace framework、不是 backup engine，也不是第二份 GitHub 状态机。
+本仓库是 canonical 协议源，不是任务 runtime、不是 workspace framework、不是 backup engine，也不是第二份 GitHub 状态机。`tools/repo-reconciler/` 是可删除的无状态治理工具，不参与任务生命周期。
 
 ```text
 qiaoen12/g-lite
@@ -50,7 +50,7 @@ squash merge
 | 角色 | GitHub Actor | 做什么 | 不做什么 |
 | --- | --- | --- | --- |
 | Developer | `qiaoen12` | 读当前 Contract、验证授权 freshness、改范围内代码、开 PR | 不给自己的 PR 做 Required Review，不 merge |
-| Reviewer | `qiaoen-reviewer` | 重新读当前 Contract、验证 freshness、HEAD/diff、Checks，然后 `APPROVE` 或 `REQUEST_CHANGES` | 不 `git push`，不改 Developer 工作树 |
+| Reviewer | `g-lite-reviewer[bot]` | 重新读当前 Contract、验证 freshness、HEAD/diff、Checks，然后 `APPROVE` 或 `REQUEST_CHANGES` | 不修改项目文件、不 `git push`、不 merge、不修改 Ruleset 或 workflow |
 
 Developer Actor ≠ Reviewer Actor。
 
@@ -123,15 +123,15 @@ Codex / Cursor / Claude Code / Grok 等只是可替换工作台。
 
 ## G-lite-compatible adoption contract
 
-新仓库采用 G-lite，不靠安装 runtime，而靠「5-file protocol baseline + GitHub 平台设置」。
+新仓库采用 G-lite，不靠安装 runtime，而靠最小 protocol baseline + GitHub 平台设置。
 
-可以从本仓 GitHub Template 创建，也可以把协议结构人工复制到已有仓库。是否兼容，以仓库实际 durable facts / gates 为准，而不是以“是否从模板创建”为准。
+可以从本仓 GitHub Template 创建，也可以由 Agent 将最小协议结构补到已有仓库。是否兼容，以仓库实际 durable facts / gates 为准，而不是以“是否从模板创建”为准。
 
 一个 consumer repo 同时满足下面条件，才称为 G-lite-compatible：
 
 1. Issue Contract 至少包含 Goal / Acceptance / Out of scope / Authorization。
 2. GitHub Issue 上存在独立、当前有效的 `approved` 授权事实。
-3. Developer Actor 与 Reviewer Actor 分离。
+3. Developer Actor 与 `g-lite-reviewer[bot]` 分离，且 Reviewer App prerequisite 可被验证或明确报告 `UNVERIFIED`。
 4. main 要求通过 PR 合入。
 5. Required approvals >= 1。
 6. stale review dismissal 开启。
@@ -139,11 +139,19 @@ Codex / Cursor / Claude Code / Grok 等只是可替换工作台。
 8. merge method 收敛为 squash。
 9. 常规开发路径没有 bypass。
 10. GitHub 平台支持时开启 Secret scanning / Push protection。
-11. 不依赖 G-lite 自有 CLI、Router、Controller、Worker、Reviewer App 或第二份 GitHub 状态。
+11. 不依赖 G-lite 自有 CLI、Router、Controller、Worker 或第二份 GitHub 状态；Reviewer App 只是 GitHub 上的独立协议 Actor。
 
 canonical G-lite 的 Required Check 名为 `pr-gate`；consumer repo 可以使用自己的稳定 check 名，不需要复制 G-lite 的具体 CI 实现。
 
-自动 bootstrap / installer 如果未来有真实需求，应作为独立问题研究；不能为了方便重新把 runtime 塞回 G-lite core。
+v2.6 的 `tools/repo-reconciler/` 提供无状态 `audit`、`plan`、`bootstrap`、`activate`、`apply`、`upgrade`；它只处理稳定、机械、重复的 GitHub 治理事实，bootstrap 只建立最小协议基线，不生成 consumer CI、不接管 consumer 业务文件。
+
+执行顺序是：
+
+```text
+bootstrap → ci-catalog / Agent → real CI SUCCESS → activate --required-check NAME → audit
+```
+
+`NAME` 必须由 Agent 从 GitHub 真实 Check context 提供，不能从 workflow 文件名推断。consumer README、业务文件和 CI 始终由 consumer 与 Agent 自己拥有。
 
 ## GitHub 门
 
@@ -168,7 +176,7 @@ canonical G-lite 不提供、不维护：
 - workspace 八域 / scaffolding
 - backup / restic / restore drill
 - 本地 task / review / merge / approval 状态
-- Router / Controller / Worker / Reviewer App
+- Router / Controller / Worker / Reviewer App runtime（Reviewer App 是外部 GitHub Actor）
 - stack-specific CI framework（研究见 [#34](https://github.com/qiaoen12/g-lite/issues/34)）
 - 编辑器 adapter 与本地 pre-commit 引擎
 - `.gitignore` / 仓库 hygiene（consumer repo 自己负责）

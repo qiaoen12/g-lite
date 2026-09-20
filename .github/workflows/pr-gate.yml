@@ -28,6 +28,9 @@ jobs:
             .github/ISSUE_TEMPLATE/task.md
             .github/pull_request_template.md
             .github/workflows/pr-gate.yml
+            tools/repo-reconciler/manifest.json
+            tools/repo-reconciler/reconcile.sh
+            tools/repo-reconciler/templates/minimal-consumer-AGENTS.md
           )
           fail=0
           for f in "${required[@]}"; do
@@ -71,7 +74,31 @@ jobs:
           need .github/pull_request_template.md "## Test"
           need .github/pull_request_template.md "## Unverified / Risks"
           need .github/pull_request_template.md "Fixes #"
+          need AGENTS.md "g-lite-reviewer[bot]"
+          need tools/repo-reconciler/reconcile.sh "reconcile.sh audit"
+          need tools/repo-reconciler/reconcile.sh "reconcile.sh plan"
+          need tools/repo-reconciler/reconcile.sh "reconcile.sh bootstrap"
+          need tools/repo-reconciler/reconcile.sh "reconcile.sh activate"
+          need tools/repo-reconciler/reconcile.sh "reconcile.sh apply"
+          need tools/repo-reconciler/reconcile.sh "reconcile.sh upgrade"
           [ "$fail" = 0 ]
+
+      - name: Reconciler static validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n tools/repo-reconciler/reconcile.sh
+          jq -e '
+            .schema_version == 2 and
+            (.bootstrap | length == 3) and
+            (.protocol.semantic | length == 3) and
+            (([.bootstrap[].path, .protocol.semantic[].path] | index("README.md")) == null) and
+            (.required_label.name == "approved") and
+            (.reviewer_app.actor == "g-lite-reviewer[bot]") and
+            (.ruleset.allowed_merge_methods == ["squash"]) and
+            (["PASS", "DRIFT", "PLATFORM_BLOCKER", "PERMISSION_BLOCKER", "UNVERIFIED"] - .states | length == 0)
+          ' tools/repo-reconciler/manifest.json >/dev/null
+          tools/repo-reconciler/reconcile.sh self-test
 
       - name: Banned legacy paths
         shell: bash
