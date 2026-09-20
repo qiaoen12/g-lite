@@ -4,6 +4,11 @@ collect_audit() {
   while IFS= read -r entry; do
     path="$(jq -r '.path' <<<"$entry")"
     source="$(jq -r '.source' <<<"$entry")"
+    applies_to="$(jq -r '.applies_to // "all"' <<<"$entry")"
+    if [[ "$applies_to" == "canonical" && "$REPO" != "$CANONICAL_REPO" ]]; then
+      record PASS exact "$path" "not applicable outside canonical repo"
+      continue
+    fi
     target="$tmpdir/target.exact.$RANDOM"
     canon="$tmpdir/canon.exact.$RANDOM"
     target_err="$target.err"; canon_err="$canon.err"
