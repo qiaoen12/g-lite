@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "baseline": "v2.5-repo-reconciler-2026-09-20",
+  "canonical": {
+    "repo": "qiaoen12/g-lite",
+    "ref": "main"
+  },
+  "protocol": {
+    "exact": [
+      {
+        "path": ".github/ISSUE_TEMPLATE/task.md",
+        "source": ".github/ISSUE_TEMPLATE/task.md"
+      },
+      {
+        "path": ".github/pull_request_template.md",
+        "source": ".github/pull_request_template.md"
+      }
+    ],
+    "semantic": [
+      {
+        "path": "README.md",
+        "markers": [
+          "Issue Contract",
+          "approved",
+          "squash merge"
+        ]
+      },
+      {
+        "path": "AGENTS.md",
+        "markers": [
+          "## 开工",
+          "## Reviewer protocol",
+          "lastEditedAt",
+          "Fresh authorization:"
+        ]
+      }
+    ],
+    "live_facts": [
+      "required_label",
+      "reviewer_permission",
+      "merge_policy",
+      "ruleset",
+      "required_check"
+    ]
+  },
+  "required_label": {
+    "name": "approved",
+    "color": "c6f1d3",
+    "description": "Independent authorization for the current Issue Contract version"
+  },
+  "reviewer": {
+    "default": "qiaoen-reviewer",
+    "minimum_permissions": [
+      "push",
+      "write",
+      "maintain",
+      "admin"
+    ]
+  },
+  "merge_policy": {
+    "allow_squash_merge": true,
+    "allow_merge_commit": false,
+    "allow_rebase_merge": false
+  },
+  "ruleset": {
+    "branch": "main",
+    "required_approvals": 1,
+    "dismiss_stale_reviews_on_push": true,
+    "require_last_push_approval": false,
+    "block_deletions": true,
+    "block_non_fast_forward": true,
+    "bypass": "none",
+    "required_check": "argument"
+  },
+  "states": [
+    "PASS",
+    "DRIFT",
+    "PLATFORM_BLOCKER",
+    "PERMISSION_BLOCKER",
+    "UNVERIFIED"
+  ]
+}
