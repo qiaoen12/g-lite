@@ -17,6 +17,12 @@ Usage:
   reconcile.sh upgrade   [--repo OWNER/REPO] [--branch NAME] [--phase bootstrap|active] [--required-check NAME]
   reconcile.sh self-test
 
+All governance commands accept --reviewer-app-verified. Pass it only after
+the Agent independently uses existing g-lite-reviewer credentials to prove
+App ID 5010632, actor g-lite-reviewer[bot], and installation access to the
+target repository. This assertion applies only to this invocation; without
+it reviewer_app is UNVERIFIED (exit 3). The tool does not handle App credentials.
+
 The tool reads GitHub facts with gh, writes only the bootstrap baseline and
 G-lite-owned label/ruleset facts, and keeps all intermediate data ephemeral.
 It never selects, generates, or edits consumer CI.
@@ -37,6 +43,7 @@ esac
 REPO=""
 BRANCH=""
 REQUIRED_CHECK=""
+REVIEWER_APP_VERIFIED=false
 PHASE="active"
 
 while [[ $# -gt 0 ]]; do
@@ -45,6 +52,7 @@ while [[ $# -gt 0 ]]; do
     --branch) BRANCH="${2:?missing --branch value}"; shift 2 ;;
     --phase) PHASE="${2:?missing --phase value}"; shift 2 ;;
     --required-check) REQUIRED_CHECK="${2:?missing --required-check value}"; shift 2 ;;
+    --reviewer-app-verified) REVIEWER_APP_VERIFIED=true; shift ;;
     --manifest) MANIFEST="${2:?missing --manifest value}"; shift 2 ;;
     *) echo "unknown option: $1" >&2; exit 64 ;;
   esac
@@ -253,21 +261,13 @@ audit_label() {
 }
 
 audit_reviewer_app() {
-  local installation="$tmpdir/installation.json" error="$tmpdir/installation.err"
-  local expected_slug expected_id expected_actor actual_slug actual_id
-  expected_slug="$(jq -r '.reviewer_app.slug' "$MANIFEST")"
+  local expected_id expected_actor
   expected_id="$(jq -r '.reviewer_app.id' "$MANIFEST")"
   expected_actor="$(jq -r '.reviewer_app.actor' "$MANIFEST")"
-  if api_get "repos/$REPO/installation" "$installation" "$error"; then
-    actual_slug="$(jq -r '.app_slug // empty' "$installation")"
-    actual_id="$(jq -r '.app_id // empty' "$installation")"
-    if [[ "$actual_slug" == "$expected_slug" && "$actual_id" == "$expected_id" ]]; then
-      record PASS live reviewer_app "installation exposes expected actor $expected_actor"
-    else
-      record UNVERIFIED live reviewer_app "current authenticated installation does not independently prove expected actor $expected_actor"
-    fi
+  if [[ "$REVIEWER_APP_VERIFIED" == true ]]; then
+    record PASS live reviewer_app "Agent asserted external preflight: App $expected_id, actor $expected_actor, installation access to $REPO (this invocation only)"
   else
-    record UNVERIFIED live reviewer_app "cannot verify $expected_actor installation with current GitHub visibility"
+    record UNVERIFIED live reviewer_app "Agent must verify App $expected_id, actor $expected_actor, and installation access to $REPO externally, then pass --reviewer-app-verified"
   fi
 }
 
@@ -411,7 +411,7 @@ plan_from_results() {
       AGENTS.md|.github/ISSUE_TEMPLATE/task.md|.github/pull_request_template.md)
         echo "PLAN: seed missing $key only; existing files require Agent-assisted semantic patch." ;;
       label) echo "PLAN: create the missing approved label; preserve other labels." ;;
-      reviewer_app) echo "PLAN: have the Agent verify the expected Reviewer App installation; no credential manager is used." ;;
+      reviewer_app) echo "PLAN: have the Agent complete external Reviewer App preflight, then pass --reviewer-app-verified for this invocation; no credential manager is used." ;;
       ruleset) echo "PLAN: safely repair the named Ruleset without changing unrelated Rulesets." ;;
       required_check) echo "PLAN: provide the real successful Required Check name; never infer it from a workflow file." ;;
       *) echo "PLAN: $category/$key -> $detail" ;;
@@ -605,6 +605,36 @@ run_upgrade() {
 run_self_test() {
   local fixture="$tmpdir/ruleset.json" mutated="$tmpdir/ruleset-mutated.json"
   local permission_error="$tmpdir/permission.err" platform_error="$tmpdir/platform.err"
+  local reviewer_exit=0
+  # Isolate the assertion from unrelated audit results; never contact GitHub.
+  REPO="self-test/fixture"
+  REVIEWER_APP_VERIFIED=false
+  audit_reviewer_app
+  overall_exit || reviewer_exit=$?
+  if [[ "$reviewer_exit" -ne 3 ]] || ! grep -q $'^UNVERIFIED\tlive\treviewer_app\t' "$RESULTS"; then
+    echo "self-test failed: missing Reviewer App assertion must be UNVERIFIED / exit 3" >&2
+    return 1
+  fi
+  : > "$RESULTS"
+  REVIEWER_APP_VERIFIED=true
+  audit_reviewer_app
+  reviewer_exit=0
+  overall_exit || reviewer_exit=$?
+  if [[ "$reviewer_exit" -ne 0 ]] || ! grep -q $'^PASS\tlive\treviewer_app\t' "$RESULTS"; then
+    echo "self-test failed: Reviewer App assertion must be PASS / exit 0" >&2
+    return 1
+  fi
+  : > "$RESULTS"
+  REVIEWER_APP_VERIFIED=false
+  audit_reviewer_app
+  reviewer_exit=0
+  overall_exit || reviewer_exit=$?
+  if [[ "$reviewer_exit" -ne 3 ]]; then
+    echo "self-test failed: Reviewer App assertion must not persist" >&2
+    return 1
+  fi
+  : > "$RESULTS"
+  echo "self-test: Reviewer App assertion absent => UNVERIFIED / exit 3; present => PASS / exit 0"
   RULESET_NAME="G-lite main"
   BRANCH="main"
   REQUIRED_CHECK="new-check"

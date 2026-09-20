@@ -153,6 +153,8 @@ bootstrap → ci-catalog / Agent → real CI SUCCESS → activate --required-che
 
 `NAME` 必须由 Agent 从 GitHub 真实 Check context 提供，不能从 workflow 文件名推断；`activate` 不检查 default-branch HEAD，也不推断 CI 拓扑。consumer README、业务文件和 CI 始终由 consumer 与 Agent 自己拥有。
 
+所有治理命令接受 `--reviewer-app-verified`：Agent 仅可在外部使用现有 `g-lite-reviewer` 凭据完成真实 preflight，确认 App ID `5010632`、Actor `g-lite-reviewer[bot]` 和 installation 可访问目标仓库后传入。断言仅对本次调用有效，不持久化；有 flag 时 `reviewer_app = PASS`，无 flag 时为 `UNVERIFIED`，整体退出码为 `3`。其他审计项仍独立决定整体结果。工具不读取 private key、不生成 JWT、不管理 installation token，也不使用 Developer 凭据探测 repository installation。
+
 ## GitHub 门
 
 canonical `qiaoen12/g-lite/main` 由 GitHub Ruleset 保护：
