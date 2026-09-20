@@ -99,6 +99,11 @@ jobs:
             (["PASS", "DRIFT", "PLATFORM_BLOCKER", "PERMISSION_BLOCKER", "UNVERIFIED"] - .states | length == 0)
           ' tools/repo-reconciler/manifest.json >/dev/null
           tools/repo-reconciler/reconcile.sh self-test
+          if grep -Fq 'check_success_for_branch' tools/repo-reconciler/reconcile.sh; then
+            echo 'activate must not enforce default-branch CI success'
+            exit 1
+          fi
+          grep -Fq 'record_write_failure' tools/repo-reconciler/reconcile.sh
 
       - name: Banned legacy paths
         shell: bash

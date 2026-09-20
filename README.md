@@ -151,7 +151,7 @@ v2.6 的 `tools/repo-reconciler/` 提供无状态 `audit`、`plan`、`bootstrap`
 bootstrap → ci-catalog / Agent → real CI SUCCESS → activate --required-check NAME → audit
 ```
 
-`NAME` 必须由 Agent 从 GitHub 真实 Check context 提供，不能从 workflow 文件名推断。consumer README、业务文件和 CI 始终由 consumer 与 Agent 自己拥有。
+`NAME` 必须由 Agent 从 GitHub 真实 Check context 提供，不能从 workflow 文件名推断；`activate` 不检查 default-branch HEAD，也不推断 CI 拓扑。consumer README、业务文件和 CI 始终由 consumer 与 Agent 自己拥有。
 
 ## GitHub 门
 

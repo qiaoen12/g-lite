@@ -101,10 +101,24 @@ stale_checkout_guard
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 RESULTS="$tmpdir/results.tsv"
+WRITE_RESULTS="$tmpdir/write-results.tsv"
 : > "$RESULTS"
+: > "$WRITE_RESULTS"
 
 record() {
   printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" >> "$RESULTS"
+}
+
+record_write_failure() {
+  local key="$1" error="$2" state detail message
+  message="$(cat "$error" 2>/dev/null || true)"
+  state="$(api_error_state "$message")"
+  case "$state" in
+    PERMISSION_BLOCKER) detail="write denied by GitHub permissions" ;;
+    PLATFORM_BLOCKER) detail="write unsupported by the GitHub platform/plan" ;;
+    *) detail="write result could not be verified" ;;
+  esac
+  printf '%s\twrite\t%s\t%s\n' "$state" "$key" "$detail" >> "$WRITE_RESULTS"
 }
 
 api_get() {
@@ -250,7 +264,7 @@ audit_reviewer_app() {
     if [[ "$actual_slug" == "$expected_slug" && "$actual_id" == "$expected_id" ]]; then
       record PASS live reviewer_app "installation exposes expected actor $expected_actor"
     else
-      record DRIFT live reviewer_app "expected $expected_slug/$expected_id, found ${actual_slug:-unknown}/${actual_id:-unknown}"
+      record UNVERIFIED live reviewer_app "current authenticated installation does not independently prove expected actor $expected_actor"
     fi
   else
     record UNVERIFIED live reviewer_app "cannot verify $expected_actor installation with current GitHub visibility"
@@ -293,7 +307,7 @@ ruleset_check_is_desired() {
   jq -e --arg check "$REQUIRED_CHECK" '
     any(.rules[]?;
       .type == "required_status_checks" and
-      any(.parameters.required_status_checks[]?; .context == $check)
+      ((.parameters.required_status_checks // []) | map(.context) == [$check])
     )
   ' "$file" >/dev/null
 }
@@ -371,6 +385,9 @@ auditor() {
   audit_reviewer_app
   RULESET_NAME="$(jq -r '.ruleset.name' "$MANIFEST")"
   audit_ruleset
+  if [[ -s "$WRITE_RESULTS" ]]; then
+    cat "$WRITE_RESULTS" >> "$RESULTS"
+  fi
 }
 
 print_results() {
@@ -379,8 +396,8 @@ print_results() {
 }
 
 overall_exit() {
-  if grep -q $'^DRIFT\t' "$RESULTS"; then return 2; fi
   if grep -Eq $'^(PLATFORM_BLOCKER|PERMISSION_BLOCKER|UNVERIFIED)\t' "$RESULTS"; then return 3; fi
+  if grep -q $'^DRIFT\t' "$RESULTS"; then return 2; fi
   return 0
 }
 
@@ -438,12 +455,14 @@ bootstrap_file() {
     echo "BOOTSTRAP: preserved $path after concurrent creation"
     return 0
   fi
+  record_write_failure "$path" "$error"
   echo "cannot seed $REPO:$path: $(cat "$error")" >&2
   return 1
 }
 
 ensure_label() {
   local labels="$tmpdir/apply-labels.json" error="$tmpdir/apply-labels.err"
+  local write_error="$tmpdir/apply-label-write.err"
   local name color description
   name="$(jq -r '.required_label.name' "$MANIFEST")"
   color="$(jq -r '.required_label.color' "$MANIFEST")"
@@ -461,34 +480,14 @@ ensure_label() {
     echo "APPLY: created label $name"
     return 0
   fi
+  cp "$error" "$write_error"
   if api_get "repos/$REPO/labels?per_page=100" "$labels" "$error" &&
     jq -e --arg name "$name" '.[] | select(.name == $name)' "$labels" >/dev/null; then
     echo "APPLY: label $name already exists"
     return 0
   fi
+  record_write_failure label "$write_error"
   echo "cannot ensure label $name: $(cat "$error")" >&2
-  return 1
-}
-
-check_success_for_branch() {
-  local sha="$tmpdir/branch-sha" sha_error="$tmpdir/branch-sha.err"
-  local checks="$tmpdir/checks.json" checks_error="$tmpdir/checks.err"
-  local status="$tmpdir/status.json" status_error="$tmpdir/status.err"
-  if ! api_get "repos/$REPO/commits/$BRANCH" "$sha" "$sha_error"; then
-    echo "UNVERIFIED: cannot resolve $REPO/$BRANCH" >&2
-    return 1
-  fi
-  sha="$(jq -r '.sha // empty' "$sha")"
-  [[ -n "$sha" ]] || { echo "UNVERIFIED: branch has no commit SHA" >&2; return 1; }
-  if api_get "repos/$REPO/commits/$sha/check-runs?per_page=100" "$checks" "$checks_error" &&
-    jq -e --arg check "$REQUIRED_CHECK" '.check_runs[]? | select(.name == $check and .conclusion == "success")' "$checks" >/dev/null; then
-    return 0
-  fi
-  if api_get "repos/$REPO/commits/$sha/status" "$status" "$status_error" &&
-    jq -e --arg check "$REQUIRED_CHECK" '.statuses[]? | select(.context == $check and .state == "success")' "$status" >/dev/null; then
-    return 0
-  fi
-  echo "UNVERIFIED: no real SUCCESS for '$REQUIRED_CHECK' on $REPO/$BRANCH" >&2
   return 1
 }
 
@@ -498,8 +497,7 @@ make_ruleset_payload() {
     jq --arg name "$RULESET_NAME" --arg branch "$BRANCH" --arg check "$REQUIRED_CHECK" '
       . as $current |
       ($current.rules // []) as $rules |
-      ([ $rules[]? | select(.type == "required_status_checks") | .parameters.required_status_checks[]? ] + [{context:$check}])
-      | unique_by(.context) as $checks |
+      ([{context:$check}]) as $checks |
       ([ $rules[]? | select(.type == "pull_request") | .parameters ] | first // {}) as $pr |
       ([ $rules[]? | select(.type == "required_status_checks") | .parameters ] | first // {}) as $status |
       {
@@ -536,9 +534,6 @@ make_ruleset_payload() {
 
 ensure_ruleset() {
   RULESET_NAME="$(jq -r '.ruleset.name' "$MANIFEST")"
-  if ! check_success_for_branch; then
-    return 1
-  fi
   if ! load_named_ruleset; then
     echo "cannot inspect Rulesets: $(cat "$RULESET_ERROR")" >&2
     return 1
@@ -560,6 +555,7 @@ ensure_ruleset() {
       return 0
     fi
   fi
+  record_write_failure ruleset "$error"
   echo "cannot write Ruleset '$RULESET_NAME': $(cat "$error")" >&2
   return 1
 }
@@ -608,21 +604,44 @@ run_upgrade() {
 
 run_self_test() {
   local fixture="$tmpdir/ruleset.json" mutated="$tmpdir/ruleset-mutated.json"
+  local permission_error="$tmpdir/permission.err" platform_error="$tmpdir/platform.err"
   RULESET_NAME="G-lite main"
   BRANCH="main"
-  REQUIRED_CHECK="stable-check"
+  REQUIRED_CHECK="new-check"
   cat > "$fixture" <<'JSON'
-{"name":"G-lite main","target":"branch","enforcement":"active","bypass_actors":[],"conditions":{"ref_name":{"include":["refs/heads/main"]}},"rules":[{"type":"deletion"},{"type":"non_fast_forward"},{"type":"pull_request","parameters":{"required_approving_review_count":1,"dismiss_stale_reviews_on_push":true,"require_last_push_approval":false,"allowed_merge_methods":["squash"]}},{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"stable-check"}]}}]}
+{"name":"G-lite main","target":"branch","enforcement":"active","bypass_actors":[],"conditions":{"ref_name":{"include":["refs/heads/main"]}},"rules":[{"type":"deletion"},{"type":"non_fast_forward"},{"type":"pull_request","parameters":{"required_approving_review_count":1,"dismiss_stale_reviews_on_push":true,"require_last_push_approval":false,"allowed_merge_methods":["squash"]}},{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"old-check"}]}}]}
 JSON
   ruleset_governance_is_desired "$fixture"
-  ruleset_check_is_desired "$fixture"
   make_ruleset_payload "$fixture" "$tmpdir/payload-existing.json"
-  jq -e '.rules | any(.[]; .type == "required_status_checks" and any(.parameters.required_status_checks[]; .context == "stable-check"))' "$tmpdir/payload-existing.json" >/dev/null
+  if ! jq -e '
+    [.rules[]? | select(.type == "required_status_checks") | .parameters.required_status_checks[]?.context] == ["new-check"]
+  ' "$tmpdir/payload-existing.json" >/dev/null; then
+    echo "self-test failed: new Required Check was not the sole target" >&2
+    return 1
+  fi
+  if jq -e '.rules[]? | select(.type == "required_status_checks") | .parameters.required_status_checks[]?.context == "old-check"' "$tmpdir/payload-existing.json" >/dev/null; then
+    echo "self-test failed: stale Required Check survived replacement" >&2
+    return 1
+  fi
+  ruleset_check_is_desired "$tmpdir/payload-existing.json"
   make_ruleset_payload "" "$tmpdir/payload-new.json"
-  jq -e '.rules | any(.[]; .type == "required_status_checks")' "$tmpdir/payload-new.json" >/dev/null
+  ruleset_check_is_desired "$tmpdir/payload-new.json"
   jq '.rules |= map(if .type == "required_status_checks" then .parameters.required_status_checks = [] else . end)' "$fixture" > "$mutated"
   if ruleset_check_is_desired "$mutated"; then
     echo "self-test failed: missing Required Check was accepted" >&2
+    return 1
+  fi
+
+  printf 'HTTP 403 Forbidden\n' > "$permission_error"
+  record_write_failure simulated "$permission_error"
+  if ! grep -q $'^PERMISSION_BLOCKER\twrite\tsimulated\t' "$WRITE_RESULTS"; then
+    echo "self-test failed: HTTP 403 was not a PERMISSION_BLOCKER" >&2
+    return 1
+  fi
+  printf 'feature is not available for private repositories\n' > "$platform_error"
+  record_write_failure simulated-platform "$platform_error"
+  if ! grep -q $'^PLATFORM_BLOCKER\twrite\tsimulated-platform\t' "$WRITE_RESULTS"; then
+    echo "self-test failed: platform write failure was not a PLATFORM_BLOCKER" >&2
     return 1
   fi
   echo "self-test: PASS"
