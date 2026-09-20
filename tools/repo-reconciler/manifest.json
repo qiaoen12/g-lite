@@ -8,7 +8,7 @@
     {"path": ".github/pull_request_template.md", "source": ".github/pull_request_template.md"}
   ],
   "protocol": {
-    "semantic": [
+    "markers": [
       {"path": "AGENTS.md", "markers": ["Issue Contract", "approved", "g-lite-reviewer[bot]"]},
       {"path": ".github/ISSUE_TEMPLATE/task.md", "markers": ["## Contract", "### Goal", "### Acceptance", "### Out of scope", "### Authorization"]},
       {"path": ".github/pull_request_template.md", "markers": ["## Why", "Issue Contract:", "## What", "## Test", "## Unverified / Risks", "Fixes #"]}

@@ -155,7 +155,7 @@ consumer 的 Required Check 应检查自己的真实技术栈风险，不要求�
 - `bootstrap` 只建立缺失的最小 consumer 协议文件、`approved` label，并报告 Reviewer App prerequisite；不接管项目文件或 CI。
 - `activate --required-check NAME` 只接受 Agent 提供的真实成功 Check name，建立或校准 G-lite-owned Ruleset。
 - `apply` 幂等执行安全基线与 Ruleset 修复；`upgrade` 只读输出可审查差异。
-- 成熟仓的现有 Agent 指令只做 semantic audit，由 Agent 决定补丁；工具不整文件覆盖。
+- 工具只检查 required protocol markers，作为 deterministic mechanical baseline；成熟仓的实际语义判断与补丁由 Agent 负责，工具不整文件覆盖。
 - 工具不保存 GitHub durable facts，不管理凭据，不创建 consumer CI。
 
 ## 禁止重建

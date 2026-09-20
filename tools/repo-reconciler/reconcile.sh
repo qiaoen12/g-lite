@@ -42,6 +42,7 @@ esac
 
 REPO=""
 BRANCH=""
+DEFAULT_BRANCH=""
 REQUIRED_CHECK=""
 REVIEWER_APP_VERIFIED=false
 PHASE="active"
@@ -81,8 +82,8 @@ done
 jq -e '
   .schema_version == 2 and
   (.bootstrap | length == 3) and
-  (.protocol.semantic | length == 3) and
-  (([.bootstrap[].path, .protocol.semantic[].path] | index("README.md")) == null) and
+  (.protocol.markers | length == 3) and
+  (([.bootstrap[].path, .protocol.markers[].path] | index("README.md")) == null) and
   (.required_label.name == "approved") and
   (.reviewer_app.slug == "g-lite-reviewer") and
   (.reviewer_app.actor == "g-lite-reviewer[bot]") and
@@ -179,8 +180,9 @@ load_repository() {
     echo "cannot read repository $REPO: $(cat "$error")" >&2
     exit 69
   fi
+  DEFAULT_BRANCH="$(jq -r '.default_branch // empty' "$repository")"
   if [[ -z "$BRANCH" ]]; then
-    BRANCH="$(jq -r '.default_branch // empty' "$repository")"
+    BRANCH="$DEFAULT_BRANCH"
     [[ -n "$BRANCH" ]] || BRANCH="main"
   fi
   [[ "$BRANCH" =~ ^[^[:space:]]+$ ]] || { echo "invalid branch name" >&2; exit 64; }
@@ -213,23 +215,23 @@ source_file_for() {
   jq -r --arg path "$path" '.bootstrap[] | select(.path == $path) | .source' "$MANIFEST"
 }
 
-semantic_audit() {
+marker_audit() {
   local entry path target error missing marker
   while IFS= read -r entry; do
     path="$(jq -r '.path' <<<"$entry")"
-    target="$tmpdir/semantic-$RANDOM.json"
+    target="$tmpdir/markers-$RANDOM.json"
     error="$target.err"
     if ! contents_get "$path" "$target" "$error"; then
       if is_missing_error "$error"; then
-        record DRIFT semantic "$path" "missing"
+        record DRIFT markers "$path" "missing"
       else
-        record "$(api_error_state "$(cat "$error")")" semantic "$path" "cannot read target file"
+        record "$(api_error_state "$(cat "$error")")" markers "$path" "cannot read target file"
       fi
       continue
     fi
     local text="$target.txt"
     if ! remote_file_text "$target" "$text"; then
-      record UNVERIFIED semantic "$path" "target is not a readable file"
+      record UNVERIFIED markers "$path" "target is not a readable file"
       continue
     fi
     missing=()
@@ -240,11 +242,11 @@ semantic_audit() {
       grep -Fq -- "$marker" "$text" || missing+=("$marker")
     done < <(jq -r '.markers[]' <<<"$entry")
     if [[ ${#missing[@]} -eq 0 ]]; then
-      record PASS semantic "$path" "required protocol semantics present"
+      record PASS markers "$path" "required protocol markers present (mechanical baseline only)"
     else
-      record DRIFT semantic "$path" "missing markers: ${missing[*]}"
+      record DRIFT markers "$path" "missing markers: ${missing[*]}"
     fi
-  done < <(jq -c '.protocol.semantic[]' "$MANIFEST")
+  done < <(jq -c '.protocol.markers[]' "$MANIFEST")
 }
 
 audit_label() {
@@ -273,17 +275,27 @@ audit_reviewer_app() {
 
 ruleset_applies_to_branch() {
   local file="$1"
-  jq -e --arg branch "$BRANCH" '
+  # Only explicit refs and GitHub special selectors are resolved. Unknown
+  # exclusion patterns fail closed; this is not a general pattern engine.
+  jq -e --arg branch "$BRANCH" --arg default "$DEFAULT_BRANCH" '
+    def matches_target:
+      . == "~ALL" or (. == "~DEFAULT_BRANCH" and $branch == $default) or
+      . == ("refs/heads/" + $branch) or . == $branch;
+    def known_literal:
+      type == "string" and
+      (contains("*") or contains("?") or contains("[") or contains("\\") or startswith("~") | not);
     .target == "branch" and
-    ((.conditions.ref_name.include // []) | any(
-      . == "~ALL" or . == "~DEFAULT_BRANCH" or
-      . == ("refs/heads/" + $branch) or . == $branch
+    ((.conditions.ref_name.include // []) | any(matches_target)) and
+    ((.conditions.ref_name.exclude // []) | all(
+      (matches_target | not) and
+      (known_literal or (. == "~DEFAULT_BRANCH" and $default != ""))
     ))
   ' "$file" >/dev/null
 }
 
 ruleset_governance_is_desired() {
   local file="$1"
+  ruleset_applies_to_branch "$file" || return 1
   jq -e --arg name "$RULESET_NAME" --arg branch "$BRANCH" '
     .name == $name and
     .target == "branch" and
@@ -363,7 +375,7 @@ audit_ruleset() {
   fi
   detail="$RULESET_FILE"
   if ! ruleset_applies_to_branch "$detail"; then
-    record DRIFT live ruleset "named Ruleset '$RULESET_NAME' does not apply to $BRANCH"
+    record DRIFT live ruleset "named Ruleset '$RULESET_NAME' does not provably cover $BRANCH without exclusion"
   elif ruleset_governance_is_desired "$detail"; then
     record PASS live ruleset "PR, one approval, stale dismissal, squash-only, deletion/non-fast-forward block, and no bypass"
   else
@@ -380,7 +392,7 @@ audit_ruleset() {
 
 auditor() {
   : > "$RESULTS"
-  semantic_audit
+  marker_audit
   audit_label
   audit_reviewer_app
   RULESET_NAME="$(jq -r '.ruleset.name' "$MANIFEST")"
@@ -419,6 +431,19 @@ plan_from_results() {
   done < "$RESULTS"
 }
 
+empty_repo_initial_write_allowed() {
+  local repository="$tmpdir/initial-repository.json" facts="$tmpdir/initial-empty.json"
+  local error="$tmpdir/initial-empty.err"
+  # A missing file/branch, 404, or failed probe is not evidence of an empty repo.
+  # Refresh before each write; never reuse the initial empty state after a commit.
+  api_get "repos/$REPO" "$repository" "$error" || return 1
+  jq -e --arg branch "$BRANCH" '.default_branch == $branch' "$repository" >/dev/null || return 1
+  gh api graphql -f owner="${REPO%%/*}" -f name="${REPO#*/}" \
+    -f query='query($owner:String!,$name:String!){repository(owner:$owner,name:$name){isEmpty}}' \
+    >"$facts" 2>"$error" || return 1
+  jq -e '(.errors // [] | length == 0) and .data.repository.isEmpty == true' "$facts" >/dev/null
+}
+
 bootstrap_file() {
   local path="$1" source source_file state error encoded
   source="$(source_file_for "$path")"
@@ -439,15 +464,14 @@ bootstrap_file() {
   fi
   encoded="$(encode_file "$source_file")"
   error="$tmpdir/bootstrap-upload-$RANDOM.err"
-  if gh api --method PUT "repos/$REPO/contents/$path" \
-    -f message="chore: bootstrap G-lite protocol baseline" \
-    -f content="$encoded" -f branch="$BRANCH" >/dev/null 2>"$error"; then
-    echo "BOOTSTRAP: seeded $path"
-    return 0
+  local branch_args=(-f "branch=$BRANCH")
+  if empty_repo_initial_write_allowed; then
+    # Explicit first-commit initialization, never a retry after a PUT failure.
+    branch_args=()
   fi
   if gh api --method PUT "repos/$REPO/contents/$path" \
     -f message="chore: bootstrap G-lite protocol baseline" \
-    -f content="$encoded" >/dev/null 2>"$error"; then
+    -f content="$encoded" ${branch_args[@]+"${branch_args[@]}"} >/dev/null 2>"$error"; then
     echo "BOOTSTRAP: seeded $path"
     return 0
   fi
@@ -602,6 +626,85 @@ run_upgrade() {
   overall_exit || return $?
 }
 
+bootstrap_target_self_test() (
+  # Isolated mock boundary: exercise real bootstrap_file without GitHub writes.
+  local scenario mock_empty=true mock_default=main mock_probe=ok mock_write=ok
+  local calls="$tmpdir/bootstrap-calls" mock_exists=false mock_concurrent=false
+  local mock_metadata=ok
+  REPO="self-test/fixture"
+  BRANCH="main"
+  remote_file_state() { [[ "$mock_exists" == true ]]; }
+  api_get() {
+    [[ "$mock_metadata" == ok ]] || return 1
+    jq -n --arg branch "$mock_default" '{default_branch:$branch}' > "$2"
+  }
+  gh() {
+    if [[ "$1 $2" == "api graphql" ]]; then
+      case "$mock_probe" in
+        ok) jq -n --argjson empty "$mock_empty" '{data:{repository:{isEmpty:$empty}}}' ;;
+        unknown) printf '{"data":{"repository":null}}\n' ;;
+        *) printf 'HTTP %s\n' "$mock_probe" >&2; return 1 ;;
+      esac
+      return
+    fi
+    [[ "$1 $2 $3" == "api --method PUT" ]] || return 99
+    local arg target="<initial-default>"
+    for arg in "$@"; do
+      case "$arg" in branch=*) target="${arg#branch=}" ;; esac
+    done
+    printf '%s\n' "$target" >> "$calls"
+    if [[ "$mock_write" != ok ]]; then
+      [[ "$mock_concurrent" != true ]] || mock_exists=true
+      printf 'HTTP 403 Forbidden\n' >&2
+      return 1
+    fi
+    mock_empty=false
+  }
+
+  : > "$calls"
+  bootstrap_file AGENTS.md >/dev/null
+  bootstrap_file .github/ISSUE_TEMPLATE/task.md >/dev/null
+  [[ "$(cat "$calls")" == $'<initial-default>\nmain' ]] || {
+    echo "self-test failed: only the first proven-empty write may omit branch" >&2; return 1;
+  }
+
+  for scenario in nonempty unknown 403 404 different-default metadata-failure; do
+    mock_empty=true mock_default=main mock_probe=ok mock_metadata=ok
+    case "$scenario" in
+      nonempty) mock_empty=false ;;
+      unknown|403|404) mock_probe="$scenario" ;;
+      different-default) mock_default=develop ;;
+      metadata-failure) mock_metadata=failed ;;
+    esac
+    : > "$calls"
+    bootstrap_file AGENTS.md >/dev/null
+    [[ "$(cat "$calls")" == main ]] || {
+      echo "self-test failed: $scenario must retain the explicit target" >&2; return 1;
+    }
+  done
+
+  mock_metadata=ok mock_default=main mock_probe=ok mock_write=fail
+  for mock_empty in false true; do
+    : > "$calls"
+    : > "$WRITE_RESULTS"
+    if bootstrap_file AGENTS.md > /dev/null 2> "$tmpdir/bootstrap-test.err"; then
+      echo "self-test failed: denied bootstrap was accepted" >&2; return 1
+    fi
+    [[ "$(wc -l < "$calls" | tr -d ' ')" == 1 ]] || {
+      echo "self-test failed: failed PUT was retried" >&2; return 1;
+    }
+    grep -q $'^PERMISSION_BLOCKER\twrite\tAGENTS.md\t' "$WRITE_RESULTS" || return 1
+  done
+  # An existing file is preserved, including concurrent same-target creation.
+  : > "$calls"
+  : > "$WRITE_RESULTS"
+  mock_empty=false mock_concurrent=true
+  bootstrap_file AGENTS.md >/dev/null
+  bootstrap_file AGENTS.md >/dev/null
+  [[ "$(cat "$calls")" == main && ! -s "$WRITE_RESULTS" ]] || return 1
+  echo "self-test: empty-repo-only initial write / same target or fail: PASS"
+)
+
 run_self_test() {
   local fixture="$tmpdir/ruleset.json" mutated="$tmpdir/ruleset-mutated.json"
   local permission_error="$tmpdir/permission.err" platform_error="$tmpdir/platform.err"
@@ -637,11 +740,32 @@ run_self_test() {
   echo "self-test: Reviewer App assertion absent => UNVERIFIED / exit 3; present => PASS / exit 0"
   RULESET_NAME="G-lite main"
   BRANCH="main"
+  DEFAULT_BRANCH="main"
   REQUIRED_CHECK="new-check"
   cat > "$fixture" <<'JSON'
 {"name":"G-lite main","target":"branch","enforcement":"active","bypass_actors":[],"conditions":{"ref_name":{"include":["refs/heads/main"]}},"rules":[{"type":"deletion"},{"type":"non_fast_forward"},{"type":"pull_request","parameters":{"required_approving_review_count":1,"dismiss_stale_reviews_on_push":true,"require_last_push_approval":false,"allowed_merge_methods":["squash"]}},{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"old-check"}]}}]}
 JSON
   ruleset_governance_is_desired "$fixture"
+  local exclusion
+  for exclusion in refs/heads/main main '~ALL' '~DEFAULT_BRANCH' 'refs/heads/*' 'refs/heads/m*'; do
+    jq --arg exclusion "$exclusion" '.conditions.ref_name.exclude = [$exclusion]' "$fixture" > "$mutated"
+    if ruleset_applies_to_branch "$mutated" || ruleset_governance_is_desired "$mutated"; then
+      echo "self-test failed: exclusion $exclusion was accepted" >&2
+      return 1
+    fi
+  done
+  jq '.conditions.ref_name.exclude = ["refs/heads/develop"]' "$fixture" > "$mutated"
+  ruleset_governance_is_desired "$mutated"
+  jq '.conditions.ref_name.include = ["~DEFAULT_BRANCH"]' "$fixture" > "$mutated"
+  ruleset_applies_to_branch "$mutated"
+  DEFAULT_BRANCH="develop"
+  if ruleset_applies_to_branch "$mutated"; then
+    echo "self-test failed: default-branch selector accepted a non-default target" >&2
+    return 1
+  fi
+  DEFAULT_BRANCH="main"
+  echo "self-test: include main + exclude main => not desired; exclude negative tests: PASS"
+  bootstrap_target_self_test
   make_ruleset_payload "$fixture" "$tmpdir/payload-existing.json"
   if ! jq -e '
     [.rules[]? | select(.type == "required_status_checks") | .parameters.required_status_checks[]?.context] == ["new-check"]

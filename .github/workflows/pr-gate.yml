@@ -91,8 +91,8 @@ jobs:
           jq -e '
             .schema_version == 2 and
             (.bootstrap | length == 3) and
-            (.protocol.semantic | length == 3) and
-            (([.bootstrap[].path, .protocol.semantic[].path] | index("README.md")) == null) and
+            (.protocol.markers | length == 3) and
+            (([.bootstrap[].path, .protocol.markers[].path] | index("README.md")) == null) and
             (.required_label.name == "approved") and
             (.reviewer_app.actor == "g-lite-reviewer[bot]") and
             (.ruleset.allowed_merge_methods == ["squash"]) and
