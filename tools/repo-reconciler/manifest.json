@@ -1,67 +1,22 @@
 {
   "schema_version": 1,
   "baseline": "v2.5-repo-reconciler-2026-09-20",
-  "canonical": {
-    "repo": "qiaoen12/g-lite",
-    "ref": "main"
-  },
+  "canonical": {"repo": "qiaoen12/g-lite", "ref": "main"},
   "protocol": {
     "exact": [
-      {
-        "path": ".github/ISSUE_TEMPLATE/task.md",
-        "source": ".github/ISSUE_TEMPLATE/task.md"
-      },
-      {
-        "path": ".github/pull_request_template.md",
-        "source": ".github/pull_request_template.md"
-      }
+      {"path": ".github/workflows/pr-gate.yml", "source": ".github/workflows/pr-gate.yml", "applies_to": "canonical"}
     ],
     "semantic": [
-      {
-        "path": "README.md",
-        "markers": [
-          "Issue Contract",
-          "approved",
-          "squash merge"
-        ]
-      },
-      {
-        "path": "AGENTS.md",
-        "markers": [
-          "## 开工",
-          "## Reviewer protocol",
-          "lastEditedAt",
-          "Fresh authorization:"
-        ]
-      }
+      {"path": "README.md", "markers": ["approved", "squash"]},
+      {"path": "AGENTS.md", "markers": ["approved", "Reviewer", "lastEditedAt"]},
+      {"path": ".github/ISSUE_TEMPLATE/task.md", "markers": ["## Contract", "### Goal", "### Acceptance", "### Out of scope", "### Authorization"]},
+      {"path": ".github/pull_request_template.md", "markers": ["## Why", "Issue Contract:", "## What", "## Test", "## Unverified / Risks", "Fixes #"]}
     ],
-    "live_facts": [
-      "required_label",
-      "reviewer_permission",
-      "merge_policy",
-      "ruleset",
-      "required_check"
-    ]
+    "live_facts": ["required_label", "reviewer_permission", "merge_policy", "ruleset", "required_check"]
   },
-  "required_label": {
-    "name": "approved",
-    "color": "c6f1d3",
-    "description": "Independent authorization for the current Issue Contract version"
-  },
-  "reviewer": {
-    "default": "qiaoen-reviewer",
-    "minimum_permissions": [
-      "push",
-      "write",
-      "maintain",
-      "admin"
-    ]
-  },
-  "merge_policy": {
-    "allow_squash_merge": true,
-    "allow_merge_commit": false,
-    "allow_rebase_merge": false
-  },
+  "required_label": {"name": "approved", "color": "c6f1d3", "description": "Independent authorization for the current Issue Contract version"},
+  "reviewer": {"default": "qiaoen-reviewer", "minimum_permissions": ["push", "write", "maintain", "admin"]},
+  "merge_policy": {"allow_squash_merge": true, "allow_merge_commit": false, "allow_rebase_merge": false},
   "ruleset": {
     "branch": "main",
     "required_approvals": 1,
@@ -72,11 +27,5 @@
     "bypass": "none",
     "required_check": "argument"
   },
-  "states": [
-    "PASS",
-    "DRIFT",
-    "PLATFORM_BLOCKER",
-    "PERMISSION_BLOCKER",
-    "UNVERIFIED"
-  ]
+  "states": ["PASS", "DRIFT", "PLATFORM_BLOCKER", "PERMISSION_BLOCKER", "UNVERIFIED"]
 }
