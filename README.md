@@ -4,7 +4,7 @@ GitHub-native AI 协作协议。
 
 GitHub 管事实和门；Agent 干活；G-lite 只规定协作。
 
-本仓库是 canonical 协议源，不是 CLI、不是 workspace framework、不是 backup engine，也不是第二份 GitHub 状态机。
+本仓库是 canonical 协议源，不是 task runtime、不是 workspace framework、不是 backup engine，也不是第二份 GitHub 状态机。`tools/repo-reconciler/` 是可删除的无状态 companion tool，不参与任务生命周期。
 
 ```text
 qiaoen12/g-lite
@@ -143,7 +143,27 @@ Codex / Cursor / Claude Code / Grok 等只是可替换工作台。
 
 canonical G-lite 的 Required Check 名为 `pr-gate`；consumer repo 可以使用自己的稳定 check 名，不需要复制 G-lite 的具体 CI 实现。
 
-自动 bootstrap / installer 如果未来有真实需求，应作为独立问题研究；不能为了方便重新把 runtime 塞回 G-lite core。
+### Thin Repo Reconciler
+
+v2.5 增加 `tools/repo-reconciler/`，只减少仓库接入和治理漂移的重复操作：
+
+```text
+audit → plan → apply → audit
+                ↘ upgrade（只读升级审查）
+```
+
+它只校准 protocol files / semantic markers、`approved` label、Reviewer permission、squash merge policy、Ruleset 与 Required Check。它不创建业务 Issue，不调度 Agent，不保存 task/review/merge/approval 状态，也不接管 consumer CI。
+
+首次接入使用 Genesis 两阶段：
+
+1. `--phase bootstrap`：先建立协议基线、label、Reviewer、squash-only；此时故意不要求尚未出现的 Required Check。
+2. consumer 先产生一次真实 CI success。
+3. `--phase active --check <稳定 check name>`：再审计/激活 Ruleset 与 Required Check。
+4. 最终 `audit` 全部 PASS，仓库才称为 G-lite ACTIVE。
+
+`audit` / `plan` / `upgrade` 只读；`apply` 默认不删 labels、不覆盖 README / AGENTS、不改已有 Ruleset、不 commit、不 push。Reviewer 提权、Exact 文件覆盖、创建新 Ruleset 都需要显式开关。
+
+删除整个 `tools/repo-reconciler/` 后，上面的核心闭环仍必须完整。
 
 ## GitHub 门
 
@@ -184,7 +204,7 @@ canonical G-lite 不提供、不维护：
 
 R6 将 runtime/framework → protocol 作为 breaking architecture change，目标版本为 `v2.0.0`。
 
-`v2.0.0` 发布后重新开始至少 15 天 Freeze：
+`v2.0.0` 发布后的 Freeze 在 2026-09-20 被人类仅为 [#38](https://github.com/qiaoen12/g-lite/issues/38) 的 Thin Repo Reconciler / Genesis Bootstrap 一次性 override。#38 完成并合并后，从该最终 main SHA 重新开始至少 15 天 Freeze：
 
 - P0 / security blocker 可以立即修复；
 - 非 P0 friction / ergonomics 只记录，不立即扩 canonical core；
