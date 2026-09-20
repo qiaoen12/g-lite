@@ -28,6 +28,10 @@ jobs:
             .github/ISSUE_TEMPLATE/task.md
             .github/pull_request_template.md
             .github/workflows/pr-gate.yml
+            tools/repo-reconciler/manifest.json
+            tools/repo-reconciler/reconcile.sh
+            tools/repo-reconciler/lib/audit.sh
+            tools/repo-reconciler/lib/apply.sh
           )
           fail=0
           for f in "${required[@]}"; do
@@ -71,7 +75,29 @@ jobs:
           need .github/pull_request_template.md "## Test"
           need .github/pull_request_template.md "## Unverified / Risks"
           need .github/pull_request_template.md "Fixes #"
+          need README.md "Thin Repo Reconciler"
+          need AGENTS.md "## Repo Reconciler"
+          need tools/repo-reconciler/reconcile.sh "audit|plan|apply|upgrade"
           [ "$fail" = 0 ]
+
+      - name: Reconciler static validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n tools/repo-reconciler/reconcile.sh
+          bash -n tools/repo-reconciler/lib/audit.sh
+          bash -n tools/repo-reconciler/lib/apply.sh
+          jq -e '
+            .schema_version == 1 and
+            (.protocol.exact | length > 0) and
+            (.protocol.semantic | length > 0) and
+            (.protocol.live_facts | length > 0) and
+            (.states | index("PASS")) and
+            (.states | index("DRIFT")) and
+            (.states | index("PLATFORM_BLOCKER")) and
+            (.states | index("PERMISSION_BLOCKER")) and
+            (.states | index("UNVERIFIED"))
+          ' tools/repo-reconciler/manifest.json >/dev/null
 
       - name: Banned legacy paths
         shell: bash
