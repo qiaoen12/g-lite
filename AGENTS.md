@@ -54,7 +54,7 @@ INVALID / STALE / Actor 不独立时：
 ## 硬边界
 
 - 不写明文凭据；不把密钥、PAT、host inventory 写入仓库、日志或 Issue。
-- 不安装、不调用、不重建 G-lite CLI。
+- 不恢复 task/runtime CLI。允许调用 `tools/repo-reconciler/reconcile.sh` 做一次性仓库治理校准；它不是任务入口，也不得保存任务状态。
 - 不创建 `task_state`、`review_state`、`merge_state`、`ready_to_merge`、approval cache、Contract hash runtime。
 - Developer Actor ≠ Reviewer Actor。当前 canonical Developer = `qiaoen12`，Reviewer = `qiaoen-reviewer`。
 - 写或实质修改 Contract 的 Actor 不得批准同一 Contract version。
@@ -146,6 +146,17 @@ Verdict:
 - 没有 G-lite replacement CLI 或第二份 GitHub 状态。
 
 consumer 的 Required Check 应检查自己的真实技术栈风险，不要求复用 canonical `pr-gate` 实现。
+
+## Repo Reconciler
+
+`tools/repo-reconciler/` 是 optional companion tool：
+
+- `audit`：只读输出 PASS / DRIFT / PLATFORM_BLOCKER / PERMISSION_BLOCKER / UNVERIFIED。
+- `plan`：只计算目标状态与当前状态的差异。
+- `apply`：幂等修复确定性治理差异；破坏性或权限类操作必须显式选择。
+- `upgrade`：只读比较 canonical baseline；不得静默覆盖 consumer README / AGENTS / CI。
+- Genesis 首次接入先 bootstrap，真实 CI success 后再 active + Required Check。
+- 工具不得创建业务 Issue、自动 dev/fix/review/merge、保存 GitHub live facts 或形成第二套 runtime。
 
 ## 禁止重建
 
