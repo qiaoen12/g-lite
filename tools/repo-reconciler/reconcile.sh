@@ -487,7 +487,7 @@ ensure_label() {
     return 0
   fi
   record_write_failure label "$write_error"
-  echo "cannot ensure label $name: $(cat "$error")" >&2
+  echo "cannot ensure label $name: $(cat "$write_error")" >&2
   return 1
 }
 
