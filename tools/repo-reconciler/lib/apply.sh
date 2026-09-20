@@ -72,7 +72,7 @@ run_apply() {
     if [[ "$ruleset_read_state" == PASS && ! -s "$applicable_details" ]]; then
       check_seen=0
       pulls="$tmpdir/pulls.json"; perr="$tmpdir/pulls.err"
-      if api_get "repos/$REPO/pulls?state=closed&base=$BRANCH&sort=updated&direction=desc&per_page=10" "$pulls" "$perr"; then
+      if api_get "repos/$REPO/pulls?state=all&base=$BRANCH&sort=updated&direction=desc&per_page=10" "$pulls" "$perr"; then
         while IFS= read -r sha; do
           [[ -z "$sha" || "$sha" == null ]] && continue
           checks="$tmpdir/checks-$sha.json"; cerr="$checks.err"
