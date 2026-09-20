@@ -307,7 +307,9 @@ ruleset_governance_is_desired() {
       .type == "pull_request" and
       ((.parameters.required_approving_review_count // 0) == 1) and
       (.parameters.dismiss_stale_reviews_on_push == true) and
+      (.parameters.require_code_owner_review == false) and
       ((.parameters.require_last_push_approval // false) == false) and
+      (.parameters.required_review_thread_resolution == false) and
       ((.parameters.allowed_merge_methods // []) == ["squash"])
     ) and
     ((.conditions.ref_name.include // []) | any(. == ("refs/heads/" + $branch)))
@@ -522,7 +524,6 @@ make_ruleset_payload() {
       . as $current |
       ($current.rules // []) as $rules |
       ([{context:$check}]) as $checks |
-      ([ $rules[]? | select(.type == "pull_request") | .parameters ] | first // {}) as $pr |
       ([ $rules[]? | select(.type == "required_status_checks") | .parameters ] | first // {}) as $status |
       {
         name: $name,
@@ -534,7 +535,7 @@ make_ruleset_payload() {
           [$rules[]? | select(.type != "deletion" and .type != "non_fast_forward" and .type != "pull_request" and .type != "required_status_checks")]
           + [{type:"deletion"}]
           + [{type:"non_fast_forward"}]
-          + [{type:"pull_request",parameters:($pr + {required_approving_review_count:1,dismiss_stale_reviews_on_push:true,require_last_push_approval:false,allowed_merge_methods:["squash"]})}]
+          + [{type:"pull_request",parameters:{required_approving_review_count:1,dismiss_stale_reviews_on_push:true,require_code_owner_review:false,require_last_push_approval:false,required_review_thread_resolution:false,allowed_merge_methods:["squash"]}}]
           + [{type:"required_status_checks",parameters:($status + {strict_required_status_checks_policy:($status.strict_required_status_checks_policy // false),do_not_enforce_on_create:($status.do_not_enforce_on_create // false),required_status_checks:$checks})}]
         )
       }
@@ -549,7 +550,7 @@ make_ruleset_payload() {
       rules:[
         {type:"deletion"},
         {type:"non_fast_forward"},
-        {type:"pull_request",parameters:{required_approving_review_count:1,dismiss_stale_reviews_on_push:true,require_last_push_approval:false,allowed_merge_methods:["squash"]}},
+        {type:"pull_request",parameters:{required_approving_review_count:1,dismiss_stale_reviews_on_push:true,require_code_owner_review:false,require_last_push_approval:false,required_review_thread_resolution:false,allowed_merge_methods:["squash"]}},
         {type:"required_status_checks",parameters:{strict_required_status_checks_policy:false,do_not_enforce_on_create:false,required_status_checks:[{context:$check}]}}
       ]
     }' > "$out"
@@ -743,9 +744,27 @@ run_self_test() {
   DEFAULT_BRANCH="main"
   REQUIRED_CHECK="new-check"
   cat > "$fixture" <<'JSON'
-{"name":"G-lite main","target":"branch","enforcement":"active","bypass_actors":[],"conditions":{"ref_name":{"include":["refs/heads/main"]}},"rules":[{"type":"deletion"},{"type":"non_fast_forward"},{"type":"pull_request","parameters":{"required_approving_review_count":1,"dismiss_stale_reviews_on_push":true,"require_last_push_approval":false,"allowed_merge_methods":["squash"]}},{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"old-check"}]}}]}
+{"name":"G-lite main","target":"branch","enforcement":"active","bypass_actors":[],"conditions":{"ref_name":{"include":["refs/heads/main"]}},"rules":[{"type":"deletion"},{"type":"non_fast_forward"},{"type":"pull_request","parameters":{"required_approving_review_count":1,"dismiss_stale_reviews_on_push":true,"require_code_owner_review":false,"require_last_push_approval":false,"required_review_thread_resolution":false,"allowed_merge_methods":["squash"]}},{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"old-check"}]}}]}
 JSON
   ruleset_governance_is_desired "$fixture"
+  local field mutation
+  for field in require_code_owner_review required_review_thread_resolution; do
+    for mutation in missing true; do
+      jq --arg field "$field" --arg mutation "$mutation" '
+        .rules |= map(if .type == "pull_request" then
+          if $mutation == "missing" then del(.parameters[$field])
+          else .parameters[$field] = true end
+        else . end)
+      ' "$fixture" > "$mutated"
+      if ruleset_governance_is_desired "$mutated"; then
+        echo "self-test failed: $field $mutation was accepted" >&2
+        return 1
+      fi
+      make_ruleset_payload "$mutated" "$tmpdir/payload-repaired.json"
+      ruleset_governance_is_desired "$tmpdir/payload-repaired.json"
+    done
+  done
+  echo "self-test: required PR parameters missing / true => not desired; repair => PASS"
   local exclusion
   for exclusion in refs/heads/main main '~ALL' '~DEFAULT_BRANCH' 'refs/heads/*' 'refs/heads/m*'; do
     jq --arg exclusion "$exclusion" '.conditions.ref_name.exclude = [$exclusion]' "$fixture" > "$mutated"
@@ -780,6 +799,21 @@ JSON
   ruleset_check_is_desired "$tmpdir/payload-existing.json"
   make_ruleset_payload "" "$tmpdir/payload-new.json"
   ruleset_check_is_desired "$tmpdir/payload-new.json"
+  local payload
+  for payload in "$tmpdir/payload-existing.json" "$tmpdir/payload-new.json" "$tmpdir/payload-repaired.json"; do
+    ruleset_governance_is_desired "$payload"
+    jq -e '
+      [.rules[] | select(.type == "pull_request") | .parameters] == [{
+        required_approving_review_count: 1,
+        dismiss_stale_reviews_on_push: true,
+        require_code_owner_review: false,
+        require_last_push_approval: false,
+        required_review_thread_resolution: false,
+        allowed_merge_methods: ["squash"]
+      }]
+    ' "$payload" >/dev/null
+  done
+  echo "self-test: create / update pull_request payload schema: PASS"
   jq '.rules |= map(if .type == "required_status_checks" then .parameters.required_status_checks = [] else . end)' "$fixture" > "$mutated"
   if ruleset_check_is_desired "$mutated"; then
     echo "self-test failed: missing Required Check was accepted" >&2
