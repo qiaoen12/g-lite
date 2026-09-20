@@ -152,16 +152,16 @@ audit → plan → apply → audit
                 ↘ upgrade（只读升级审查）
 ```
 
-它只校准 protocol files / semantic markers、`approved` label、Reviewer permission、squash merge policy、Ruleset 与 Required Check。它不创建业务 Issue，不调度 Agent，不保存 task/review/merge/approval 状态，也不接管 consumer CI。
+它只校准 protocol files / semantic markers、`approved` label、Reviewer permission、Ruleset 与 Required Check。`main` 的 squash-only 只由 Ruleset 的 `allowed_merge_methods=["squash"]` 强制；Repository General 的 merge/rebase toggles 不是 ACTIVE 硬门。它不创建业务 Issue，不调度 Agent，不保存 task/review/merge/approval 状态，也不接管 consumer CI。
 
 首次接入使用 Genesis 两阶段：
 
-1. `--phase bootstrap`：先建立协议基线、label、Reviewer、squash-only；此时故意不要求尚未出现的 Required Check。
-2. consumer 先产生一次真实 CI success。
-3. `--phase active --check <稳定 check name>`：再审计/激活 Ruleset 与 Required Check。
-4. 最终 `audit` 全部 PASS，仓库才称为 G-lite ACTIVE。
+1. `apply --genesis --repo OWNER/REPO --check <稳定 check name>`：不存在时用 `gh repo create --public` 创建空仓，只播种缺失协议文件和最小真实 CI。
+2. Genesis 自动完成 `approved` label、Reviewer write invitation、第一次真实 CI success；若新 collaborator 需要接受邀请，可通过显式的 Reviewer gh config 走 GitHub API 完成，无需 GitHub UI。
+3. 第一次 CI 成功后，Genesis 自动创建或修复 Ruleset 与 Required Check；正常路径不导入 Ruleset JSON。
+4. 最终 `audit --phase active --check <稳定 check name>` 全部 PASS，仓库才称为 G-lite ACTIVE。
 
-`audit` / `plan` / `upgrade` 只读；`apply` 默认不删 labels、不覆盖 README / AGENTS、不改已有 Ruleset、不 commit、不 push。Reviewer 提权、Exact 文件覆盖、创建新 Ruleset 都需要显式开关。
+`audit` / `plan` / `upgrade` 只读；普通 `apply` 默认不删 labels、不覆盖 README / AGENTS、不接管 consumer CI、不 commit、不 push。`--genesis` 是显式的远端初始化路径；Reviewer 提权、Exact 文件覆盖、创建或修复命名 Ruleset 都需要显式开关。已有 README / AGENTS / workflow 定制不会被覆盖。
 
 删除整个 `tools/repo-reconciler/` 后，上面的核心闭环仍必须完整。
 

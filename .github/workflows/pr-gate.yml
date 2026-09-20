@@ -99,6 +99,18 @@ jobs:
             (.states | index("UNVERIFIED"))
           ' tools/repo-reconciler/manifest.json >/dev/null
 
+      - name: Genesis and stale-checkout guards
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq -- "--genesis" tools/repo-reconciler/reconcile.sh
+          grep -Fq -- "--reviewer-gh-config" tools/repo-reconciler/reconcile.sh
+          grep -Fq -- "LEGACY G-LITE RUNTIME DETECTED" tools/repo-reconciler/reconcile.sh
+          grep -Fq -- "allowed_merge_methods" tools/repo-reconciler/lib/audit.sh
+          grep -Fq -- "--method PUT" tools/repo-reconciler/lib/apply.sh
+          ! grep -Fq -- "allow_merge_commit" tools/repo-reconciler/lib/audit.sh
+          ! grep -Fq -- "allow_rebase_merge" tools/repo-reconciler/lib/audit.sh
+
       - name: Banned legacy paths
         shell: bash
         run: |

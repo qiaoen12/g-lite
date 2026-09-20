@@ -1,5 +1,19 @@
 # shellcheck shell=bash
 
+ruleset_applies_to_branch() {
+  local detail="$1"
+  jq -e --arg branch "$BRANCH" '
+    .enforcement == "active" and
+    .target == "branch" and
+    ((.conditions.ref_name.include // []) | any(
+      . == "~DEFAULT_BRANCH" or
+      . == "~ALL" or
+      . == ("refs/heads/" + $branch) or
+      . == $branch
+    ))
+  ' "$detail" >/dev/null
+}
+
 collect_audit() {
   while IFS= read -r entry; do
     path="$(jq -r '.path' <<<"$entry")"
@@ -86,31 +100,21 @@ collect_audit() {
     fi
   fi
 
-  merge_ok=1
-  for field in allow_squash_merge allow_merge_commit allow_rebase_merge; do
-    expected="$(jq -r --arg f "$field" '.merge_policy[$f]' "$MANIFEST")"
-    actual="$(jq -r --arg f "$field" '.[$f]' "$repo_json")"
-    if [[ "$actual" != "$expected" ]]; then merge_ok=0; fi
-  done
-  if [[ $merge_ok -eq 1 ]]; then
-    record PASS live merge_policy "squash only"
-  else
-    record DRIFT live merge_policy "expected squash=true merge=false rebase=false; actual squash=$(jq -r .allow_squash_merge "$repo_json") merge=$(jq -r .allow_merge_commit "$repo_json") rebase=$(jq -r .allow_rebase_merge "$repo_json")"
-  fi
-
   ruleset_json="$tmpdir/rulesets.json"; ruleset_err="$tmpdir/rulesets.err"
   applicable_details="$tmpdir/applicable-rulesets.jsonl"
+  target_ruleset_file=""
+  target_ruleset_id=""
   : > "$applicable_details"
   ruleset_read_state=PASS
   if api_get "repos/$REPO/rulesets?includes_parents=false" "$ruleset_json" "$ruleset_err"; then
     while IFS= read -r id; do
       detail="$tmpdir/ruleset-$id.json"; err="$detail.err"
       if api_get "repos/$REPO/rulesets/$id" "$detail" "$err"; then
-        if jq -e --arg branch "$BRANCH" '
-          .enforcement == "active" and
-          .target == "branch" and
-          ((.conditions.ref_name.include // []) | any(. == "~DEFAULT_BRANCH" or . == "~ALL" or . == ("refs/heads/" + $branch)))
-        ' "$detail" >/dev/null; then
+        if [[ "$(jq -r '.name // empty' "$detail")" == "$RULESET_NAME" ]]; then
+          target_ruleset_id="$id"
+          target_ruleset_file="$detail"
+        fi
+        if ruleset_applies_to_branch "$detail"; then
           jq -c . "$detail" >> "$applicable_details"
         fi
       else
@@ -130,27 +134,32 @@ collect_audit() {
     fi
 
     if [[ "$ruleset_read_state" != PASS ]]; then
-      record "$ruleset_read_state" live ruleset "cannot independently read applicable Rulesets"
-    elif [[ ! -s "$applicable_details" ]]; then
-      record DRIFT live ruleset "no active branch Ruleset applies to $BRANCH"
+      record "$ruleset_read_state" live ruleset "cannot independently read repository Rulesets"
+    elif [[ -z "$target_ruleset_file" ]]; then
+      record DRIFT live ruleset "named Ruleset '$RULESET_NAME' is missing for $BRANCH"
+      if [[ -n "$REQUIRED_CHECK" ]]; then
+        record DRIFT live required_check "$REQUIRED_CHECK is not required because the named Ruleset is missing"
+      fi
+    elif ! ruleset_applies_to_branch "$target_ruleset_file"; then
+      record DRIFT live ruleset "named Ruleset '$RULESET_NAME' is inactive or does not apply to $BRANCH"
+      if [[ -n "$REQUIRED_CHECK" ]]; then
+        record DRIFT live required_check "$REQUIRED_CHECK is not required by an applicable named Ruleset"
+      fi
     else
       has_pr=0; has_delete=0; has_nff=0; has_bypass=1; review_ok=0; check_ok=0
-      while IFS= read -r line; do
-        [[ -z "$line" ]] && continue
-        if jq -e '.rules[]? | select(.type == "pull_request")' <<<"$line" >/dev/null; then has_pr=1; fi
-        if jq -e '.rules[]? | select(.type == "deletion")' <<<"$line" >/dev/null; then has_delete=1; fi
-        if jq -e '.rules[]? | select(.type == "non_fast_forward")' <<<"$line" >/dev/null; then has_nff=1; fi
-        if [[ "$(jq -r '(.bypass_actors // []) | length' <<<"$line")" != "0" ]]; then has_bypass=0; fi
-        if jq -e '.rules[]? | select(.type == "pull_request") | .parameters | select((.required_approving_review_count // 0) >= 1 and .dismiss_stale_reviews_on_push == true and (.require_last_push_approval // false) == false and ((.allowed_merge_methods // ["squash"]) | index("squash") != null) and ((.allowed_merge_methods // ["squash"]) | all(. == "squash")))' <<<"$line" >/dev/null; then
-          review_ok=1
-        fi
-        if [[ -n "$REQUIRED_CHECK" ]] && jq -e --arg c "$REQUIRED_CHECK" '.rules[]? | select(.type == "required_status_checks") | .parameters.required_status_checks[]? | select(.context == $c)' <<<"$line" >/dev/null; then
-          check_ok=1
-        fi
-      done < "$applicable_details"
+      if jq -e '.rules[]? | select(.type == "pull_request")' "$target_ruleset_file" >/dev/null; then has_pr=1; fi
+      if jq -e '.rules[]? | select(.type == "deletion")' "$target_ruleset_file" >/dev/null; then has_delete=1; fi
+      if jq -e '.rules[]? | select(.type == "non_fast_forward")' "$target_ruleset_file" >/dev/null; then has_nff=1; fi
+      if [[ "$(jq -r '(.bypass_actors // []) | length' "$target_ruleset_file")" != "0" ]]; then has_bypass=0; fi
+      if jq -e '.rules[]? | select(.type == "pull_request") | .parameters | select((.required_approving_review_count // 0) >= 1 and .dismiss_stale_reviews_on_push == true and (.require_last_push_approval // false) == false and (.allowed_merge_methods // []) == ["squash"])' "$target_ruleset_file" >/dev/null; then
+        review_ok=1
+      fi
+      if [[ -n "$REQUIRED_CHECK" ]] && jq -e --arg c "$REQUIRED_CHECK" '.rules[]? | select(.type == "required_status_checks") | .parameters.required_status_checks[]? | select(.context == $c)' "$target_ruleset_file" >/dev/null; then
+        check_ok=1
+      fi
 
       if [[ $has_pr -eq 1 && $has_delete -eq 1 && $has_nff -eq 1 && $has_bypass -eq 1 && $review_ok -eq 1 ]]; then
-        record PASS live ruleset "PR required; approvals>=1; stale dismissal on; last-push off; deletion/non-fast-forward blocked; bypass none"
+        record PASS live ruleset "PR required; approvals>=1; stale dismissal on; last-push off; squash-only; deletion/non-fast-forward blocked; bypass none"
       else
         record DRIFT live ruleset "Ruleset does not satisfy G-lite governance requirements"
       fi
@@ -159,10 +168,14 @@ collect_audit() {
         if [[ $check_ok -eq 1 ]]; then
           record PASS live required_check "$REQUIRED_CHECK is required"
         else
-          record DRIFT live required_check "$REQUIRED_CHECK is not required by an applicable Ruleset"
+          record DRIFT live required_check "$REQUIRED_CHECK is not required by the named Ruleset"
         fi
       fi
     fi
+  fi
+
+  if [[ "$PHASE" == "active" && -n "$REQUIRED_CHECK" ]] && ! grep -Eq $'^(DRIFT|PLATFORM_BLOCKER|PERMISSION_BLOCKER|UNVERIFIED)\t' "$RESULTS"; then
+    record PASS live status "G-lite ACTIVE"
   fi
 }
 
@@ -183,9 +196,7 @@ plan_from_results() {
     case "$key" in
       label) echo "PLAN: create missing '$label_name' label; never delete existing project labels." ;;
       reviewer) echo "PLAN: ensure $REVIEWER has at least write permission. apply requires --allow-permission-change." ;;
-      merge_policy) echo "PLAN: set squash merge ON; merge commit OFF; rebase OFF." ;;
-      ruleset)
-        if [[ "$PHASE" == "bootstrap" ]]; then :; else echo "PLAN: satisfy main Ruleset requirements. Existing Rulesets are never auto-modified; a new G-lite Ruleset is created only with --activate and only when none applies."; fi ;;
+      ruleset) echo "PLAN: satisfy the named main Ruleset. Existing Rulesets are repaired only with --activate; unrelated Rulesets are not modified." ;;
       required_check) [[ -n "$REQUIRED_CHECK" ]] && echo "PLAN: bind Required Check '$REQUIRED_CHECK' after a real successful run exists." || echo "PLAN: provide --check NAME for active-phase verification." ;;
       *.md|README.md|AGENTS.md) echo "PLAN: reconcile $key with canonical protocol without overwriting consumer-owned README/AGENTS." ;;
       *) echo "PLAN: $category/$key -> $detail" ;;

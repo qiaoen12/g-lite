@@ -12,12 +12,13 @@
       {"path": ".github/ISSUE_TEMPLATE/task.md", "markers": ["## Contract", "### Goal", "### Acceptance", "### Out of scope", "### Authorization"]},
       {"path": ".github/pull_request_template.md", "markers": ["## Why", "Issue Contract:", "## What", "## Test", "## Unverified / Risks", "Fixes #"]}
     ],
-    "live_facts": ["required_label", "reviewer_permission", "merge_policy", "ruleset", "required_check"]
+    "live_facts": ["required_label", "reviewer_permission", "ruleset", "required_check"]
   },
   "required_label": {"name": "approved", "color": "c6f1d3", "description": "Independent authorization for the current Issue Contract version"},
   "reviewer": {"default": "qiaoen-reviewer", "minimum_permissions": ["push", "write", "maintain", "admin"]},
-  "merge_policy": {"allow_squash_merge": true, "allow_merge_commit": false, "allow_rebase_merge": false},
+  "genesis": {"required_check": "genesis-ci", "workflow": ".github/workflows/genesis-ci.yml"},
   "ruleset": {
+    "name": "G-lite main",
     "branch": "main",
     "required_approvals": 1,
     "dismiss_stale_reviews_on_push": true,

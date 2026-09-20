@@ -155,7 +155,10 @@ consumer 的 Required Check 应检查自己的真实技术栈风险，不要求�
 - `plan`：只计算目标状态与当前状态的差异。
 - `apply`：幂等修复确定性治理差异；破坏性或权限类操作必须显式选择。
 - `upgrade`：只读比较 canonical baseline；不得静默覆盖 consumer README / AGENTS / CI。
-- Genesis 首次接入先 bootstrap，真实 CI success 后再 active + Required Check。
+- `apply --genesis` 是显式的零 UI 首次接入路径：可用 `gh repo create --public` 创建空仓，只播种缺失协议文件和最小真实 CI；真实 CI success 后再 active + Required Check。
+- 新 collaborator 的 Reviewer invitation 可用独立 Reviewer gh config 通过 API 接受；没有该授权时必须报告权限阻塞，不把 pending invitation 当作 write。
+- main 的 squash-only 只由 Ruleset `allowed_merge_methods=["squash"]` 强制；Repository General merge/rebase toggles 不属于 ACTIVE 硬条件。
+- 启动前会拒绝检测到退役 runtime 路线的 stale checkout，并报告 `LEGACY G-LITE RUNTIME DETECTED`；不得恢复旧 runtime。
 - 工具不得创建业务 Issue、自动 dev/fix/review/merge、保存 GitHub live facts 或形成第二套 runtime。
 
 ## 禁止重建
