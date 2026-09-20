@@ -194,13 +194,26 @@ canonical G-lite 不提供、不维护：
 
 ## 版本与冻结
 
+Current governance baseline = v2.6
+
+v2.6 的真实 evidence：
+
+- Reviewer App controlled test: [`qiaoen12/g-lite-reviewer-e2e`](https://github.com/qiaoen12/g-lite-reviewer-e2e)
+- Production E2E: [`qiaoen12/g-lite-v26-e2e`](https://github.com/qiaoen12/g-lite-v26-e2e)
+- Consumer Contract: [`g-lite-v26-e2e#1`](https://github.com/qiaoen12/g-lite-v26-e2e/issues/1)
+- Consumer PR: [`g-lite-v26-e2e#2`](https://github.com/qiaoen12/g-lite-v26-e2e/pull/2)
+
+v2.6 Freeze begins at the squash merge commit of [PR #41](https://github.com/qiaoen12/g-lite/pull/41). Before that merge exists, PR #41 is the durable referent; this document does not predeclare a merge SHA.
+
 `v1.0.0` 发布时的产品形态是 framework/runtime，并声明了至少 15 天 Freeze。
 
 随后人类通过 [#27](https://github.com/qiaoen12/g-lite/issues/27) 明确改变产品方向，提前进入 GitHub-native contraction。这个决策应被理解为对旧 runtime Freeze 的显式 supersede / override，而不是假装旧 Freeze 按原计划完整执行。
 
-R6 将 runtime/framework → protocol 作为 breaking architecture change，目标版本为 `v2.0.0`。
+R6 将 runtime/framework → protocol 作为 breaking architecture change，最初目标版本为 `v2.0.0`；该版本说明现在仅作为历史架构基线保留。
 
-`v2.0.0` 发布后重新开始至少 15 天 Freeze：
+当前 Freeze baseline 以上方 v2.6 为准。
+
+当前 v2.6 Freeze 下：
 
 - P0 / security blocker 可以立即修复；
 - 非 P0 friction / ergonomics 只记录，不立即扩 canonical core；

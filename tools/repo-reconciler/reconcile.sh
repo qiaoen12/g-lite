@@ -387,7 +387,7 @@ audit_ruleset() {
     if ruleset_check_is_desired "$detail"; then
       record PASS live required_check "$REQUIRED_CHECK is required"
     else
-      record DRIFT live required_check "$REQUIRED_CHECK is not required by the named Ruleset"
+      record DRIFT live required_check "Required Check configuration does not exactly match target '$REQUIRED_CHECK'"
     fi
   fi
 }
@@ -709,7 +709,7 @@ bootstrap_target_self_test() (
 run_self_test() {
   local fixture="$tmpdir/ruleset.json" mutated="$tmpdir/ruleset-mutated.json"
   local permission_error="$tmpdir/permission.err" platform_error="$tmpdir/platform.err"
-  local reviewer_exit=0
+  local reviewer_exit=0 drift_exit=0
   # Isolate the assertion from unrelated audit results; never contact GitHub.
   REPO="self-test/fixture"
   REVIEWER_APP_VERIFIED=false
@@ -819,6 +819,24 @@ JSON
     echo "self-test failed: missing Required Check was accepted" >&2
     return 1
   fi
+
+  jq '.rules |= map(if .type == "required_status_checks" then .parameters.required_status_checks = [{context:"consumer-content"},{context:"stale-check"}] else . end)' "$fixture" > "$mutated"
+  REQUIRED_CHECK="consumer-content"
+  load_named_ruleset() {
+    RULESET_FILE="$mutated"
+    return 0
+  }
+  : > "$RESULTS"
+  audit_ruleset
+  drift_exit=0
+  overall_exit || drift_exit=$?
+  if [[ "$drift_exit" -ne 2 ]] ||
+    ! grep -Fq $'DRIFT\tlive\trequired_check\t' "$RESULTS" ||
+    ! grep -Fq "Required Check configuration does not exactly match target 'consumer-content'" "$RESULTS"; then
+    echo "self-test failed: extra Required Check must keep exact-match DRIFT / exit 2 with precise wording" >&2
+    return 1
+  fi
+  echo "self-test: target Required Check plus extra context => exact-match DRIFT / exit 2 with precise wording: PASS"
 
   printf 'HTTP 403 Forbidden\n' > "$permission_error"
   record_write_failure simulated "$permission_error"
