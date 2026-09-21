@@ -4,7 +4,7 @@ GitHub-native AI 协作协议。
 
 GitHub 管事实和门；Agent 干活；G-lite 只规定协作。
 
-本仓库是 canonical 协议源，不是 CLI、不是 workspace framework、不是 backup engine，也不是第二份 GitHub 状态机。
+本仓库是 canonical 协议源，不是任务 runtime、不是 workspace framework、不是 backup engine，也不是第二份 GitHub 状态机。`tools/repo-reconciler/` 是可删除的无状态治理工具，不参与任务生命周期。
 
 ```text
 qiaoen12/g-lite
@@ -50,7 +50,7 @@ squash merge
 | 角色 | GitHub Actor | 做什么 | 不做什么 |
 | --- | --- | --- | --- |
 | Developer | `qiaoen12` | 读当前 Contract、验证授权 freshness、改范围内代码、开 PR | 不给自己的 PR 做 Required Review，不 merge |
-| Reviewer | `qiaoen-reviewer` | 重新读当前 Contract、验证 freshness、HEAD/diff、Checks，然后 `APPROVE` 或 `REQUEST_CHANGES` | 不 `git push`，不改 Developer 工作树 |
+| Reviewer | `g-lite-reviewer[bot]` | 重新读当前 Contract、验证 freshness、HEAD/diff、Checks，然后 `APPROVE` 或 `REQUEST_CHANGES` | 不修改项目文件、不 `git push`、不 merge、不修改 Ruleset 或 workflow |
 
 Developer Actor ≠ Reviewer Actor。
 
@@ -123,15 +123,15 @@ Codex / Cursor / Claude Code / Grok 等只是可替换工作台。
 
 ## G-lite-compatible adoption contract
 
-新仓库采用 G-lite，不靠安装 runtime，而靠「5-file protocol baseline + GitHub 平台设置」。
+新仓库采用 G-lite，不靠安装 runtime，而靠最小 protocol baseline + GitHub 平台设置。
 
-可以从本仓 GitHub Template 创建，也可以把协议结构人工复制到已有仓库。是否兼容，以仓库实际 durable facts / gates 为准，而不是以“是否从模板创建”为准。
+可以从本仓 GitHub Template 创建，也可以由 Agent 将最小协议结构补到已有仓库。是否兼容，以仓库实际 durable facts / gates 为准，而不是以“是否从模板创建”为准。
 
 一个 consumer repo 同时满足下面条件，才称为 G-lite-compatible：
 
 1. Issue Contract 至少包含 Goal / Acceptance / Out of scope / Authorization。
 2. GitHub Issue 上存在独立、当前有效的 `approved` 授权事实。
-3. Developer Actor 与 Reviewer Actor 分离。
+3. Developer Actor 与 `g-lite-reviewer[bot]` 分离，且 Reviewer App prerequisite 可被验证或明确报告 `UNVERIFIED`。
 4. main 要求通过 PR 合入。
 5. Required approvals >= 1。
 6. stale review dismissal 开启。
@@ -139,11 +139,27 @@ Codex / Cursor / Claude Code / Grok 等只是可替换工作台。
 8. merge method 收敛为 squash。
 9. 常规开发路径没有 bypass。
 10. GitHub 平台支持时开启 Secret scanning / Push protection。
-11. 不依赖 G-lite 自有 CLI、Router、Controller、Worker、Reviewer App 或第二份 GitHub 状态。
+11. 不依赖 G-lite 自有 CLI、Router、Controller、Worker 或第二份 GitHub 状态；Reviewer App 只是 GitHub 上的独立协议 Actor。
 
 canonical G-lite 的 Required Check 名为 `pr-gate`；consumer repo 可以使用自己的稳定 check 名，不需要复制 G-lite 的具体 CI 实现。
 
-自动 bootstrap / installer 如果未来有真实需求，应作为独立问题研究；不能为了方便重新把 runtime 塞回 G-lite core。
+v2.6 的 `tools/repo-reconciler/` 提供无状态 `audit`、`plan`、`bootstrap`、`activate`、`apply`、`upgrade`；它只处理稳定、机械、重复的 GitHub 治理事实，bootstrap 只建立最小协议基线，不生成 consumer CI、不接管 consumer 业务文件。
+
+文件审计仅检查 `required protocol markers present`，属于 deterministic mechanical baseline，不证明 semantic correctness。manifest 使用 `protocol.markers` 描述这些字面 marker；成熟仓的实际语义判断和上下文相关补丁仍由 Agent 负责，不增加 LLM、parser 或 semantic engine。
+
+Bootstrap 坚持 same target or fail，不会在写入失败后删除 `branch` 重试。只有实时确认 GitHub `repository.isEmpty = true`，并确认目标 branch 等于当前默认分支，才允许省略 `branch` 创建首个 commit；每个缺失文件写入前重新判断，不缓存空仓状态。非空仓、非默认目标或无法证明为空时都保留显式目标，失败保留原写入错误分类。
+
+Ruleset 审计检查 include 与 exclude：明确目标 ref、`~ALL`、`~DEFAULT_BRANCH` 按目标及实际默认分支判断；不能可靠排除影响的其他 exclude pattern 保守判为不满足目标。工具不实现通用 GitHub pattern engine，G-lite 生成的目标始终为明确 branch ref 且 exclude 为空。
+
+执行顺序是：
+
+```text
+bootstrap → ci-catalog / Agent → real CI SUCCESS → activate --required-check NAME → audit
+```
+
+`NAME` 必须由 Agent 从 GitHub 真实 Check context 提供，不能从 workflow 文件名推断；`activate` 不检查 default-branch HEAD，也不推断 CI 拓扑。consumer README、业务文件和 CI 始终由 consumer 与 Agent 自己拥有。
+
+所有治理命令接受 `--reviewer-app-verified`：Agent 仅可在外部使用现有 `g-lite-reviewer` 凭据完成真实 preflight，确认 App ID `5010632`、Actor `g-lite-reviewer[bot]` 和 installation 可访问目标仓库后传入。断言仅对本次调用有效，不持久化；有 flag 时 `reviewer_app = PASS`，无 flag 时为 `UNVERIFIED`，整体退出码为 `3`。其他审计项仍独立决定整体结果。工具不读取 private key、不生成 JWT、不管理 installation token，也不使用 Developer 凭据探测 repository installation。
 
 ## GitHub 门
 
@@ -168,7 +184,7 @@ canonical G-lite 不提供、不维护：
 - workspace 八域 / scaffolding
 - backup / restic / restore drill
 - 本地 task / review / merge / approval 状态
-- Router / Controller / Worker / Reviewer App
+- Router / Controller / Worker / Reviewer App runtime（Reviewer App 是外部 GitHub Actor）
 - stack-specific CI framework（研究见 [#34](https://github.com/qiaoen12/g-lite/issues/34)）
 - 编辑器 adapter 与本地 pre-commit 引擎
 - `.gitignore` / 仓库 hygiene（consumer repo 自己负责）
@@ -178,13 +194,26 @@ canonical G-lite 不提供、不维护：
 
 ## 版本与冻结
 
+Current governance baseline = v2.6
+
+v2.6 的真实 evidence：
+
+- Reviewer App controlled test: [`qiaoen12/g-lite-reviewer-e2e`](https://github.com/qiaoen12/g-lite-reviewer-e2e)
+- Production E2E: [`qiaoen12/g-lite-v26-e2e`](https://github.com/qiaoen12/g-lite-v26-e2e)
+- Consumer Contract: [`g-lite-v26-e2e#1`](https://github.com/qiaoen12/g-lite-v26-e2e/issues/1)
+- Consumer PR: [`g-lite-v26-e2e#2`](https://github.com/qiaoen12/g-lite-v26-e2e/pull/2)
+
+v2.6 Freeze begins at the squash merge commit of [PR #41](https://github.com/qiaoen12/g-lite/pull/41). Before that merge exists, PR #41 is the durable referent; this document does not predeclare a merge SHA.
+
 `v1.0.0` 发布时的产品形态是 framework/runtime，并声明了至少 15 天 Freeze。
 
 随后人类通过 [#27](https://github.com/qiaoen12/g-lite/issues/27) 明确改变产品方向，提前进入 GitHub-native contraction。这个决策应被理解为对旧 runtime Freeze 的显式 supersede / override，而不是假装旧 Freeze 按原计划完整执行。
 
-R6 将 runtime/framework → protocol 作为 breaking architecture change，目标版本为 `v2.0.0`。
+R6 将 runtime/framework → protocol 作为 breaking architecture change，最初目标版本为 `v2.0.0`；该版本说明现在仅作为历史架构基线保留。
 
-`v2.0.0` 发布后重新开始至少 15 天 Freeze：
+当前 Freeze baseline 以上方 v2.6 为准。
+
+当前 v2.6 Freeze 下：
 
 - P0 / security blocker 可以立即修复；
 - 非 P0 friction / ergonomics 只记录，不立即扩 canonical core；
