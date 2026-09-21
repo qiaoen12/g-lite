@@ -89,6 +89,8 @@ jobs:
           need tools/repo-reconciler/reconcile.sh "reconcile.sh activate"
           need tools/repo-reconciler/reconcile.sh "reconcile.sh apply"
           need tools/repo-reconciler/reconcile.sh "reconcile.sh upgrade"
+          need tools/repo-reconciler/reconcile.sh "--human-authority-verified"
+          need tools/repo-reconciler/reconcile.sh "write_preflight"
           [ "$fail" = 0 ]
 
       - name: Reconciler static validation

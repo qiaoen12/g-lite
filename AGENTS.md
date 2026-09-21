@@ -170,8 +170,10 @@ consumer 的 Required Check 应检查自己的真实技术栈风险，不要求�
 - `apply` 幂等执行安全基线与 Ruleset 修复；`upgrade` 只读输出可审查差异。
 - 工具只检查 required protocol markers，作为 deterministic mechanical baseline；成熟仓的实际语义判断与补丁由 Agent 负责，工具不整文件覆盖。
 - 工具不保存 GitHub durable facts，不管理凭据，不创建 consumer CI。
-- `--developer-app-verified` / `--reviewer-app-verified` 分别断言外部真实 preflight，只对当前 invocation 有效；工具不读取 private key、不生成 JWT/token、不保存 credential。
-- bootstrap / activate / apply 治理写入由 Human Authority 控制，不向 Developer / Reviewer 授予治理权限。
+- `--developer-app-verified` / `--reviewer-app-verified` 是外部 identity / installation preflight，分别断言 Developer 与 Reviewer App 的当前身份、独立性和目标仓库 installation access。
+- `bootstrap` / `activate` / `apply` 还必须带 invocation-only `--human-authority-verified`，表示调用者已外部确认本次治理写入由 Human Authority 明确授权并使用适当身份。
+- 三项断言均只对当前 invocation 有效；统一 write preflight 在 `bootstrap_file`、`ensure_label`、`ensure_ruleset` 之前执行，缺失任一项即 `UNVERIFIED` / exit 3 并在任何 durable write 前停止。`audit` / `plan` / `upgrade` / `self-test` 不要求 Human Authority assertion。
+- 工具不持久化 assertion，不读取 private key、不生成 JWT/token、不保存 credential、不建立 allowlist / identity registry，也不形成第二份 GitHub 状态；App assertion 不向 Developer / Reviewer 授予 governance write 权限。
 
 ## 禁止重建
 

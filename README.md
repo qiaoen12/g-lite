@@ -180,9 +180,11 @@ bootstrap → ci-catalog / Agent → real CI SUCCESS → activate --required-che
 
 `NAME` 必须由 Agent 从 GitHub 真实 Check context 提供，不能从 workflow 文件名推断；`activate` 不检查 default-branch HEAD，也不推断 CI 拓扑。consumer README、业务文件和 CI 始终由 consumer 与 Agent 自己拥有。
 
-所有治理命令接受 `--developer-app-verified` 与 `--reviewer-app-verified`：Agent 仅可在外部对目标 consumer 的实际角色绑定完成真实 preflight（App ID、Actor、installation 可访问目标仓库，以及 Developer ≠ Reviewer）后分别传入。canonical 当前绑定见 Actor 表；consumer 可替换绑定，无需使用 canonical 账号。每个断言仅对本次调用有效，不持久化；对应 flag 存在时该项为 PASS，缺少任一个时对应项为 UNVERIFIED、整体退出码为 3。其他审计项仍独立决定整体结果。工具不读取 private key、不生成 JWT/token、不保存 credential，也不探测 installation；manifest 中的 canonical binding 只是部署 evidence，不是身份数据库。
+`--developer-app-verified` 与 `--reviewer-app-verified` 是外部 identity / installation preflight：Agent 仅可在外部对目标 consumer 的实际角色绑定完成真实核验（App ID、Actor、installation 可访问目标仓库，以及 Developer ≠ Reviewer）后分别传入。canonical 当前绑定见 Actor 表；consumer 可替换绑定，无需使用 canonical 账号。
 
-bootstrap / activate / apply 的远端治理写入属于 Human Authority 控制的 Genesis / governance，不能借 App assertion 提升 Developer / Reviewer 权限。只读 audit / plan / upgrade 不授予写权限。
+`bootstrap`、`activate`、`apply` 的远端治理写入还必须带 invocation-only 的 `--human-authority-verified`。它表示调用者已在外部确认本次写入由 Human Authority 明确授权，并使用适当身份。三个断言都只对当前 invocation 有效；统一 write preflight 在任何 `bootstrap_file`、`ensure_label`、`ensure_ruleset` 或其他远端治理写入前执行，任一缺失即 `UNVERIFIED` / exit 3，并在写入前停止。`audit`、`plan`、`upgrade`、`self-test` 为只读路径，不要求 Human Authority assertion。
+
+三项断言均不持久化；工具不读取 private key、不生成 JWT/token、不保存 credential、不建立 allowlist 或 identity registry，也不形成第二份 GitHub 状态。断言不会把 Developer / Reviewer 提升为治理写入者；Genesis / governance 写入仍由 Human Authority 控制。
 
 ## GitHub 门
 
