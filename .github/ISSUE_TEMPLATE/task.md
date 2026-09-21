@@ -22,6 +22,6 @@ assignees: []
 
 ### Authorization
 
-The current Contract must be reviewed by a human. A GitHub Actor that wrote or materially edited this Contract must not add `approved` to the same Contract version.
+Human Authority controls repository governance; Developer may create or edit the Contract. The independent Reviewer authorizes the current version. A GitHub Actor that wrote or materially edited this Contract must not add `approved` to the same Contract version.
 
-Chat instructions are not authorization. Work starts only after an independent Actor adds `approved`.
+Chat instructions are not authorization. Work starts only after the independent Reviewer adds fresh `approved`. Developer and Reviewer must not merge; final Squash merge belongs to Human Authority after GitHub gates pass.

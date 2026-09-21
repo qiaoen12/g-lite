@@ -24,7 +24,7 @@ qiaoen12/g-lite-p1-lab
 ## 核心闭环
 
 ```text
-Human
+Human Authority
   ↓
 Issue Contract
   ↓
@@ -40,7 +40,7 @@ independent Reviewer
   ↓
 GitHub APPROVE / REQUEST_CHANGES
   ↓
-squash merge
+Human Authority: Squash merge
 ```
 
 删掉本仓库里任何一个非协议模块之后，这条闭环必须仍然完整。
@@ -49,8 +49,13 @@ squash merge
 
 | 角色 | GitHub Actor | 做什么 | 不做什么 |
 | --- | --- | --- | --- |
-| Developer | `qiaoen12` | 读当前 Contract、验证授权 freshness、改范围内代码、开 PR | 不给自己的 PR 做 Required Review，不 merge |
-| Reviewer | `g-lite-reviewer[bot]` | 重新读当前 Contract、验证 freshness、HEAD/diff、Checks，然后 `APPROVE` 或 `REQUEST_CHANGES` | 不修改项目文件、不 `git push`、不 merge、不修改 Ruleset 或 workflow |
+| Developer | 机器身份；当前 canonical `g-lite-developer[bot]` / App ID `5017695` | 创建/修改 Contract、验证 freshness、开发、push、开/更新 PR | 不批准自己写/改的 Contract，不给自己的 PR 做 Required Review，不 merge，不自行修改约束自身的 Ruleset / governance |
+| Reviewer | 独立机器身份；当前 canonical `g-lite-reviewer[bot]` / App ID `5010632` | 独立添加 `approved`，重新核对 Contract、freshness、HEAD/diff、Checks，`APPROVE / REQUEST_CHANGES` | 不开发、不 push、不修改 repository governance、不 merge |
+| Human Authority | 一个或多个对目标仓库具有适当 GitHub 权限的人类账号 | 控制 Genesis / governance；门禁满足后最终 Squash merge | 不绕过 GitHub 门禁 |
+
+角色限制绑定到当前治理角色，不绑定到某个固定人类账号、工作台或所有工具入口。以上 App 名称/ID 只是 current canonical binding；consumer 可替换具体账号/App，必须保持机器身份及角色独立性。
+
+Human Authority 可通过 GitHub UI、CLI、API 或受其明确指令控制的工具机械执行最终 Squash merge。Developer 不 merge；Reviewer 不 merge。不新增 Merge Bot / Merge Executor。
 
 Developer Actor ≠ Reviewer Actor。
 
@@ -60,7 +65,7 @@ Developer Actor ≠ Reviewer Actor。
 
 ## Issue Contract
 
-人在 GitHub Issue 正文写契约。模板最小结构：
+Human Authority 或 Developer 在 GitHub Issue 正文写契约。模板最小结构：
 
 ```text
 Contract
@@ -105,6 +110,22 @@ INVALID / STALE / Actor 不独立时都不得继续该角色的下一步动作�
 
 不要把 freshness 写成仓库状态文件、hash DB、approval cache 或其他第二份状态。
 
+## Genesis / ACTIVE
+
+Genesis 由 Human Authority 控制：创建仓库、安装/授权 Developer App 与 Reviewer App、建立初始协议基线及 CI、配置 Ruleset / governance / security，并验证进入 ACTIVE 的条件。Agent/工具可以执行 Genesis，但执行身份与授权必须属于 Human Authority，不因此将 Developer 提升为管理员。
+
+ACTIVE 日常任务由 Developer + Reviewer 推进；Human Authority 只在治理边界或最终 merge 再介入。Developer / Reviewer 不得自行修改约束自身的 Ruleset / governance；治理变更由 Human Authority 控制。
+
+## Local Bootstrap 与认证
+
+**Local Bootstrap ≠ Repository Task**。安装/轮换 GitHub App private key、建立本地 `~/.config/g-lite/` 凭据目录、本地 token helper / shell identity bootstrap、只读 identity preflight、新机器本地身份配置，无需 GitHub Issue Contract。这不授权改变任何 repository durable facts；改变仓库状态必须进入对应 repository lifecycle。
+
+Developer / Reviewer 使用 short-lived Installation Access Token。private key 仅由外部本机安全凭据机制管理；private key、JWT、Installation Access Token、PAT 不得写入 repo、Issue、PR、日志证据或 canonical state，token 不得持久化到状态文件。canonical 不提供凭据管理 runtime。
+
+GitHub API Actor、commit 作者和 Git transport identity 必须分别核验。Installation Token 若不能调用 REST `/user`，可用同一 token 的 GraphQL `viewer.login` 核验 Actor，不回退人类凭据。Developer clone / fetch / push 使用 App HTTPS credential：用户级/global Git `insteadOf` 可能将 HTTPS 静默改写为 SSH。每次 transport 前确认有效 remote 是 HTTPS、无影响它的 rewrite；优先任务进程级隔离（例如 `GIT_CONFIG_GLOBAL=/dev/null`、`GIT_CONFIG_NOSYSTEM=1`、`GIT_ALLOW_PROTOCOL=https`，同时检查 repo-local 配置与 credential helper）。不要要求删除用户全局 Git / SSH 配置。
+
+GitHub 是 Issue authorization、PR、Checks、Review、Ruleset、merge eligibility、merge result 的 SSOT；不建立 identity registry、approval DB 或第二份 GitHub 状态。
+
 ## 开发
 
 不需要安装 G-lite CLI。用普通 `git` / `gh` 或现成 Agent 工作台。
@@ -117,7 +138,7 @@ INVALID / STALE / Actor 不独立时都不得继续该角色的下一步动作�
 6. push 并开 PR；PR 用 `Fixes #N` 关联 Issue。
 7. 等待 consumer repo 自己的 Required Check。失败则修本 PR 引入的问题，不绕过门。
 8. 独立 Reviewer 重新读取 Contract、fresh approval、当前 HEAD/diff、Checks。
-9. GitHub squash merge。
+9. Human Authority 在 GitHub 当前门禁满足后执行最终 Squash merge。
 
 Codex / Cursor / Claude Code / Grok 等只是可替换工作台。
 
@@ -131,7 +152,7 @@ Codex / Cursor / Claude Code / Grok 等只是可替换工作台。
 
 1. Issue Contract 至少包含 Goal / Acceptance / Out of scope / Authorization。
 2. GitHub Issue 上存在独立、当前有效的 `approved` 授权事实。
-3. Developer Actor 与 `g-lite-reviewer[bot]` 分离，且 Reviewer App prerequisite 可被验证或明确报告 `UNVERIFIED`。
+3. Developer 与 Reviewer 为独立机器 Actor，且两个 App prerequisite 可被验证或明确报告 `UNVERIFIED`。
 4. main 要求通过 PR 合入。
 5. Required approvals >= 1。
 6. stale review dismissal 开启。
@@ -139,11 +160,11 @@ Codex / Cursor / Claude Code / Grok 等只是可替换工作台。
 8. merge method 收敛为 squash。
 9. 常规开发路径没有 bypass。
 10. GitHub 平台支持时开启 Secret scanning / Push protection。
-11. 不依赖 G-lite 自有 CLI、Router、Controller、Worker 或第二份 GitHub 状态；Reviewer App 只是 GitHub 上的独立协议 Actor。
+11. 不依赖 G-lite 自有 CLI、Router、Controller、Worker 或第二份 GitHub 状态；Developer / Reviewer App 只是 GitHub 上的协议 Actor。
 
 canonical G-lite 的 Required Check 名为 `pr-gate`；consumer repo 可以使用自己的稳定 check 名，不需要复制 G-lite 的具体 CI 实现。
 
-v2.6 的 `tools/repo-reconciler/` 提供无状态 `audit`、`plan`、`bootstrap`、`activate`、`apply`、`upgrade`；它只处理稳定、机械、重复的 GitHub 治理事实，bootstrap 只建立最小协议基线，不生成 consumer CI、不接管 consumer 业务文件。
+`tools/repo-reconciler/` 提供无状态 `audit`、`plan`、`bootstrap`、`activate`、`apply`、`upgrade`；它只处理稳定、机械、重复的 GitHub 治理事实，bootstrap 只建立最小协议基线，不生成 consumer CI、不接管 consumer 业务文件。
 
 文件审计仅检查 `required protocol markers present`，属于 deterministic mechanical baseline，不证明 semantic correctness。manifest 使用 `protocol.markers` 描述这些字面 marker；成熟仓的实际语义判断和上下文相关补丁仍由 Agent 负责，不增加 LLM、parser 或 semantic engine。
 
@@ -159,7 +180,9 @@ bootstrap → ci-catalog / Agent → real CI SUCCESS → activate --required-che
 
 `NAME` 必须由 Agent 从 GitHub 真实 Check context 提供，不能从 workflow 文件名推断；`activate` 不检查 default-branch HEAD，也不推断 CI 拓扑。consumer README、业务文件和 CI 始终由 consumer 与 Agent 自己拥有。
 
-所有治理命令接受 `--reviewer-app-verified`：Agent 仅可在外部使用现有 `g-lite-reviewer` 凭据完成真实 preflight，确认 App ID `5010632`、Actor `g-lite-reviewer[bot]` 和 installation 可访问目标仓库后传入。断言仅对本次调用有效，不持久化；有 flag 时 `reviewer_app = PASS`，无 flag 时为 `UNVERIFIED`，整体退出码为 `3`。其他审计项仍独立决定整体结果。工具不读取 private key、不生成 JWT、不管理 installation token，也不使用 Developer 凭据探测 repository installation。
+所有治理命令接受 `--developer-app-verified` 与 `--reviewer-app-verified`：Agent 仅可在外部对目标 consumer 的实际角色绑定完成真实 preflight（App ID、Actor、installation 可访问目标仓库，以及 Developer ≠ Reviewer）后分别传入。canonical 当前绑定见 Actor 表；consumer 可替换绑定，无需使用 canonical 账号。每个断言仅对本次调用有效，不持久化；对应 flag 存在时该项为 PASS，缺少任一个时对应项为 UNVERIFIED、整体退出码为 3。其他审计项仍独立决定整体结果。工具不读取 private key、不生成 JWT/token、不保存 credential，也不探测 installation；manifest 中的 canonical binding 只是部署 evidence，不是身份数据库。
+
+bootstrap / activate / apply 的远端治理写入属于 Human Authority 控制的 Genesis / governance，不能借 App assertion 提升 Developer / Reviewer 权限。只读 audit / plan / upgrade 不授予写权限。
 
 ## GitHub 门
 
@@ -194,16 +217,18 @@ canonical G-lite 不提供、不维护：
 
 ## 版本与冻结
 
-Current governance baseline = v2.6
+Current governance baseline = v3.1
 
-v2.6 的真实 evidence：
+[#43](https://github.com/qiaoen12/g-lite/issues/43) 是 Human Authority 明确授权的架构修正，显式 supersede v2.6 Freeze 对普通非 P0 变更的暂停。
 
-- Reviewer App controlled test: [`qiaoen12/g-lite-reviewer-e2e`](https://github.com/qiaoen12/g-lite-reviewer-e2e)
-- Production E2E: [`qiaoen12/g-lite-v26-e2e`](https://github.com/qiaoen12/g-lite-v26-e2e)
-- Consumer Contract: [`g-lite-v26-e2e#1`](https://github.com/qiaoen12/g-lite-v26-e2e/issues/1)
-- Consumer PR: [`g-lite-v26-e2e#2`](https://github.com/qiaoen12/g-lite-v26-e2e/pull/2)
+v3.1 evidence（Issue #43 记录的真实 E2E）：
 
-v2.6 Freeze begins at the squash merge commit of [PR #41](https://github.com/qiaoen12/g-lite/pull/41). Before that merge exists, PR #41 is the durable referent; this document does not predeclare a merge SHA.
+- Fixture: [g-lite-developer-e2e](https://github.com/qiaoen12/g-lite-developer-e2e)，[Contract #3](https://github.com/qiaoen12/g-lite-developer-e2e/issues/3)，[PR #4](https://github.com/qiaoen12/g-lite-developer-e2e/pull/4)。
+- Developer App HTTPS push；Reviewer 独立 Contract approval 与 HEAD `7fa2d99e23bf7d8b090cf7b0a69beb703196c6fa` 的 APPROVE。
+- 该 fixture 的 Human Authority merge Actor 为 `qiaoen12`（部署 evidence，不是通用角色绑定），Squash SHA `16308fd3aad2ec8e57109bf02d455e339042d770`；Issue #3 CLOSED / COMPLETED；Developer / Reviewer 均未 merge。
+- [Issue #1](https://github.com/qiaoen12/g-lite-developer-e2e/issues/1) / [PR #2](https://github.com/qiaoen12/g-lite-developer-e2e/pull/2) 因 global Git rewrite 将 HTTPS 转为人类 SSH identity 而 BLOCKED 并关闭；第二轮进程级隔离后 PASS。
+
+v3.1 Freeze 从 Issue #43 对应 PR 的 squash merge commit 开始；merge 前以 [Issue #43](https://github.com/qiaoen12/g-lite/issues/43) 及其关联 PR 为 durable referent，不预写未知 merge SHA。
 
 `v1.0.0` 发布时的产品形态是 framework/runtime，并声明了至少 15 天 Freeze。
 
@@ -211,9 +236,9 @@ v2.6 Freeze begins at the squash merge commit of [PR #41](https://github.com/qia
 
 R6 将 runtime/framework → protocol 作为 breaking architecture change，最初目标版本为 `v2.0.0`；该版本说明现在仅作为历史架构基线保留。
 
-当前 Freeze baseline 以上方 v2.6 为准。
+当前 Freeze baseline 以上方 v3.1 为准。
 
-当前 v2.6 Freeze 下：
+v3.1 Freeze 生效后：
 
 - P0 / security blocker 可以立即修复；
 - 非 P0 friction / ergonomics 只记录，不立即扩 canonical core；

@@ -74,6 +74,14 @@ jobs:
           need .github/pull_request_template.md "## Test"
           need .github/pull_request_template.md "## Unverified / Risks"
           need .github/pull_request_template.md "Fixes #"
+          for file in README.md AGENTS.md tools/repo-reconciler/templates/minimal-consumer-AGENTS.md; do
+            need "$file" "Human Authority"
+            need "$file" "Local Bootstrap"
+            need "$file" "Genesis"
+            need "$file" "ACTIVE"
+            need "$file" "Squash merge"
+          done
+          need AGENTS.md "g-lite-developer[bot]"
           need AGENTS.md "g-lite-reviewer[bot]"
           need tools/repo-reconciler/reconcile.sh "reconcile.sh audit"
           need tools/repo-reconciler/reconcile.sh "reconcile.sh plan"
@@ -89,12 +97,13 @@ jobs:
           set -euo pipefail
           bash -n tools/repo-reconciler/reconcile.sh
           jq -e '
-            .schema_version == 2 and
+            .schema_version == 3 and
             (.bootstrap | length == 3) and
             (.protocol.markers | length == 3) and
             (([.bootstrap[].path, .protocol.markers[].path] | index("README.md")) == null) and
             (.required_label.name == "approved") and
-            (.reviewer_app.actor == "g-lite-reviewer[bot]") and
+            (.canonical.current_bindings.developer_app == {id:5017695,slug:"g-lite-developer",actor:"g-lite-developer[bot]"}) and
+            (.canonical.current_bindings.reviewer_app == {id:5010632,slug:"g-lite-reviewer",actor:"g-lite-reviewer[bot]"}) and
             (.ruleset.allowed_merge_methods == ["squash"]) and
             (["PASS", "DRIFT", "PLATFORM_BLOCKER", "PERMISSION_BLOCKER", "UNVERIFIED"] - .states | length == 0)
           ' tools/repo-reconciler/manifest.json >/dev/null

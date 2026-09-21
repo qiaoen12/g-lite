@@ -17,11 +17,14 @@ Usage:
   reconcile.sh upgrade   [--repo OWNER/REPO] [--branch NAME] [--phase bootstrap|active] [--required-check NAME]
   reconcile.sh self-test
 
-All governance commands accept --reviewer-app-verified. Pass it only after
-the Agent independently uses existing g-lite-reviewer credentials to prove
-App ID 5010632, actor g-lite-reviewer[bot], and installation access to the
-target repository. This assertion applies only to this invocation; without
-it reviewer_app is UNVERIFIED (exit 3). The tool does not handle App credentials.
+All governance commands accept --developer-app-verified and --reviewer-app-verified.
+Pass each only after external preflight proves the target consumer's actual
+App ID, actor, installation access, and Developer / Reviewer independence.
+Canonical current bindings in the manifest are evidence, not consumer requirements.
+Each assertion applies only to this invocation; a missing assertion is
+UNVERIFIED (exit 3). The tool does not read private keys, generate JWTs/tokens,
+or save credentials. Governance writes require Human Authority authorization
+and identity; these assertions do not grant Developer / Reviewer governance powers.
 
 The tool reads GitHub facts with gh, writes only the bootstrap baseline and
 G-lite-owned label/ruleset facts, and keeps all intermediate data ephemeral.
@@ -44,6 +47,7 @@ REPO=""
 BRANCH=""
 DEFAULT_BRANCH=""
 REQUIRED_CHECK=""
+DEVELOPER_APP_VERIFIED=false
 REVIEWER_APP_VERIFIED=false
 PHASE="active"
 
@@ -53,6 +57,7 @@ while [[ $# -gt 0 ]]; do
     --branch) BRANCH="${2:?missing --branch value}"; shift 2 ;;
     --phase) PHASE="${2:?missing --phase value}"; shift 2 ;;
     --required-check) REQUIRED_CHECK="${2:?missing --required-check value}"; shift 2 ;;
+    --developer-app-verified) DEVELOPER_APP_VERIFIED=true; shift ;;
     --reviewer-app-verified) REVIEWER_APP_VERIFIED=true; shift ;;
     --manifest) MANIFEST="${2:?missing --manifest value}"; shift 2 ;;
     *) echo "unknown option: $1" >&2; exit 64 ;;
@@ -80,13 +85,11 @@ for dep in gh jq git base64; do
 done
 
 jq -e '
-  .schema_version == 2 and
+  .schema_version == 3 and
   (.bootstrap | length == 3) and
   (.protocol.markers | length == 3) and
   (([.bootstrap[].path, .protocol.markers[].path] | index("README.md")) == null) and
   (.required_label.name == "approved") and
-  (.reviewer_app.slug == "g-lite-reviewer") and
-  (.reviewer_app.actor == "g-lite-reviewer[bot]") and
   (.ruleset.required_approvals == 1) and
   (.ruleset.allowed_merge_methods == ["squash"]) and
   (["PASS", "DRIFT", "PLATFORM_BLOCKER", "PERMISSION_BLOCKER", "UNVERIFIED"] - .states | length == 0)
@@ -262,15 +265,19 @@ audit_label() {
   fi
 }
 
-audit_reviewer_app() {
-  local expected_id expected_actor
-  expected_id="$(jq -r '.reviewer_app.id' "$MANIFEST")"
-  expected_actor="$(jq -r '.reviewer_app.actor' "$MANIFEST")"
-  if [[ "$REVIEWER_APP_VERIFIED" == true ]]; then
-    record PASS live reviewer_app "Agent asserted external preflight: App $expected_id, actor $expected_actor, installation access to $REPO (this invocation only)"
-  else
-    record UNVERIFIED live reviewer_app "Agent must verify App $expected_id, actor $expected_actor, and installation access to $REPO externally, then pass --reviewer-app-verified"
-  fi
+audit_apps() {
+  local role verified
+  for role in developer reviewer; do
+    case "$role" in
+      developer) verified="$DEVELOPER_APP_VERIFIED" ;;
+      reviewer) verified="$REVIEWER_APP_VERIFIED" ;;
+    esac
+    if [[ "$verified" == true ]]; then
+      record PASS live "${role}_app" "Agent asserted external $role App identity, independence, and installation access to $REPO (this invocation only; consumer binding)"
+    else
+      record UNVERIFIED live "${role}_app" "Agent must verify the consumer $role App identity, independence, and installation access to $REPO externally, then pass --${role}-app-verified"
+    fi
+  done
 }
 
 ruleset_applies_to_branch() {
@@ -396,7 +403,7 @@ auditor() {
   : > "$RESULTS"
   marker_audit
   audit_label
-  audit_reviewer_app
+  audit_apps
   RULESET_NAME="$(jq -r '.ruleset.name' "$MANIFEST")"
   audit_ruleset
   if [[ -s "$WRITE_RESULTS" ]]; then
@@ -425,7 +432,7 @@ plan_from_results() {
       AGENTS.md|.github/ISSUE_TEMPLATE/task.md|.github/pull_request_template.md)
         echo "PLAN: seed missing $key only; existing files require Agent-assisted semantic patch." ;;
       label) echo "PLAN: create the missing approved label; preserve other labels." ;;
-      reviewer_app) echo "PLAN: have the Agent complete external Reviewer App preflight, then pass --reviewer-app-verified for this invocation; no credential manager is used." ;;
+      developer_app|reviewer_app) echo "PLAN: complete external consumer ${key%_app} App identity, independence, and installation preflight, then pass --${key%_app}-app-verified for this invocation; no credential manager is used." ;;
       ruleset) echo "PLAN: safely repair the named Ruleset without changing unrelated Rulesets." ;;
       required_check) echo "PLAN: provide the real successful Required Check name; never infer it from a workflow file." ;;
       *) echo "PLAN: $category/$key -> $detail" ;;
@@ -709,36 +716,60 @@ bootstrap_target_self_test() (
 run_self_test() {
   local fixture="$tmpdir/ruleset.json" mutated="$tmpdir/ruleset-mutated.json"
   local permission_error="$tmpdir/permission.err" platform_error="$tmpdir/platform.err"
-  local reviewer_exit=0 drift_exit=0
-  # Isolate the assertion from unrelated audit results; never contact GitHub.
+  local app_exit=0 drift_exit=0 developer reviewer expected role state
+  # Both missing, either missing, both present, then absent again: no persistence.
   REPO="self-test/fixture"
-  REVIEWER_APP_VERIFIED=false
-  audit_reviewer_app
-  overall_exit || reviewer_exit=$?
-  if [[ "$reviewer_exit" -ne 3 ]] || ! grep -q $'^UNVERIFIED\tlive\treviewer_app\t' "$RESULTS"; then
-    echo "self-test failed: missing Reviewer App assertion must be UNVERIFIED / exit 3" >&2
-    return 1
-  fi
+  for pair in "false false" "true false" "false true" "true true" "false false"; do
+    read -r developer reviewer <<< "$pair"
+    DEVELOPER_APP_VERIFIED="$developer"
+    REVIEWER_APP_VERIFIED="$reviewer"
+    : > "$RESULTS"
+    audit_apps
+    app_exit=0
+    overall_exit || app_exit=$?
+    expected=3
+    if [[ "$developer" == true && "$reviewer" == true ]]; then expected=0; fi
+    [[ "$app_exit" -eq "$expected" ]] || {
+      echo "self-test failed: dual App assertions exit status" >&2; return 1;
+    }
+    for role in developer reviewer; do
+      state=UNVERIFIED
+      if [[ "$role" == developer && "$developer" == true ]] ||
+         [[ "$role" == reviewer && "$reviewer" == true ]]; then state=PASS; fi
+      grep -q "^${state}"$'\tlive\t'"${role}_app"$'\t' "$RESULTS" || return 1
+    done
+  done
   : > "$RESULTS"
-  REVIEWER_APP_VERIFIED=true
-  audit_reviewer_app
-  reviewer_exit=0
-  overall_exit || reviewer_exit=$?
-  if [[ "$reviewer_exit" -ne 0 ]] || ! grep -q $'^PASS\tlive\treviewer_app\t' "$RESULTS"; then
-    echo "self-test failed: Reviewer App assertion must be PASS / exit 0" >&2
-    return 1
-  fi
+  echo "self-test: both App assertions / partial preflight / no persistence: PASS"
+  # Role-driven markers accept an unbound consumer, reject missing role semantics.
+  (
+    local marker_source="$ROOT/tools/repo-reconciler/templates/minimal-consumer-AGENTS.md"
+    local omitted="" marker
+    contents_get() {
+      local source
+      source="$(source_file_for "$1")"
+      if [[ "$1" == AGENTS.md && -n "$omitted" ]]; then
+        sed "/$omitted/d" "$marker_source" > "$tmpdir/consumer-markers.txt"
+        source="$tmpdir/consumer-markers.txt"
+      else
+        source="$ROOT/$source"
+      fi
+      jq -n --arg content "$(encode_file "$source")" '{type:"file",content:$content}' > "$2"
+    }
+    : > "$RESULTS"
+    marker_audit
+    overall_exit
+    for marker in "Human Authority" "Local Bootstrap" "Developer" "Reviewer"; do
+      omitted="$marker"
+      : > "$RESULTS"
+      marker_audit
+      grep -q $'^DRIFT\tmarkers\tAGENTS.md\t' "$RESULTS" || {
+        echo "self-test failed: missing consumer role marker accepted" >&2; exit 1;
+      }
+    done
+  )
   : > "$RESULTS"
-  REVIEWER_APP_VERIFIED=false
-  audit_reviewer_app
-  reviewer_exit=0
-  overall_exit || reviewer_exit=$?
-  if [[ "$reviewer_exit" -ne 3 ]]; then
-    echo "self-test failed: Reviewer App assertion must not persist" >&2
-    return 1
-  fi
-  : > "$RESULTS"
-  echo "self-test: Reviewer App assertion absent => UNVERIFIED / exit 3; present => PASS / exit 0"
+  echo "self-test: portable consumer markers / missing role semantics: PASS"
   RULESET_NAME="G-lite main"
   BRANCH="main"
   DEFAULT_BRANCH="main"
