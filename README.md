@@ -11,7 +11,7 @@ qiaoen12/g-lite
 = canonical protocol
 = Issue Contract + Actors + templates + Required Check `pr-gate`
 
-qiaoen12/ops-control
+qiaoen12/g-ops-control
 = 真实业务 Pilot（ACTIVE）
 
 qiaoen12/g-lite-harness
