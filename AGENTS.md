@@ -71,7 +71,11 @@ Genesis 由 Human Authority 控制：创建仓库，安装/授权 Developer App 
 
 Local Bootstrap ≠ Repository Task：安装/轮换 GitHub App private key、建立 `~/.config/g-lite/` 凭据目录、本地 token helper / shell identity bootstrap、只读 identity preflight、新机器本地身份配置无需 Issue Contract；不因此授权修改任何 repository durable facts。
 
+在使用本机凭据入口的每个 checkout 中，Local Bootstrap 先将 `.g-lite-local/` 加入该 checkout 的 Git 本地 exclude（可用 `git rev-parse --git-path info/exclude` 定位），再创建 `.g-lite-local/credentials` 软链接，指向实际机器凭据根目录。软链接及目标均不进入 Git；不要改仓库 `.gitignore`，也不要假定 Developer / Reviewer 私钥的固定文件布局。确认 `git check-ignore` 覆盖该入口；从干净 checkout 出发，创建后 `git status` 仍应干净。
+
 Developer / Reviewer 使用 short-lived Installation Access Token；private key、JWT、Installation Access Token、PAT 不得写入 repo、Issue、PR、日志证据或 canonical state。私钥仅由外部本机安全机制管理，token 不持久化到状态文件。不创建 identity registry 或 credential runtime。
+
+当前 shell 或 `gh` 显示 Human Authority Actor，不等于目标 Bot 凭据不存在。需要 Developer / Reviewer 身份时，先检查 `.g-lite-local/credentials` 的本机入口；缺失或不可用时，再检查机器本地 `~/.config/g-lite/` 配置入口，然后才报告凭据无法继续。发现阶段只检查选择目标 Actor 所需的路径存在性、类型和可访问性等最小元数据；不遍历或展示凭据内容，不记录私钥、JWT、token、PAT 或实际机器凭据绝对路径到 repo / Issue / PR / 日志。
 
 核验 API Actor（Installation Token 可用 GraphQL viewer）、commit 作者和 transport identity。Developer clone / fetch / push 必须使用 App HTTPS credential；每次操作前确认有效 remote 为 HTTPS、无影响 GitHub HTTPS 的 insteadOf rewrite。优先进程级 Git config / credential isolation，检查 local 配置，不删除用户 global Git / SSH 配置；防止 HTTPS 静默改写成 SSH。
 

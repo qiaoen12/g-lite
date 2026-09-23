@@ -27,7 +27,11 @@ In ACTIVE, Developer + Reviewer handle daily tasks; Human Authority intervenes a
 
 Local Bootstrap ≠ Repository Task. Local App private key installation/rotation, ~/.config/g-lite/ credential directories, token helpers, shell identity bootstrap, read-only identity preflight, and new-machine identity setup need no Issue Contract. They do not authorize changing repository durable facts; repository changes enter the appropriate lifecycle.
 
+In each checkout that uses the local credential entry, first add `.g-lite-local/` to that checkout's Git local exclude (locate it with `git rev-parse --git-path info/exclude`). Then create a `.g-lite-local/credentials` symlink to the actual machine credential root. Neither the symlink nor its target belongs in Git; do not change repository `.gitignore` or assume fixed Developer / Reviewer private-key file layouts. Verify the entry is ignored and a previously clean `git status` remains clean.
+
 Developer / Reviewer use short-lived Installation Access Tokens. Never put private keys, JWTs, tokens, or PATs in repo, Issue, PR, evidence logs, or canonical state; do not persist tokens in state files. Local credentials stay in external secure mechanisms, outside canonical runtime.
+
+The current shell or `gh` showing a human Actor does not prove the target Bot credentials are absent. For the required Developer / Reviewer role, check `.g-lite-local/credentials` first; if missing or unusable, check the machine-local `~/.config/g-lite/` configuration entry before reporting that credentials are unavailable. Inspect only minimal metadata needed to select the target Actor, such as existence, type, and accessibility. Do not enumerate or display credential contents or record keys, JWTs, tokens, PATs, or resolved machine-specific credential paths in repo, Issue, PR, or logs.
 
 Verify API Actor, commit author, and Git transport separately. Developer clone/fetch/push uses App HTTPS credentials. Before each operation verify the effective HTTPS remote and absence of applicable insteadOf rewrite: user/global Git config can silently turn HTTPS into human SSH authentication. Prefer task-process config/credential isolation, inspect repo-local config, and preserve existing user global Git / SSH settings.
 
