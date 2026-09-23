@@ -240,9 +240,20 @@ canonical G-lite 不提供、不维护：
 
 ## 版本与冻结
 
-Current governance baseline = v3.1
+Current governance baseline = v3.4
 
-[#47](https://github.com/qiaoen12/g-lite/issues/47) 是 Human Authority 对四文件 v3.4 SOP 修订的明确授权，在该范围内 supersede v3.1 Freeze 对普通非 P0 变更的暂停；四个 Pilot 的结果再决定是否扩大治理基线。
+v3.4 Freeze evidence：
+
+- Implementation：[Issue #47](https://github.com/qiaoen12/g-lite/issues/47) → [PR #48](https://github.com/qiaoen12/g-lite/pull/48)，Main continuous-delivery SOP。
+- Regression protection：[Issue #50](https://github.com/qiaoen12/g-lite/issues/50) → [PR #52](https://github.com/qiaoen12/g-lite/pull/52)，确定性 `pr-gate` 断言。
+- Pilot A：Actor / HTTPS transport separation PASS。
+- Pilot B：[g-ci-catalog #10](https://github.com/qiaoen12/g-ci-catalog/issues/10) / [PR #12](https://github.com/qiaoen12/g-ci-catalog/pull/12)：CI failure → Developer fix → REQUEST_CHANGES → fix → new HEAD → CI → APPROVE，PASS。
+- Pilot C：[g-ci-catalog #9](https://github.com/qiaoen12/g-ci-catalog/issues/9) / [PR #11](https://github.com/qiaoen12/g-ci-catalog/pull/11)：`merge-authorized` → 无二次人类确认 → Human Authority merge，PASS。
+- Pilot D：并行 PR #11 合入后发现 PR #12 stale base → Developer refresh → new HEAD → CI + re-review，PASS。
+
+四个 Pilot 已通过；v3.4 不依赖 Jev。已知限制：`strict_required_status_checks_policy=false`，latest-main 保护仍是 Main 的 SOP 祖先检查，不是 GitHub 平台的原子保证；最后核对与 merge 之间仍可能有竞态。
+
+v3.4 Freeze 从 [Issue #53](https://github.com/qiaoen12/g-lite/issues/53) 对应 PR 的 squash merge commit 开始；合并前不预写未知 Freeze SHA。该 SHA 用于 annotated `v3.4.0` tag 与 GitHub Release。
 
 [#43](https://github.com/qiaoen12/g-lite/issues/43) 是 Human Authority 明确授权的架构修正，显式 supersede v2.6 Freeze 对普通非 P0 变更的暂停。
 
@@ -261,9 +272,9 @@ v3.1 Freeze 从 Issue #43 对应 PR 的 squash merge commit 开始；merge 前�
 
 R6 将 runtime/framework → protocol 作为 breaking architecture change，最初目标版本为 `v2.0.0`；该版本说明现在仅作为历史架构基线保留。
 
-当前 Freeze baseline 以上方 v3.1 为准。
+当前 Freeze baseline 以上方 v3.4 为准。
 
-v3.1 Freeze 生效后：
+v3.4 Freeze 生效后：
 
 - P0 / security blocker 可以立即修复；
 - 非 P0 friction / ergonomics 只记录，不立即扩 canonical core；
