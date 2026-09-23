@@ -63,7 +63,10 @@ jobs:
           need AGENTS.md "## Reviewer protocol"
           need AGENTS.md "lastEditedAt"
           need AGENTS.md "Fresh authorization:"
+          need .github/ISSUE_TEMPLATE/task.md "## Original Intent"
           need .github/ISSUE_TEMPLATE/task.md "## Contract"
+          need .github/ISSUE_TEMPLATE/task.md "### Merge authorization"
+          need .github/ISSUE_TEMPLATE/task.md 'merge-authorized'
           need .github/ISSUE_TEMPLATE/task.md "### Goal"
           need .github/ISSUE_TEMPLATE/task.md "### Acceptance"
           need .github/ISSUE_TEMPLATE/task.md "### Out of scope"
@@ -83,6 +86,22 @@ jobs:
           done
           need AGENTS.md "g-lite-developer[bot]"
           need AGENTS.md "g-lite-reviewer[bot]"
+          need AGENTS.md '## Main 连续交付 SOP'
+          need AGENTS.md 'CI 失败交 Developer'
+          need AGENTS.md 'Main 不写 PR branch'
+          need AGENTS.md 'B` 是 `H` 祖先'
+          need AGENTS.md 'merge-authorized'
+          need AGENTS.md 'gh pr merge --squash --match-head-commit H'
+          need AGENTS.md '.g-lite-local/credentials'
+          need AGENTS.md '缺失或不可用时，再检查机器本地'
+          need tools/repo-reconciler/templates/minimal-consumer-AGENTS.md '## Main delivery SOP'
+          need tools/repo-reconciler/templates/minimal-consumer-AGENTS.md 'Failed CI or REQUEST_CHANGES'
+          need tools/repo-reconciler/templates/minimal-consumer-AGENTS.md "must not write the Developer's PR branch"
+          need tools/repo-reconciler/templates/minimal-consumer-AGENTS.md 'B is an ancestor of H'
+          need tools/repo-reconciler/templates/minimal-consumer-AGENTS.md 'merge-authorized'
+          need tools/repo-reconciler/templates/minimal-consumer-AGENTS.md 'gh pr merge --squash --match-head-commit H'
+          need tools/repo-reconciler/templates/minimal-consumer-AGENTS.md '.g-lite-local/credentials'
+          need tools/repo-reconciler/templates/minimal-consumer-AGENTS.md 'if missing or unusable, check the machine-local'
           need tools/repo-reconciler/reconcile.sh "reconcile.sh audit"
           need tools/repo-reconciler/reconcile.sh "reconcile.sh plan"
           need tools/repo-reconciler/reconcile.sh "reconcile.sh bootstrap"
