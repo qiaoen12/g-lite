@@ -26,6 +26,8 @@ qiaoen12/g-lite-p1-lab
 ```text
 Human Authority
   ↓
+Main Agent（协调）
+  ↓
 Issue Contract
   ↓
 fresh independent approved
@@ -40,10 +42,12 @@ independent Reviewer
   ↓
 GitHub APPROVE / REQUEST_CHANGES
   ↓
-Human Authority: Squash merge
+Human Authority: Squash merge（可按任务级授权由 Main 机械执行）
 ```
 
 删掉本仓库里任何一个非协议模块之后，这条闭环必须仍然完整。
+
+Main 持续安排开发、CI、独立 Review 与范围内返工；它是协调角色，不是第四个 GitHub Actor。正常任务以结果报告结束，不要求人中途搬运上下文。
 
 ## Actor
 
@@ -55,25 +59,28 @@ Human Authority: Squash merge
 
 角色限制绑定到当前治理角色，不绑定到某个固定人类账号、工作台或所有工具入口。以上 App 名称/ID 只是 current canonical binding；consumer 可替换具体账号/App，必须保持机器身份及角色独立性。
 
-Human Authority 可通过 GitHub UI、CLI、API 或受其明确指令控制的工具机械执行最终 Squash merge。Developer 不 merge；Reviewer 不 merge。不新增 Merge Bot / Merge Executor。
+Human Authority 可通过 GitHub UI、CLI、API 或受其明确指令控制的工具机械执行最终 Squash merge。Main 只有取得当前任务的明确合并授权后，才能核对人类 Actor 并使用其凭据执行；Main 本身不拥有合并权限。Developer 不 merge；Reviewer 不 merge。不新增 Merge Bot / Merge Executor。
 
 Developer Actor ≠ Reviewer Actor。
 
 写或实质修改当前 Contract 的 Actor，不得批准同一份 Contract version。
 
-聊天里的「开始做」不是授权。授权只看 GitHub 当前事实。
+聊天里的「开始做」不替代 Issue 上独立、fresh 的 `approved` 开发授权。最终合并另由 Human Authority 对当前任务明确授权。
 
 ## Issue Contract
 
 Human Authority 或 Developer 在 GitHub Issue 正文写契约。模板最小结构：
 
 ```text
+Original Intent（用户原话或固定 PRD 引用）
 Contract
 ├ Goal
 ├ Acceptance
 ├ Out of scope
 └ Authorization
 ```
+
+v3.4 新任务填写 Original Intent。现行 reconciler 仍只检查四个 Contract marker，不自动审计旧 consumer 是否补齐该字段。
 
 两种批准必须分开：
 
@@ -138,9 +145,23 @@ GitHub 是 Issue authorization、PR、Checks、Review、Ruleset、merge eligibil
 6. push 并开 PR；PR 用 `Fixes #N` 关联 Issue。
 7. 等待 consumer repo 自己的 Required Check。失败则修本 PR 引入的问题，不绕过门。
 8. 独立 Reviewer 重新读取 Contract、fresh approval、当前 HEAD/diff、Checks。
-9. Human Authority 在 GitHub 当前门禁满足后执行最终 Squash merge。
+9. Main 重新核对当前门禁；Human Authority 在满足门禁后执行最终 Squash merge，或按当前任务的明确授权由 Main 使用其身份机械执行。
 
 Codex / Cursor / Claude Code / Grok 等只是可替换工作台。
+
+## Main 连续交付 SOP（v3.4）
+
+同一台 Mac 可以存放 Human、Developer App、Reviewer App 三种凭据。每次关键 GitHub / Git 动作前核对 API Actor、有效 Git transport 和操作角色；Developer 不得以人类身份 push / merge，Reviewer 不得以 Developer 或人类身份 Review。物理隔离属于未来 hardening，不是本版 Freeze 条件。
+
+Main 持续读取 CI 与 Review：CI 失败由 Developer 修本任务范围内的问题；`REQUEST_CHANGES` 交 Developer 修改并 push 新 HEAD，再等该 HEAD 的 Required Checks 和独立 Reviewer 重审。范围变化、身份或授权无法核实、治理/高影响动作、同一路径约三次失败且无新证据时，Main 询问 Human Authority。
+
+合并前，Main 读取 GitHub live `main` SHA `B` 与当前 PR HEAD `H`，证明 `B` 是 `H` 的祖先（compare API 或 `git merge-base --is-ancestor`）。若不是，Main 不写 PR branch：Developer 以 App 身份更新 main / rebase / merge base 并 push 新 HEAD；`gh pr update-branch` 也只能由 Developer 执行。随后对新 HEAD 重跑 Checks、重新 Review，Main 从头 preflight。
+
+Human Authority 可在任务开始明确授权过门禁后合并。首次使用该能力时，Main 核对人类 API Actor，在其明确授权下创建并添加 `merge-authorized` label；这是一项 Genesis prerequisite，不由 reconciler bootstrap 创建。Main 在自动合并前核对 label 仍在 Issue 上、最新 LabeledEvent 的 Actor 是有权限的人类、`createdAt` 不早于当前 Contract 的 `lastEditedAt`，且授权未被撤销。缺少 fresh label 时，最终合并另请 Human Authority 确认。
+
+最终 preflight 实时核对 OPEN Issue、当前 Contract 与独立 fresh `approved`、PR OPEN 且非 Draft、base=`main`、`B` 是 `H` 祖先、`H` 的 Required Checks PASS、独立 Reviewer 对 `H` 的 APPROVE，以及 GitHub merge eligibility。合并前紧邻操作重读 `B`、`H`、授权和门禁；核对人类 API Actor 后，以 Squash 和预期 HEAD SHA 执行（`gh pr merge --squash --match-head-commit H`）。再读 GitHub merged 状态、merge commit SHA 与 Issue 状态，报告 Checks、Review 和未验证项。
+
+当前 Ruleset 的 `strict_required_status_checks_policy=false`，reconciler 默认值也是 `false`。上述最新 main 核对是 SOP，不是 GitHub 的原子 strict 门禁；main 在最后核对与 merge 之间仍可能前进，双 PR Pilot 需记录这一窗口。
 
 ## G-lite-compatible adoption contract
 
@@ -220,6 +241,8 @@ canonical G-lite 不提供、不维护：
 ## 版本与冻结
 
 Current governance baseline = v3.1
+
+[#47](https://github.com/qiaoen12/g-lite/issues/47) 是 Human Authority 对四文件 v3.4 SOP 修订的明确授权，在该范围内 supersede v3.1 Freeze 对普通非 P0 变更的暂停；四个 Pilot 的结果再决定是否扩大治理基线。
 
 [#43](https://github.com/qiaoen12/g-lite/issues/43) 是 Human Authority 明确授权的架构修正，显式 supersede v2.6 Freeze 对普通非 P0 变更的暂停。
 
