@@ -30,6 +30,10 @@ jobs:
             .github/workflows/pr-gate.yml
             tools/repo-reconciler/manifest.json
             tools/repo-reconciler/reconcile.sh
+            tools/repo-reconciler/lib/apply.sh
+            tools/repo-reconciler/lib/audit.sh
+            tools/repo-reconciler/lib/github.sh
+            tools/repo-reconciler/tests/self-test.sh
             tools/repo-reconciler/templates/minimal-consumer-AGENTS.md
           )
           fail=0
@@ -109,7 +113,7 @@ jobs:
           need tools/repo-reconciler/reconcile.sh "reconcile.sh apply"
           need tools/repo-reconciler/reconcile.sh "reconcile.sh upgrade"
           need tools/repo-reconciler/reconcile.sh "--human-authority-verified"
-          need tools/repo-reconciler/reconcile.sh "write_preflight"
+          need tools/repo-reconciler/lib/apply.sh "write_preflight"
           [ "$fail" = 0 ]
 
       - name: Reconciler static validation
@@ -117,6 +121,9 @@ jobs:
         run: |
           set -euo pipefail
           bash -n tools/repo-reconciler/reconcile.sh
+          for file in tools/repo-reconciler/lib/*.sh tools/repo-reconciler/tests/self-test.sh; do
+            bash -n "$file"
+          done
           jq -e '
             .schema_version == 3 and
             (.bootstrap | length == 3) and
@@ -129,11 +136,11 @@ jobs:
             (["PASS", "DRIFT", "PLATFORM_BLOCKER", "PERMISSION_BLOCKER", "UNVERIFIED"] - .states | length == 0)
           ' tools/repo-reconciler/manifest.json >/dev/null
           tools/repo-reconciler/reconcile.sh self-test
-          if grep -Fq 'check_success_for_branch' tools/repo-reconciler/reconcile.sh; then
+          if grep -Fq 'check_success_for_branch' tools/repo-reconciler/reconcile.sh tools/repo-reconciler/lib/*.sh tools/repo-reconciler/tests/self-test.sh; then
             echo 'activate must not enforce default-branch CI success'
             exit 1
           fi
-          grep -Fq 'record_write_failure' tools/repo-reconciler/reconcile.sh
+          grep -Fq 'record_write_failure' tools/repo-reconciler/lib/github.sh
 
       - name: Banned legacy paths
         shell: bash
