@@ -1,6 +1,6 @@
 {
   "schema_version": 3,
-  "baseline": "v3.1-machine-actors-human-authority",
+  "baseline": "v3.4-main-continuous-delivery",
   "canonical": {
     "repo": "qiaoen12/g-lite",
     "ref": "main",
