@@ -47,7 +47,9 @@ Human Authority: Squash merge（可按任务级授权由 Main 机械执行）
 
 删掉本仓库里任何一个非协议模块之后，这条闭环必须仍然完整。
 
-Main 持续安排开发、CI、独立 Review 与范围内返工；它是协调角色，不是第四个 GitHub Actor。正常任务以结果报告结束，不要求人中途搬运上下文。
+Main 持续安排开发、CI、独立 Review 与范围内返工；它是协调角色，不是第四个 GitHub Actor。Main 可以主动调用当前 workspace / machine 中可用且已验证的 Developer / Reviewer role entry 来推进任务。缺少 `approved` 只阻止 Developer 开工，不阻止 Main 协调，也不阻止 Reviewer 在人重新确认当前 Contract 后独立添加 fresh `approved`。正常任务以结果报告结束，不要求人中途搬运上下文。
+
+需要机器身份时先调用可用的 role entry；credential path 存在或 Human `gh` 已登录都不等于机器 Actor 已验证。entry 必须实时证明预期 Actor 与目标仓库访问；身份或权限不匹配即 BLOCK，绝不回退到 Human 身份。同一路径约三次失败且没有新证据时，请 Human Authority 介入。
 
 ## Actor
 
@@ -127,7 +129,7 @@ ACTIVE 日常任务由 Developer + Reviewer 推进；Human Authority 只在治�
 
 **Local Bootstrap ≠ Repository Task**。安装/轮换 GitHub App private key、建立本地 `~/.config/g-lite/` 凭据目录、本地 token helper / shell identity bootstrap、只读 identity preflight、新机器本地身份配置，无需 GitHub Issue Contract。这不授权改变任何 repository durable facts；改变仓库状态必须进入对应 repository lifecycle。
 
-Developer / Reviewer 使用 short-lived Installation Access Token。private key 仅由外部本机安全凭据机制管理；private key、JWT、Installation Access Token、PAT 不得写入 repo、Issue、PR、日志证据或 canonical state，token 不得持久化到状态文件。canonical 不提供凭据管理 runtime。
+Developer / Reviewer 使用 short-lived Installation Access Token。private key 仅由外部本机安全凭据机制管理；private key、JWT、Installation Access Token、PAT 不得写入 repo、Issue、PR、日志证据或 canonical state，token 不得持久化到状态文件。`tools/machine-bootstrap/` 提供独立、可选的薄参考 role entry 与[部署说明](docs/machine-bootstrap.md)：它调用机器本地 bootstrap 按需 mint token，实时验证 Actor 和目标仓库访问，再将 token 交给子进程；不规定 private-key 文件名/布局、不保存凭据或 token。它不改 Human `gh auth`，也不回退到 Human 身份。
 
 GitHub API Actor、commit 作者和 Git transport identity 必须分别核验。Installation Token 若不能调用 REST `/user`，可用同一 token 的 GraphQL `viewer.login` 核验 Actor，不回退人类凭据。Developer clone / fetch / push 使用 App HTTPS credential：用户级/global Git `insteadOf` 可能将 HTTPS 静默改写为 SSH。每次 transport 前确认有效 remote 是 HTTPS、无影响它的 rewrite；优先任务进程级隔离（例如 `GIT_CONFIG_GLOBAL=/dev/null`、`GIT_CONFIG_NOSYSTEM=1`、`GIT_ALLOW_PROTOCOL=https`，同时检查 repo-local 配置与 credential helper）。不要要求删除用户全局 Git / SSH 配置。
 
