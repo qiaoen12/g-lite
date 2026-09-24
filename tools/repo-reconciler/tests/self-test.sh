@@ -889,7 +889,7 @@ apply_required_check_rejection_self_test() (
   status=0
   run_apply || status=$?
   [[ "$status" -eq 0 && "$PHASE" == bootstrap && "$(cat "$calls")" == bootstrap ]] || {
-    echo "self-test failed: run_apply did not converge to BOOTSTRAPPED only" >&2; return 1;
+    echo "self-test failed: run_apply did not enter bootstrap reconciliation" >&2; return 1;
   }
 
   status=0
@@ -898,7 +898,7 @@ apply_required_check_rejection_self_test() (
   [[ "$status" -eq 64 ]] && grep -Fq 'apply does not accept --required-check' "$output" || {
     echo "self-test failed: apply CLI did not reject --required-check before write preflight" >&2; return 1;
   }
-  echo "self-test: apply rejects --required-check and remains BOOTSTRAPPED-only: PASS"
+  echo "self-test: apply rejects --required-check and enters bootstrap reconciliation: PASS"
 )
 
 activate_live_check_self_test() (
@@ -1082,13 +1082,18 @@ bootstrap_idempotency_self_test() (
         cp "$input" "$ruleset"
         ruleset_exists=true
         ;;
+      PUT)
+        [[ "$4" == "repos/$REPO/rulesets/90" ]] || return 99
+        printf 'write:ruleset\n' >> "$calls"
+        cp "$input" "$ruleset"
+        ;;
       *) return 99 ;;
     esac
   }
   bootstrap_file() { printf 'protocol:%s\n' "$1" >> "$calls"; }
   DEVELOPER_APP_VERIFIED=true
   REVIEWER_APP_VERIFIED=true
-  run_bootstrap >/dev/null
+  run_apply >/dev/null
   local first_count first_log
   local audit_status=0 audit_report="$tmpdir/idempotent-audit-1.tsv"
   : > "$RESULTS"
@@ -1108,7 +1113,7 @@ bootstrap_idempotency_self_test() (
   [[ "$(sed -n '4,8p' "$calls" | cut -d: -f2 | tr '\n' ' ')" == "label repository ruleset security security " ]] || {
     echo "self-test failed: Genesis write order differs from canonical sequence" >&2; return 1;
   }
-  run_bootstrap >/dev/null
+  run_apply >/dev/null
   audit_status=0
   : > "$RESULTS"
   auditor
@@ -1131,6 +1136,72 @@ bootstrap_idempotency_self_test() (
   ' "$mock_repo_file" >/dev/null || return 1
   label_metadata_is_desired "$mock_labels_file" || return 1
   echo "self-test: Genesis order, preservation, and second apply idempotency: PASS"
+
+  REQUIRED_CHECK="consumer CI / linux"
+  CHECK_SHA="0123456789abcdef0123456789abcdef01234567"
+  verify_required_check_success() { :; }
+  run_activate > "$tmpdir/activated-report.tsv"
+  grep -q $'^SUMMARY\tACTIVE$' "$tmpdir/activated-report.tsv" || {
+    echo "self-test failed: activate did not report ACTIVE" >&2; return 1;
+  }
+  local active_count
+  active_count="$(grep -c '^write:' "$calls")"
+  [[ "$active_count" -eq $((first_count + 1)) ]] &&
+    jq -e --arg context "$REQUIRED_CHECK" '
+      [.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]?.context] == [$context]
+    ' "$ruleset" >/dev/null || {
+      echo "self-test failed: activate did not bind one exact Required Check" >&2; return 1;
+    }
+  REQUIRED_CHECK=""
+  run_apply > "$tmpdir/active-apply-report.tsv"
+  run_bootstrap > "$tmpdir/active-bootstrap-report.tsv"
+  [[ "$(grep -c '^write:' "$calls")" -eq "$active_count" ]] &&
+    grep -q $'^SUMMARY\tACTIVE$' "$tmpdir/active-apply-report.tsv" &&
+    grep -q $'^SUMMARY\tACTIVE$' "$tmpdir/active-bootstrap-report.tsv" &&
+    jq -e '
+      [.rules[] | select(.type == "required_status_checks")] as $rules |
+      ($rules | length) == 1 and
+      ($rules[0].parameters.required_status_checks | length) == 1 and
+      $rules[0].parameters.required_status_checks[0].context == "consumer CI / linux"
+    ' "$ruleset" >/dev/null || {
+      echo "self-test failed: apply/bootstrap removed or duplicated the ACTIVE Required Check" >&2; return 1;
+    }
+  echo "self-test: BOOTSTRAPPED -> activate -> apply/bootstrap preserves ACTIVE without writes: PASS"
+
+  jq '.rules |= map(if .type == "pull_request" then
+    .parameters.required_approving_review_count = 2
+    elif .type == "required_status_checks" then
+    .parameters.required_status_checks[0].integration_id = 42
+    else . end)' "$ruleset" > "$tmpdir/active-drift.json"
+  cp "$tmpdir/active-drift.json" "$ruleset"
+  REQUIRED_CHECK=""
+  run_apply > "$tmpdir/active-repair-report.tsv"
+  [[ "$(grep -c '^write:' "$calls")" -eq $((active_count + 1)) ]] &&
+    grep -q $'^SUMMARY\tACTIVE$' "$tmpdir/active-repair-report.tsv" &&
+    jq -e '
+      [.rules[] | select(.type == "required_status_checks")] as $rules |
+      ($rules | length) == 1 and
+      $rules[0].parameters.required_status_checks == [{context:"consumer CI / linux",integration_id:42}]
+    ' "$ruleset" >/dev/null &&
+    ruleset_governance_is_desired "$ruleset" || {
+      echo "self-test failed: ACTIVE drift repair did not preserve the exact CI gate" >&2; return 1;
+    }
+  echo "self-test: ACTIVE governance repair preserves exact context and integration binding: PASS"
+
+  jq '.rules |= map(if .type == "required_status_checks" then
+    .parameters.required_status_checks += [{context:"parallel-alias"}] else . end)' \
+    "$ruleset" > "$tmpdir/active-ambiguous.json"
+  cp "$tmpdir/active-ambiguous.json" "$ruleset"
+  active_count="$(grep -c '^write:' "$calls")"
+  local status=0
+  REQUIRED_CHECK=""
+  run_apply > "$tmpdir/active-ambiguous-report.tsv" || status=$?
+  [[ "$status" -eq 2 && "$(grep -c '^write:' "$calls")" -eq "$active_count" ]] &&
+    grep -q $'^DRIFT\tlive\trequired_check\tACTIVE Required Check is ambiguous' "$tmpdir/active-ambiguous-report.tsv" &&
+    ! grep -q $'^SUMMARY\t' "$tmpdir/active-ambiguous-report.tsv" || {
+      echo "self-test failed: ambiguous ACTIVE check was not blocked before Ruleset write" >&2; return 1;
+    }
+  echo "self-test: ambiguous ACTIVE check fails closed without a Ruleset write: PASS"
 )
 
 run_self_test() {

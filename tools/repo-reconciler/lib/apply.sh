@@ -177,7 +177,7 @@ ensure_security_setting() {
 }
 
 make_ruleset_payload() {
-  local current="$1" out="$2" phase="${3:-active}"
+  local current="$1" out="$2" phase="${3:-active}" preserved_check="${4:-null}"
   local extras="${RULESET_MERGED_FILE:-}" name branch check
   name="$RULESET_NAME"
   branch="$BRANCH"
@@ -191,6 +191,7 @@ make_ruleset_payload() {
     fi
   fi
   jq -n --arg name "$name" --arg branch "$branch" --arg check "$check" --arg phase "$phase" \
+    --argjson preserved_check "$preserved_check" \
     --argjson desired "$(jq -c '.ruleset' "$MANIFEST")" --slurpfile extras "$extras" '
     ($extras[0] // []) as $extra |
     [
@@ -216,12 +217,30 @@ make_ruleset_payload() {
           [{type:"required_status_checks",parameters:{
             strict_required_status_checks_policy:$desired.strict_required_status_checks_policy,
             do_not_enforce_on_create:$desired.do_not_enforce_on_create,
-            required_status_checks:[{context:$check}]
+            required_status_checks:(if $preserved_check == null then [{context:$check}] else [$preserved_check] end)
           }}]
         else [] end
       ))
     }
   ' > "$out"
+}
+
+live_single_required_check() {
+  local file="$1"
+  jq -er '
+    [.rules[]? | select(.type == "required_status_checks")] as $rules |
+    if ($rules | length) == 1 and
+       ($rules[0].parameters | type) == "object" and
+       (($rules[0].parameters | keys) - ["required_status_checks", "strict_required_status_checks_policy", "do_not_enforce_on_create"] | length) == 0 and
+       ($rules[0].parameters.required_status_checks | type) == "array" and
+       ($rules[0].parameters.required_status_checks | length) == 1 and
+       ($rules[0].parameters.required_status_checks[0] | type) == "object" and
+       (($rules[0].parameters.required_status_checks[0] | keys) - ["context", "integration_id"] | length) == 0 and
+       ($rules[0].parameters.required_status_checks[0].context | type) == "string" and
+       ($rules[0].parameters.required_status_checks[0].context | length) > 0 and
+       (($rules[0].parameters.required_status_checks[0].integration_id // 0) | type) == "number"
+    then $rules[0].parameters.required_status_checks[0] else empty end
+  ' "$file"
 }
 
 ruleset_phase_is_desired() {
@@ -236,7 +255,7 @@ ruleset_phase_is_desired() {
 
 ensure_ruleset_state() {
   local phase="$1" payload="$tmpdir/ruleset-payload.json" error="$tmpdir/ruleset-write.err"
-  local write_error="$tmpdir/ruleset-write-copy.err" id file
+  local write_error="$tmpdir/ruleset-write-copy.err" id file preserved_check=null live_context
   RULESET_NAME="$(jq -r '.ruleset.name' "$MANIFEST")"
   if ! load_named_ruleset; then
     record_write_failure ruleset "$RULESET_ERROR"
@@ -251,6 +270,27 @@ ensure_ruleset_state() {
     printf 'DRIFT\tlive\truleset\tUnrecognized Ruleset may overlap target branch; refusing to create a second Ruleset\n' >> "$WRITE_RESULTS"
     return 1
   fi
+  if [[ "$phase" == bootstrap ]]; then
+    for file in "${RULESET_FILES[@]}"; do
+      if ! ruleset_has_no_required_check "$file"; then
+        if [[ ${#RULESET_IDS[@]} -ne 1 ]] ||
+          [[ "$(jq -r '.name // empty' "$file")" != "$RULESET_NAME" ]] ||
+          ! preserved_check="$(live_single_required_check "$file")"; then
+          printf 'DRIFT\tlive\trequired_check\tACTIVE Required Check is ambiguous; refusing Ruleset write\n' >> "$WRITE_RESULTS"
+          return 1
+        fi
+        live_context="$(jq -r '.context' <<<"$preserved_check")"
+        if ! jq -e --arg context "$live_context" '.context == $context' <<<"$preserved_check" >/dev/null; then
+          printf 'DRIFT\tlive\trequired_check\tACTIVE Required Check context cannot be preserved exactly\n' >> "$WRITE_RESULTS"
+          return 1
+        fi
+        REQUIRED_CHECK="$live_context"
+        PHASE="active"
+        phase="active"
+        break
+      fi
+    done
+  fi
   if [[ ${#RULESET_IDS[@]} -eq 1 ]] &&
     [[ "$(jq -r '.name // empty' "$RULESET_FILE")" == "$RULESET_NAME" ]] &&
     ruleset_phase_is_desired "$RULESET_FILE" "$phase"; then
@@ -263,7 +303,7 @@ ensure_ruleset_state() {
       return 1
     fi
   done
-  make_ruleset_payload "$RULESET_FILE" "$payload" "$phase"
+  make_ruleset_payload "$RULESET_FILE" "$payload" "$phase" "$preserved_check"
   if [[ ${#RULESET_IDS[@]} -gt 0 ]]; then
     if ! gh api --method PUT "repos/$REPO/rulesets/$RULESET_ID" --input "$payload" >/dev/null 2>"$error"; then
       record_write_failure ruleset "$error"
@@ -302,6 +342,7 @@ ensure_ruleset() {
 run_bootstrap() {
   local entry path
   PHASE="bootstrap"
+  REQUIRED_CHECK=""
   while IFS= read -r entry; do
     path="$(jq -r '.path' <<<"$entry")"
     bootstrap_file "$path" || true
