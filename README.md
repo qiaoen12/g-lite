@@ -36,7 +36,13 @@ ordinary Git branch / worktree
   ↓
 Developer Agent
   ↓
-PR + consumer Required Check
+LOCAL GREEN
+  ↓
+PR
+  ↓
+CI GREEN
+  ↓
+REVIEW-READY
   ↓
 independent Reviewer
   ↓
@@ -44,6 +50,21 @@ GitHub APPROVE / REQUEST_CHANGES
   ↓
 Human Authority: Squash merge（可按任务级授权由 Main 机械执行）
 ```
+
+实现先到达 LOCAL GREEN，再开 PR。
+当前 HEAD 的 CI GREEN 之后才是 REVIEW-READY，然后进入独立 Reviewer。
+CI 为红则回到 Developer。Reviewer 不是第二个 debugger。
+
+对本 canonical 仓库，LOCAL GREEN 是 `tests/run.sh` 通过。
+CI GREEN 是同一 runner 在当前 PR HEAD 上通过。
+Required Check 名仍是 `pr-gate`。
+`.github/workflows/pr-gate.yml` 是薄 GitHub wrapper，只调用 `bash tests/run.sh`。
+consumer repo 不要求复制这条 canonical runner，继续使用自己的稳定 Required Check。
+
+REVIEW-READY 由这些事实推出，不是 label、数据库字段、cache、文件或本地状态机。
+中等及以上工作先在 Contract 写 Implementation & Verification Plan。
+纯文档或琐碎工作可以写明完整计划不适用。
+验证层级、Permanent / Stage / Pilot、Start Map 与 Stage Map 的定义见 `AGENTS.md`。
 
 删掉本仓库里任何一个非协议模块之后，这条闭环必须仍然完整。
 
@@ -143,11 +164,12 @@ GitHub 是 Issue authorization、PR、Checks、Review、Ruleset、merge eligibil
 2. 确认 Issue 为 OPEN。
 3. 读取当前 `approved` 及最新 label event、Contract 最近 body edit；确认 authorization FRESH 且批准 Actor 独立。
 4. Developer 从最新 `origin/main` 创建普通 branch / worktree。
-5. 只改 Contract 允许的范围。
-6. push 并开 PR；PR 用 `Fixes #N` 关联 Issue。
-7. 等待 consumer repo 自己的 Required Check。失败则修本 PR 引入的问题，不绕过门。
-8. 独立 Reviewer 重新读取 Contract、fresh approval、当前 HEAD/diff、Checks。
-9. Main 重新核对当前门禁；Human Authority 在满足门禁后执行最终 Squash merge，或按当前任务的明确授权由 Main 使用其身份机械执行。
+5. 只改 Contract 允许的范围。中等或更大的工作先有 Implementation & Verification Plan；纯文档或琐碎工作可以写明完整计划不适用。
+6. 跑到 LOCAL GREEN。canonical 仓库跑 `tests/run.sh`。
+7. push 并开 PR；PR 用 `Fixes #N` 关联 Issue。
+8. 等待当前 HEAD 的 CI GREEN。失败则修本 PR 引入的问题，不绕过门。canonical 的 `pr-gate` 只跑同一入口。
+9. 任务要求的本地验证、该 HEAD 的 `pr-gate` 都通过，且没有已知未解决的 Contract blocker 时，才是 REVIEW-READY。独立 Reviewer 再读取 Contract、fresh approval、当前 HEAD/diff、Checks。
+10. Main 重新核对当前门禁；Human Authority 在满足门禁后执行最终 Squash merge，或按当前任务的明确授权由 Main 使用其身份机械执行。
 
 Codex / Cursor / Claude Code / Grok 等只是可替换工作台。
 

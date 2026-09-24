@@ -95,6 +95,70 @@ Developer / Reviewer 使用 short-lived Installation Access Token；private key�
 
 Codex / Cursor / Claude Code / Grok 等只是可替换工作台。
 
+## 开发验证生命周期
+
+开发验证是协议层生命周期，不是新的 runtime。
+不创建 label、数据库字段、cache、文件或本地状态机来记录验证进度。
+Git、GitHub 与测试结果仍是事实。
+
+中等或更大的工作，在实现前把 Implementation & Verification Plan 写进当前 Contract。
+计划至少写明：预期文件与责任边界、实现与测试的大致规模、主要复杂度或风险、本任务选用的验证层级、Local / CI / Pilot 放置、Permanent / Stage / Pilot、LOCAL GREEN、CI GREEN、REVIEW-READY，以及停止条件。
+纯文档或琐碎工作可以写明完整计划不适用。
+
+Contract 只选用能提供该任务证据的层级，不必填满每一级：
+
+- **L0 Static** — 语法、必需文件、schema 或基本一致性，以及 `git diff --check`。
+- **L1 Unit** — 单个函数或变换。
+- **L2 Integration** — 组合后的模块，以及被模拟的边界。
+- **L3 Acceptance / Contract** — Issue 承诺的行为；在相关时包括精确收敛与幂等。
+- **L4 E2E / Pilot** — 真实环境的整链验证，仅当副作用或成本值得时使用。
+
+测试有三种生命周期：
+
+- **Permanent** — 长期回归，留在仓库测试与 CI。
+- **Stage** — 任务或 worktree 上的临时验证。
+- **Pilot** — 真实环境、昂贵或带副作用的验证。
+
+每个 Stage 测试在任务完成前必须恰好结束为一种处置：`PROMOTE`（升为 Permanent）、`KEEP MANUAL`（明确的手工、发布或 nightly 步骤）或 `DELETE`（删掉一次性验证）。
+
+canonical 仓库的验证入口是 `tests/run.sh`。
+它检查必需文件、协议 marker 与 heading、shell 静态合法性、manifest JSON / schema。
+它也检查禁用的 legacy 路径与遗留行为，并确认 workflow 调用这条入口。
+然后运行 `tools/repo-reconciler/reconcile.sh` self-test 与 `tools/machine-bootstrap/tests/self-test.py`。
+consumer repo 不要求复制这条 canonical runner。
+它们用自己的 Required Check 覆盖真实技术栈风险。
+
+对本 canonical 仓库：
+
+```text
+LOCAL GREEN = tests/run.sh PASS
+CI GREEN    = 同一 runner 在当前 PR HEAD 上于 GitHub PASS
+```
+
+Required Check 名仍是 `pr-gate`。
+`.github/workflows/pr-gate.yml` 是薄 GitHub wrapper，只执行 `bash tests/run.sh`。
+这次 GitHub 运行是可审计的干净重跑，也是 CI 事实来源。
+
+`REVIEW-READY` 是从事实推出的结论，不是 label、数据库字段、cache、文件或本地状态机。
+普通实现工作至少要同时满足：该任务要求的本地验证已经通过，存在指向预定 HEAD 的 PR，该 HEAD 上的 `pr-gate` 通过，并且没有已知且未解决的 Contract blocker。
+CI 失败就回到 Developer。Reviewer 不是第二个 debugger。
+独立 Reviewer 在 REVIEW-READY 之后进入，核对 Contract 契合、范围、结构、测试可信度与语义正确性。
+最终 Squash merge 仍由 Human Authority 执行。
+
+**Start Map** 是开工前的 Contract 与 Implementation & Verification Plan。
+**Stage Map** 是检查点上对 Git、GitHub 与测试事实的投影，不是第二份存储。
+下面只是推荐顺序里的检查点名称：
+
+```text
+AUTHORIZED
+→ TESTS / ACCEPTANCE READY
+→ LOCAL GREEN
+→ PR OPEN
+→ CI GREEN / REVIEW-READY
+→ REVIEWED
+→ MERGED / CLEANUP
+```
+
 ## Main 连续交付 SOP
 
 1. 新任务先记录 Original Intent（用户原话或固定 PRD 引用），再写当前 Issue Contract。
