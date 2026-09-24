@@ -145,20 +145,6 @@ CI 失败就回到 Developer。Reviewer 不是第二个 debugger。
 独立 Reviewer 在 REVIEW-READY 之后进入，核对 Contract 契合、范围、结构、测试可信度与语义正确性。
 最终 Squash merge 仍由 Human Authority 执行。
 
-**Start Map** 是开工前的 Contract 与 Implementation & Verification Plan。
-**Stage Map** 是检查点上对 Git、GitHub 与测试事实的投影，不是第二份存储。
-下面只是推荐顺序里的检查点名称：
-
-```text
-AUTHORIZED
-→ TESTS / ACCEPTANCE READY
-→ LOCAL GREEN
-→ PR OPEN
-→ CI GREEN / REVIEW-READY
-→ REVIEWED
-→ MERGED / CLEANUP
-```
-
 ## Main 连续交付 SOP
 
 1. 新任务先记录 Original Intent（用户原话或固定 PRD 引用），再写当前 Issue Contract。

@@ -64,7 +64,7 @@ consumer repo 不要求复制这条 canonical runner，继续使用自己的稳�
 REVIEW-READY 由这些事实推出，不是 label、数据库字段、cache、文件或本地状态机。
 中等及以上工作先在 Contract 写 Implementation & Verification Plan。
 纯文档或琐碎工作可以写明完整计划不适用。
-验证层级、Permanent / Stage / Pilot、Start Map 与 Stage Map 的定义见 `AGENTS.md`。
+验证层级、Permanent / Stage / Pilot 的定义见 `AGENTS.md`。
 
 删掉本仓库里任何一个非协议模块之后，这条闭环必须仍然完整。
 
