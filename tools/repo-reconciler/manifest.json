@@ -21,15 +21,29 @@
       {"path": ".github/pull_request_template.md", "markers": ["## Why", "Issue Contract:", "## What", "## Test", "## Unverified / Risks", "Fixes #"]}
     ]
   },
-  "required_label": {"name": "approved", "color": "0e8a16", "description": "Independent authorization for the current Issue Contract version"},
+  "required_label": {"name": "approved", "legacy_names": ["G-lite approved"], "color": "0e8a16", "description": "Independent authorization for the current Issue Contract version"},
+  "repository_settings": {
+    "allow_merge_commit": false,
+    "allow_squash_merge": true,
+    "allow_rebase_merge": false
+  },
+  "security_and_analysis": {
+    "secret_scanning": {"status": "enabled"},
+    "secret_scanning_push_protection": {"status": "enabled"}
+  },
   "ruleset": {
     "name": "G-lite main",
+    "legacy_names": ["G-lite main legacy", "G-lite main v3"],
     "required_approvals": 1,
     "dismiss_stale_reviews_on_push": true,
+    "require_code_owner_review": false,
     "require_last_push_approval": false,
+    "required_review_thread_resolution": false,
     "allowed_merge_methods": ["squash"],
     "block_deletions": true,
     "block_non_fast_forward": true,
+    "strict_required_status_checks_policy": false,
+    "do_not_enforce_on_create": false,
     "bypass": "none"
   },
   "states": ["PASS", "DRIFT", "PLATFORM_BLOCKER", "PERMISSION_BLOCKER", "UNVERIFIED"]

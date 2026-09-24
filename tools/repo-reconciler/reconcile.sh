@@ -12,8 +12,8 @@ Usage:
   reconcile.sh audit     [--repo OWNER/REPO] [--branch NAME] [--phase bootstrap|active] [--required-check NAME]
   reconcile.sh plan      [--repo OWNER/REPO] [--branch NAME] [--phase bootstrap|active] [--required-check NAME]
   reconcile.sh bootstrap [--repo OWNER/REPO] [--branch NAME] --human-authority-verified --developer-app-verified --reviewer-app-verified
-  reconcile.sh activate  --required-check NAME [--repo OWNER/REPO] [--branch NAME] --human-authority-verified --developer-app-verified --reviewer-app-verified
-  reconcile.sh apply     [--repo OWNER/REPO] [--branch NAME] [--required-check NAME] --human-authority-verified --developer-app-verified --reviewer-app-verified
+  reconcile.sh activate  --required-check NAME --check-sha FULL_COMMIT_SHA [--repo OWNER/REPO] [--branch NAME] --human-authority-verified --developer-app-verified --reviewer-app-verified
+  reconcile.sh apply     [--repo OWNER/REPO] [--branch NAME] --human-authority-verified --developer-app-verified --reviewer-app-verified
   reconcile.sh upgrade   [--repo OWNER/REPO] [--branch NAME] [--phase bootstrap|active] [--required-check NAME]
   reconcile.sh self-test
 
@@ -32,6 +32,9 @@ assertion; none of these assertions grants Developer / Reviewer governance power
 The tool reads GitHub facts with gh, writes only the bootstrap baseline and
 G-lite-owned label/ruleset facts, and keeps all intermediate data ephemeral.
 It never selects, generates, or edits consumer CI.
+Activate checks the exact context on the supplied commit SHA through live GitHub
+Check Runs and commit statuses before binding it. It does not select a SHA from
+the default branch or infer a check name from a workflow.
 USAGE
 }
 
@@ -50,6 +53,7 @@ REPO=""
 BRANCH=""
 DEFAULT_BRANCH=""
 REQUIRED_CHECK=""
+CHECK_SHA=""
 HUMAN_AUTHORITY_VERIFIED=false
 DEVELOPER_APP_VERIFIED=false
 REVIEWER_APP_VERIFIED=false
@@ -61,6 +65,7 @@ while [[ $# -gt 0 ]]; do
     --branch) BRANCH="${2:?missing --branch value}"; shift 2 ;;
     --phase) PHASE="${2:?missing --phase value}"; shift 2 ;;
     --required-check) REQUIRED_CHECK="${2:?missing --required-check value}"; shift 2 ;;
+    --check-sha) CHECK_SHA="${2:?missing --check-sha value}"; shift 2 ;;
     --human-authority-verified) HUMAN_AUTHORITY_VERIFIED=true; shift ;;
     --developer-app-verified) DEVELOPER_APP_VERIFIED=true; shift ;;
     --reviewer-app-verified) REVIEWER_APP_VERIFIED=true; shift ;;
@@ -75,8 +80,25 @@ fi
 if [[ "$ACTION" == "activate" ]]; then
   PHASE="active"
 fi
+if [[ "$ACTION" == "apply" && -n "$REQUIRED_CHECK" ]]; then
+  echo "apply does not accept --required-check; use activate to bind an exact Required Check" >&2
+  exit 64
+fi
+if [[ "$ACTION" == "apply" ]]; then
+  PHASE="bootstrap"
+fi
 if [[ "$ACTION" == "activate" && -z "$REQUIRED_CHECK" ]]; then
   echo "activate requires --required-check NAME" >&2
+  exit 64
+fi
+if [[ "$ACTION" == "activate" ]]; then
+  [[ "$CHECK_SHA" =~ ^[[:xdigit:]]{40}$ ]] || {
+    echo "activate requires --check-sha FULL_COMMIT_SHA (40 hexadecimal characters)" >&2
+    exit 64
+  }
+  CHECK_SHA="$(tr '[:upper:]' '[:lower:]' <<< "$CHECK_SHA")"
+elif [[ -n "$CHECK_SHA" ]]; then
+  echo "--check-sha is only valid for activate" >&2
   exit 64
 fi
 [[ "$PHASE" == "bootstrap" || "$PHASE" == "active" ]] || {
@@ -95,6 +117,11 @@ jq -e '
   (.protocol.markers | length == 3) and
   (([.bootstrap[].path, .protocol.markers[].path] | index("README.md")) == null) and
   (.required_label.name == "approved") and
+  (.repository_settings.allow_merge_commit == false) and
+  (.repository_settings.allow_squash_merge == true) and
+  (.repository_settings.allow_rebase_merge == false) and
+  (.security_and_analysis.secret_scanning.status == "enabled") and
+  (.security_and_analysis.secret_scanning_push_protection.status == "enabled") and
   (.ruleset.required_approvals == 1) and
   (.ruleset.allowed_merge_methods == ["squash"]) and
   (["PASS", "DRIFT", "PLATFORM_BLOCKER", "PERMISSION_BLOCKER", "UNVERIFIED"] - .states | length == 0)
