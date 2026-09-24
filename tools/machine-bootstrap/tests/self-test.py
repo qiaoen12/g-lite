@@ -61,6 +61,31 @@ class RoleEntryTests(unittest.TestCase):
         self.assertEqual(env["GIT_CONFIG_GLOBAL"], os.devnull)
         self.assertEqual(env["GIT_CONFIG_NOSYSTEM"], "1")
 
+    def test_bootstrap_xtrace_cannot_log_the_installation_token(self):
+        token = "role-entry-test-token"
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap, fake_python = Path(tmp) / "app-env.sh", Path(tmp) / "python"
+            bootstrap.write_text(
+                "set -x\n"
+                "GITHUB_APP_ROLE=developer\n"
+                f"GH_TOKEN={token}\n"
+                "export GITHUB_APP_ROLE GH_TOKEN\n",
+                encoding="utf-8",
+            )
+            fake_python.write_text("#!/bin/sh\nprintf 'fake child reached\\n'\n",
+                                   encoding="utf-8")
+            fake_python.chmod(0o700)
+            result = subprocess.run(
+                ["/bin/sh", "-c", role.BOOTSTRAP_SHELL, "role-exec",
+                 str(bootstrap), "developer", str(fake_python), "fake-runner.py",
+                 "check", "o/r"],
+                env=role.clean_environment(), capture_output=True, text=True,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "fake child reached\n")
+        self.assertNotIn(token, result.stdout + result.stderr)
+
     def test_global_https_rewrite_is_ignored_and_local_rewrite_blocks(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo, global_config = Path(tmp) / "repo", Path(tmp) / "global"
@@ -93,20 +118,29 @@ class RoleEntryTests(unittest.TestCase):
             "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "G_LITE_DEVELOPER_PRIVATE_KEY_FILE")))
         self.assertEqual(env["GIT_CONFIG_KEY_0"], "credential.helper")
 
-    def test_askpass_answers_only_github_password_prompts(self):
+    def test_askpass_answers_only_exact_github_password_prompts(self):
         with tempfile.TemporaryDirectory() as tmp:
             askpass = Path(tmp) / "askpass"
             role.write_askpass(askpass)
-            result = subprocess.run([str(askpass),
-                                     "Password for 'https://x-access-token@github.com': "],
-                                    env={"GH_TOKEN": "app-token"},
-                                    capture_output=True, text=True, check=True)
-            self.assertEqual(result.stdout, "app-token\n")
-            rejected = subprocess.run([str(askpass), "Password for 'https://other.example': "],
-                                      env={"GH_TOKEN": "app-token"},
-                                      capture_output=True, text=True)
-            self.assertNotEqual(rejected.returncode, 0)
-            self.assertEqual(rejected.stdout, "")
+            valid = subprocess.run(
+                [str(askpass), "Password for 'https://x-access-token@github.com': "],
+                env={"GH_TOKEN": "app-token"}, capture_output=True, text=True,
+                check=True,
+            )
+            self.assertEqual(valid.stdout, "app-token\n")
+            for prompt in (
+                "Password for 'https://other.example': ",
+                "Password for 'https://github.com.evil.example': ",
+                "Password for 'https://github.com@evil.example': ",
+                "Password for 'http://github.com': ",
+            ):
+                with self.subTest(prompt=prompt):
+                    rejected = subprocess.run(
+                        [str(askpass), prompt], env={"GH_TOKEN": "app-token"},
+                        capture_output=True, text=True,
+                    )
+                    self.assertNotEqual(rejected.returncode, 0)
+                    self.assertEqual(rejected.stdout, "")
 
 
 if __name__ == "__main__":

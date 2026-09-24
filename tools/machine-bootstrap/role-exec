@@ -69,15 +69,14 @@ def bootstrap_path():
     return Path(configured).expanduser() if configured else Path.home() / ".config/g-lite/bin/app-env.sh"
 
 
-def launch_bootstrap(role, mode, repo, command):
-    bootstrap = bootstrap_path()
-    if not bootstrap.is_file():
-        block("machine role bootstrap is unavailable")
-    shell = r'''
+BOOTSTRAP_SHELL = r'''
 set +x
 bootstrap=$1 role=$2 python=$3 runner=$4 mode=$5 repo=$6
 shift 6
-. "$bootstrap" "$role" >/dev/null 2>&1 || {
+. "$bootstrap" "$role" >/dev/null 2>&1
+bootstrap_status=$?
+set +x
+[ "$bootstrap_status" -eq 0 ] || {
   printf '%s\n' 'BLOCK: machine role bootstrap failed' >&2
   exit 3
 }
@@ -93,7 +92,13 @@ export GH_TOKEN="${GH_TOKEN:-$GITHUB_TOKEN}"
 unset GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN
 exec "$python" "$runner" --_role-ready "$role" "$mode" "$repo" "$@"
 '''
-    args = ["/bin/sh", "-c", shell, "role-exec", str(bootstrap), role,
+
+
+def launch_bootstrap(role, mode, repo, command):
+    bootstrap = bootstrap_path()
+    if not bootstrap.is_file():
+        block("machine role bootstrap is unavailable")
+    args = ["/bin/sh", "-c", BOOTSTRAP_SHELL, "role-exec", str(bootstrap), role,
             sys.executable, str(Path(__file__).resolve()), mode, repo or "", *command]
     try:
         return subprocess.run(args, env=clean_environment(), check=False, timeout=180).returncode
@@ -193,10 +198,30 @@ def child_environment(role, token, gh_config, askpass=None):
 
 
 def write_askpass(path):
+    source = f'''#!{sys.executable}
+import os
+import re
+import sys
+from urllib.parse import urlsplit
+
+prompt = sys.argv[1] if len(sys.argv) == 2 else ""
+match = re.fullmatch(r"Password for '(.+)': ", prompt)
+if match is None:
+    sys.exit(1)
+try:
+    parsed = urlsplit(match.group(1))
+    port = parsed.port
+except ValueError:
+    sys.exit(1)
+if (parsed.scheme != "https" or parsed.hostname != "github.com"
+        or port not in (None, 443)
+        or parsed.username not in (None, "x-access-token")
+        or parsed.password is not None):
+    sys.exit(1)
+sys.stdout.write(os.environ["GH_TOKEN"] + "\\n")
+'''
     with open(path, "w", encoding="utf-8") as script:
-        script.write('#!/bin/sh\ncase "$1" in\n'
-                     '  *Password*github.com*|*github.com*Password*) printf "%s\\n" "$GH_TOKEN" ;;\n'
-                     '  *) exit 1 ;;\nesac\n')
+        script.write(source)
     os.chmod(path, 0o700)
 
 
