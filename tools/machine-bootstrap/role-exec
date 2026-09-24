@@ -1,0 +1,256 @@
+#!/usr/bin/env python3
+"""Run a command through the machine's short-lived G-lite role bootstrap."""
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+API = "https://api.github.com"
+ROLES = ("developer", "reviewer")
+EXPECTED_ACTORS = {
+    "developer": "g-lite-developer[bot]",
+    "reviewer": "g-lite-reviewer[bot]",
+}
+
+
+class Blocked(Exception):
+    pass
+
+
+def block(message):
+    raise Blocked(message)
+
+
+def repo_name(value):
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", value or ""):
+        block("invalid repository; expected OWNER/REPO")
+    return value
+
+
+def parse_args(args):
+    usage = "role-exec {developer|reviewer} check --repo OWNER/REPO | [--repo OWNER/REPO] -- COMMAND"
+    if len(args) < 2 or args[0] not in ROLES:
+        block("usage: " + usage)
+    role, rest = args[0], args[1:]
+    if rest[0] == "check":
+        if len(rest) != 3 or rest[1] != "--repo":
+            block("check requires --repo OWNER/REPO")
+        return role, "check", repo_name(rest[2]), []
+    target = None
+    if rest[0] == "--repo":
+        if len(rest) < 3:
+            block("exec requires --repo OWNER/REPO -- COMMAND")
+        target, rest = rest[1], rest[2:]
+    if not rest or rest[0] != "--" or len(rest) < 2:
+        block("exec requires -- COMMAND")
+    return role, "exec", repo_name(target) if target else None, rest[1:]
+
+
+def clean_environment(source=None):
+    env = dict(os.environ if source is None else source)
+    for key in list(env):
+        if (key.startswith(("GH_", "G_LITE_", "GITHUB_APP_", "GIT_"))
+                or key in ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN",
+                           "GITHUB_ENTERPRISE_TOKEN", "BASH_ENV", "ENV",
+                           "SHELLOPTS", "BASHOPTS")):
+            env.pop(key, None)
+    env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+    return env
+
+
+def bootstrap_path():
+    configured = os.environ.get("G_LITE_APP_ENV")
+    return Path(configured).expanduser() if configured else Path.home() / ".config/g-lite/bin/app-env.sh"
+
+
+def launch_bootstrap(role, mode, repo, command):
+    bootstrap = bootstrap_path()
+    if not bootstrap.is_file():
+        block("machine role bootstrap is unavailable")
+    shell = r'''
+set +x
+bootstrap=$1 role=$2 python=$3 runner=$4 mode=$5 repo=$6
+shift 6
+. "$bootstrap" "$role" >/dev/null 2>&1 || {
+  printf '%s\n' 'BLOCK: machine role bootstrap failed' >&2
+  exit 3
+}
+[ "${GITHUB_APP_ROLE:-}" = "$role" ] || {
+  printf '%s\n' 'BLOCK: bootstrap returned a different role' >&2
+  exit 3
+}
+[ -n "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ] || {
+  printf '%s\n' 'BLOCK: bootstrap returned no Installation Access Token' >&2
+  exit 3
+}
+export GH_TOKEN="${GH_TOKEN:-$GITHUB_TOKEN}"
+unset GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN
+exec "$python" "$runner" --_role-ready "$role" "$mode" "$repo" "$@"
+'''
+    args = ["/bin/sh", "-c", shell, "role-exec", str(bootstrap), role,
+            sys.executable, str(Path(__file__).resolve()), mode, repo or "", *command]
+    try:
+        return subprocess.run(args, env=clean_environment(), check=False, timeout=180).returncode
+    except subprocess.TimeoutExpired:
+        block("machine role bootstrap timed out")
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, message, headers, newurl):
+        return None
+
+
+OPENER = urllib.request.build_opener(NoRedirect)
+
+
+def api_json(path, token, body=None):
+    data = None if body is None else json.dumps(body).encode()
+    headers = {"Accept": "application/vnd.github+json",
+               "X-GitHub-Api-Version": "2022-11-28",
+               "Authorization": "Bearer " + token}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(API + path, data=data, headers=headers)
+    try:
+        with OPENER.open(request, timeout=20) as response:
+            return json.load(response)
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError,
+            ValueError, TimeoutError):
+        block("GitHub request failed")
+
+
+def verify_role(role, repo, token):
+    result = api_json("/graphql", token, {"query": "query { viewer { login } }"})
+    viewer = (result.get("data") or {}).get("viewer") if isinstance(result, dict) else None
+    actor = viewer.get("login") if isinstance(viewer, dict) else None
+    if actor != EXPECTED_ACTORS[role]:
+        block("live API Actor does not match the expected role")
+    owner, name = repo.split("/", 1)
+    api_json("/repos/" + urllib.parse.quote(owner, safe="") + "/" +
+             urllib.parse.quote(name, safe=""), token)
+    return actor
+
+
+def git_environment(source=None):
+    return clean_environment(source)
+
+
+def parse_github_https(url):
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        if (parsed.scheme != "https" or parsed.hostname != "github.com"
+                or parsed.netloc.lower() != "github.com" or parsed.username or parsed.password
+                or parsed.query or parsed.fragment):
+            block("effective origin must be GitHub HTTPS")
+        parts = parsed.path.strip("/").removesuffix(".git").split("/")
+        if len(parts) != 2:
+            block("effective origin does not identify one repository")
+        return repo_name("/".join(parts))
+    except ValueError:
+        block("effective origin is invalid")
+
+
+def repo_from_origin(source=None):
+    try:
+        result = subprocess.run(["git", "config", "--local", "--get", "remote.origin.url"],
+                                env=git_environment(source), capture_output=True,
+                                text=True, check=True)
+    except (OSError, subprocess.CalledProcessError):
+        block("exec requires a repository with a GitHub HTTPS origin")
+    return parse_github_https(result.stdout.strip())
+
+
+def verify_effective_origin(repo, source=None, cwd=None):
+    try:
+        result = subprocess.run(["git", "remote", "get-url", "origin"],
+                                env=git_environment(source), capture_output=True,
+                                text=True, check=True, cwd=cwd)
+    except (OSError, subprocess.CalledProcessError):
+        block("effective origin could not be verified")
+    actual = parse_github_https(result.stdout.strip())
+    if actual.casefold() != repo.casefold():
+        block("effective HTTPS origin does not match the target repository")
+
+
+def child_environment(role, token, gh_config, askpass=None):
+    env = clean_environment()
+    env.update(GH_TOKEN=token, GH_CONFIG_DIR=gh_config, GH_HOST="github.com",
+               GH_PROMPT_DISABLED="1", GIT_TERMINAL_PROMPT="0",
+               GIT_ALLOW_PROTOCOL="https", GIT_CONFIG_COUNT="3",
+               GIT_CONFIG_KEY_0="credential.helper", GIT_CONFIG_VALUE_0="",
+               GIT_CONFIG_KEY_1="credential.username",
+               GIT_CONFIG_VALUE_1="x-access-token",
+               GIT_CONFIG_KEY_2="http.extraheader", GIT_CONFIG_VALUE_2="")
+    if role == "developer":
+        env.update(GIT_ASKPASS=askpass, GIT_ASKPASS_REQUIRE="force")
+    return env
+
+
+def write_askpass(path):
+    with open(path, "w", encoding="utf-8") as script:
+        script.write('#!/bin/sh\ncase "$1" in\n'
+                     '  *Password*github.com*|*github.com*Password*) printf "%s\\n" "$GH_TOKEN" ;;\n'
+                     '  *) exit 1 ;;\nesac\n')
+    os.chmod(path, 0o700)
+
+
+def run_child(role, repo, command, token, actor):
+    try:
+        with tempfile.TemporaryDirectory(prefix="g-lite-role-") as temp_dir:
+            askpass = None
+            if role == "developer":
+                verify_effective_origin(repo)
+                askpass = os.path.join(temp_dir, "askpass")
+                write_askpass(askpass)
+            env = child_environment(role, token, temp_dir, askpass)
+            print(f"role={role} actor={actor} repo={repo} access=PASS", flush=True)
+            try:
+                return subprocess.run(command, env=env, check=False).returncode
+            except OSError:
+                block("child command could not be started")
+    except OSError:
+        block("temporary role execution setup failed")
+
+
+def role_ready(argv):
+    if len(argv) < 4 or argv[0] != "--_role-ready" or argv[1] not in ROLES:
+        block("invalid internal role invocation")
+    _, role, mode, repo, *command = argv
+    token = os.environ.get("GH_TOKEN", "")
+    if not token:
+        block("machine role bootstrap returned no token")
+    if mode == "exec" and not repo:
+        repo = repo_from_origin()
+    else:
+        repo = repo_name(repo)
+    actor = verify_role(role, repo, token)
+    if mode == "check":
+        print(f"role={role} actor={actor} repo={repo} access=PASS")
+        return 0
+    if mode != "exec" or not command:
+        block("invalid role execution request")
+    return run_child(role, repo, command, token, actor)
+
+
+def main(argv):
+    try:
+        if argv and argv[0] == "--_role-ready":
+            return role_ready(argv)
+        role, mode, repo, command = parse_args(argv)
+        return launch_bootstrap(role, mode, repo, command)
+    except Blocked as error:
+        print("BLOCK: " + str(error), file=sys.stderr)
+        return 3
+    except Exception:
+        print("BLOCK: role entry failed without exposing local details", file=sys.stderr)
+        return 3
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

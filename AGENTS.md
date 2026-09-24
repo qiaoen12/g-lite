@@ -62,7 +62,7 @@ INVALID / STALE / Actor 不独立时：
 - Reviewer 可独立 approved、Review、APPROVE / REQUEST_CHANGES；不开发、不 push、不修改 repository governance、不 merge。
 - Developer / Reviewer 不得自行修改约束自身的 Ruleset / governance。
 - Human Authority 是一个或多个具有目标仓库适当 GitHub 权限的人类账号，不绑定固定 username；门禁满足后可通过 GitHub UI、CLI、API 或受其明确指令控制的工具执行最终 Squash merge。不新增 Merge Bot / Merge Executor。
-- Main 是协调角色，不是第四个 GitHub Actor；仅在 Human Authority 对当前任务明确授权后，才可核对人类 Actor 并机械执行最终 merge。Main 不写 Developer 的 PR branch。
+- Main 是协调角色，不是第四个 GitHub Actor；可以主动调用当前 workspace / machine 中可用且已验证的 Developer / Reviewer role entry。缺少 `approved` 只阻止 Developer 开工，不阻止 Main 协调或 Reviewer 授权；Reviewer 只能在人重新确认当前 Contract 后独立添加 fresh `approved`。Main 仅在 Human Authority 对当前任务明确授权后，才可核对人类 Actor 并机械执行最终 merge，且不写 Developer 的 PR branch。
 - 不把 consumer-specific CI 实现塞回 canonical G-lite。
 
 ## 生命周期与本机身份
@@ -75,7 +75,7 @@ Local Bootstrap ≠ Repository Task：安装/轮换 GitHub App private key、建
 
 Developer / Reviewer 使用 short-lived Installation Access Token；private key、JWT、Installation Access Token、PAT 不得写入 repo、Issue、PR、日志证据或 canonical state。私钥仅由外部本机安全机制管理，token 不持久化到状态文件。不创建 identity registry 或 credential runtime。
 
-当前 shell 或 `gh` 显示 Human Authority Actor，不等于目标 Bot 凭据不存在。需要 Developer / Reviewer 身份时，先检查 `.g-lite-local/credentials` 的本机入口；缺失或不可用时，再检查机器本地 `~/.config/g-lite/` 配置入口，然后才报告凭据无法继续。发现阶段只检查选择目标 Actor 所需的路径存在性、类型和可访问性等最小元数据；不遍历或展示凭据内容，不记录私钥、JWT、token、PAT 或实际机器凭据绝对路径到 repo / Issue / PR / 日志。
+需要 Developer / Reviewer 身份时，先调用当前 workspace / machine 可用的 configured role entry；entry 必须实时验证预期 API Actor 与目标仓库访问。Credential path、环境变量存在或 Human `gh` 登录都不是身份凭据。Actor / access mismatch = BLOCK：停止该角色动作，不猜私钥布局、不尝试临时认证路径，也不回退到 Human 身份。只有没有可调用 role entry 时，才按本机约定检查 `.g-lite-local/credentials` 与 `~/.config/g-lite/` 的最小存在性、类型和可访问性元数据；不遍历或展示凭据内容，不记录私钥、JWT、token、PAT 或实际机器凭据绝对路径到 repo / Issue / PR / 日志。
 
 核验 API Actor（Installation Token 可用 GraphQL viewer）、commit 作者和 transport identity。Developer clone / fetch / push 必须使用 App HTTPS credential；每次操作前确认有效 remote 为 HTTPS、无影响 GitHub HTTPS 的 insteadOf rewrite。优先进程级 Git config / credential isolation，检查 local 配置，不删除用户 global Git / SSH 配置；防止 HTTPS 静默改写成 SSH。
 
@@ -99,7 +99,7 @@ Codex / Cursor / Claude Code / Grok 等只是可替换工作台。
 
 1. 新任务先记录 Original Intent（用户原话或固定 PRD 引用），再写当前 Issue Contract。
    现行 reconciler 不自动检查旧 consumer 是否已有 Original Intent。
-2. Main 持续读 CI 和 Review。CI 失败交 Developer 在当前范围修复；
+2. Main 可主动调用已验证的 Developer / Reviewer role entry；缺少 `approved` 只挡 Developer，不挡 Main 协调。Reviewer 可在人重新确认当前 Contract 后独立补 fresh `approved`。Main 持续读 CI 和 Review。CI 失败交 Developer 在当前范围修复；
    `REQUEST_CHANGES` 交 Developer 修改并 push 新 HEAD。
    等待该 HEAD 的 Required Checks，独立 Reviewer 对新 HEAD 重审；Main 再读取当前事实。
 3. Main 读取 GitHub live `main` SHA `B` 和当前 PR HEAD `H`，用 GitHub compare API

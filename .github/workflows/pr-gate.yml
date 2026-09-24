@@ -25,6 +25,7 @@ jobs:
           required=(
             README.md
             AGENTS.md
+            docs/machine-bootstrap.md
             .github/ISSUE_TEMPLATE/task.md
             .github/pull_request_template.md
             .github/workflows/pr-gate.yml
@@ -35,6 +36,8 @@ jobs:
             tools/repo-reconciler/lib/github.sh
             tools/repo-reconciler/tests/self-test.sh
             tools/repo-reconciler/templates/minimal-consumer-AGENTS.md
+            tools/machine-bootstrap/role-exec
+            tools/machine-bootstrap/tests/self-test.py
           )
           fail=0
           for f in "${required[@]}"; do
@@ -61,6 +64,8 @@ jobs:
           need README.md "核心闭环"
           need README.md "Issue Contract"
           need README.md "approved"
+          need README.md '缺少 `approved` 只阻止 Developer'
+          need README.md "不阻止 Main 协调"
           need README.md "pr-gate"
           need README.md "squash"
           need AGENTS.md "## 开工"
@@ -97,7 +102,10 @@ jobs:
           need AGENTS.md 'merge-authorized'
           need AGENTS.md 'gh pr merge --squash --match-head-commit H'
           need AGENTS.md '.g-lite-local/credentials'
-          need AGENTS.md '缺失或不可用时，再检查机器本地'
+          need AGENTS.md 'configured role entry'
+          need AGENTS.md '缺少 `approved` 只挡 Developer'
+          need docs/machine-bootstrap.md 'Machine Bootstrap'
+          need docs/machine-bootstrap.md 'role-exec developer check'
           need tools/repo-reconciler/templates/minimal-consumer-AGENTS.md '## Main delivery SOP'
           need tools/repo-reconciler/templates/minimal-consumer-AGENTS.md 'Failed CI or REQUEST_CHANGES'
           need tools/repo-reconciler/templates/minimal-consumer-AGENTS.md "must not write the Developer's PR branch"
@@ -136,6 +144,7 @@ jobs:
             (["PASS", "DRIFT", "PLATFORM_BLOCKER", "PERMISSION_BLOCKER", "UNVERIFIED"] - .states | length == 0)
           ' tools/repo-reconciler/manifest.json >/dev/null
           tools/repo-reconciler/reconcile.sh self-test
+          PYTHONDONTWRITEBYTECODE=1 python3 tools/machine-bootstrap/tests/self-test.py
           if grep -Fq 'check_success_for_branch' tools/repo-reconciler/reconcile.sh tools/repo-reconciler/lib/*.sh tools/repo-reconciler/tests/self-test.sh; then
             echo 'activate must not enforce default-branch CI success'
             exit 1
