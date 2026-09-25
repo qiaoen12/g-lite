@@ -142,6 +142,27 @@ def verify_role(role, repo, token):
     return actor
 
 
+def git_identity_from_bot_account(actor, account):
+    if actor != EXPECTED_ACTORS["developer"]:
+        block("live API Actor does not match the expected Developer role")
+    if (not isinstance(account, dict)
+            or account.get("login") != actor
+            or account.get("type") != "Bot"):
+        block("Developer Bot account metadata could not be verified")
+    account_id = account.get("id")
+    if isinstance(account_id, bool) or not isinstance(account_id, int) or account_id < 1:
+        block("Developer Bot account ID is unavailable or invalid")
+    return {
+        "name": actor,
+        "email": f"{account_id}+{actor}@users.noreply.github.com",
+    }
+
+
+def developer_git_identity(actor, token):
+    account = api_json("/users/" + urllib.parse.quote(actor, safe=""), token)
+    return git_identity_from_bot_account(actor, account)
+
+
 def git_environment(source=None):
     return clean_environment(source)
 
@@ -183,7 +204,7 @@ def verify_effective_origin(repo, source=None, cwd=None):
         block("effective HTTPS origin does not match the target repository")
 
 
-def child_environment(role, token, gh_config, askpass=None):
+def child_environment(role, token, gh_config, askpass=None, git_identity=None):
     env = clean_environment()
     env.update(GH_TOKEN=token, GH_CONFIG_DIR=gh_config, GH_HOST="github.com",
                GH_PROMPT_DISABLED="1", GIT_TERMINAL_PROMPT="0",
@@ -193,7 +214,16 @@ def child_environment(role, token, gh_config, askpass=None):
                GIT_CONFIG_VALUE_1="x-access-token",
                GIT_CONFIG_KEY_2="http.extraheader", GIT_CONFIG_VALUE_2="")
     if role == "developer":
+        if (not isinstance(git_identity, dict)
+                or set(git_identity) != {"name", "email"}):
+            block("verified Developer Git identity is unavailable")
         env.update(GIT_ASKPASS=askpass, GIT_ASKPASS_REQUIRE="force")
+        env.update(
+            GIT_AUTHOR_NAME=git_identity["name"],
+            GIT_AUTHOR_EMAIL=git_identity["email"],
+            GIT_COMMITTER_NAME=git_identity["name"],
+            GIT_COMMITTER_EMAIL=git_identity["email"],
+        )
     return env
 
 
@@ -229,11 +259,13 @@ def run_child(role, repo, command, token, actor):
     try:
         with tempfile.TemporaryDirectory(prefix="g-lite-role-") as temp_dir:
             askpass = None
+            git_identity = None
             if role == "developer":
                 verify_effective_origin(repo)
+                git_identity = developer_git_identity(actor, token)
                 askpass = os.path.join(temp_dir, "askpass")
                 write_askpass(askpass)
-            env = child_environment(role, token, temp_dir, askpass)
+            env = child_environment(role, token, temp_dir, askpass, git_identity)
             print(f"role={role} actor={actor} repo={repo} access=PASS", flush=True)
             try:
                 return subprocess.run(command, env=env, check=False).returncode

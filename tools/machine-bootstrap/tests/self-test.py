@@ -41,6 +41,31 @@ class RoleEntryTests(unittest.TestCase):
             with self.assertRaises(role.Blocked):
                 role.verify_role("developer", "o/r", "token")
 
+    def test_verified_bot_metadata_derives_canonical_git_identity(self):
+        actor = "g-lite-developer[bot]"
+        account = {"login": actor, "id": 331917148, "type": "Bot"}
+        self.assertEqual(
+            role.git_identity_from_bot_account(actor, account),
+            {
+                "name": actor,
+                "email": "331917148+g-lite-developer[bot]@users.noreply.github.com",
+            },
+        )
+        invalid_accounts = (
+            None,
+            {"login": "other[bot]", "id": 331917148, "type": "Bot"},
+            {"login": actor, "id": 331917148, "type": "User"},
+            {"login": actor, "type": "Bot"},
+            {"login": actor, "id": "331917148", "type": "Bot"},
+            {"login": actor, "id": True, "type": "Bot"},
+            {"login": actor, "id": 0, "type": "Bot"},
+        )
+        for invalid in invalid_accounts:
+            with self.subTest(account=invalid), self.assertRaises(role.Blocked):
+                role.git_identity_from_bot_account(actor, invalid)
+        with self.assertRaises(role.Blocked):
+            role.git_identity_from_bot_account("qiaoen12", account)
+
     def test_machine_bootstrap_environment_drops_human_identity(self):
         source = {
             "GH_TOKEN": "human",
@@ -106,17 +131,34 @@ class RoleEntryTests(unittest.TestCase):
         human = {"GITHUB_TOKEN": "human", "GH_TOKEN": "human",
                  "GH_ENTERPRISE_TOKEN": "human", "GH_CONFIG_DIR": "human-config",
                  "G_LITE_DEVELOPER_PRIVATE_KEY_FILE": "secret-path",
-                 "GIT_CONFIG_KEY_0": "url.ssh://git@github.com/.insteadOf"}
+                 "GIT_CONFIG_KEY_0": "url.ssh://git@github.com/.insteadOf",
+                 "GIT_AUTHOR_NAME": "qiaoen12",
+                 "GIT_AUTHOR_EMAIL": "human@example.invalid",
+                 "GIT_COMMITTER_NAME": "qiaoen12",
+                 "GIT_COMMITTER_EMAIL": "human@example.invalid"}
+        identity = {
+            "name": "g-lite-developer[bot]",
+            "email": "331917148+g-lite-developer[bot]@users.noreply.github.com",
+        }
         with patch.dict(os.environ, human):
-            env = role.child_environment("developer", "app-token", "empty-config", "askpass")
+            env = role.child_environment(
+                "developer", "app-token", "empty-config", "askpass", identity)
+            reviewer_env = role.child_environment("reviewer", "reviewer-token", "empty-config")
         self.assertEqual(env["GH_TOKEN"], "app-token")
         self.assertEqual(env["GH_CONFIG_DIR"], "empty-config")
         self.assertEqual(env["GIT_ASKPASS"], "askpass")
         self.assertEqual(env["GIT_ALLOW_PROTOCOL"], "https")
         self.assertEqual(env["GIT_CONFIG_GLOBAL"], os.devnull)
+        self.assertEqual(env["GIT_AUTHOR_NAME"], identity["name"])
+        self.assertEqual(env["GIT_AUTHOR_EMAIL"], identity["email"])
+        self.assertEqual(env["GIT_COMMITTER_NAME"], identity["name"])
+        self.assertEqual(env["GIT_COMMITTER_EMAIL"], identity["email"])
         self.assertTrue(all(key not in env for key in (
             "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "G_LITE_DEVELOPER_PRIVATE_KEY_FILE")))
         self.assertEqual(env["GIT_CONFIG_KEY_0"], "credential.helper")
+        self.assertTrue(all(key not in reviewer_env for key in (
+            "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
+            "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL")))
 
     def test_askpass_answers_only_exact_github_password_prompts(self):
         with tempfile.TemporaryDirectory() as tmp:
