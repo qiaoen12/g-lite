@@ -153,21 +153,25 @@ ps_classify_exact() {
 }
 
 ps_ancestor_safe() {
-  local dir
+  local dir path
   dir="$(dirname "$1")"
   while [[ "$dir" != "." ]]; do
-    [[ -L "$PS_CHECKOUT/$dir" ]] && return 1
+    path="$PS_CHECKOUT/$dir"
+    if [[ -e "$path" || -L "$path" ]]; then
+      [[ -d "$path" && ! -L "$path" ]] || return 1
+    fi
     dir="$(dirname "$dir")"
   done
+  return 0
 }
 
 ps_note() {
-  local status="$1" rel="$2" staged="${3:-}"
+  local status="$1" rel="$2" staged="${3:-}" expected="${4:-}"
   printf 'FILE\t%s\t%s\n' "$status" "$rel" >> "$PS_ROWS"
   case "$status" in
     changed)
       PS_CHANGE=1
-      printf '%s\t%s\n' "$rel" "$staged" >> "$PS_WRITES"
+      printf '%s\t%s\t%s\n' "$rel" "$staged" "$expected" >> "$PS_WRITES"
       ;;
     removed)
       PS_LEGACY=1
@@ -216,7 +220,7 @@ ps_payload_file() {
 }
 
 ps_plan_entries() {
-  local kind="$1" manifest="$2" entry path payload_rel payload staged status
+  local kind="$1" manifest="$2" entry path payload_rel payload staged status expected dest
   while IFS= read -r entry; do
     path="$(jq -r '.path' <<<"$entry")"
     payload_rel="$(jq -r '.payload' <<<"$entry")"
@@ -230,7 +234,17 @@ ps_plan_entries() {
     else
       status="$(ps_classify_managed "$path" "$payload" "$staged")" || ps_die_unverified "classify"
     fi
-    if [[ "$status" == changed ]]; then ps_note changed "$path" "$staged"; else ps_note "$status" "$path"; fi
+    if [[ "$status" == changed ]]; then
+      expected="-"
+      dest="$PS_CHECKOUT/$path"
+      if [[ -f "$dest" && ! -L "$dest" ]]; then
+        expected="$staged.before"
+        cp -- "$dest" "$expected" || ps_die_unverified "destination snapshot"
+      fi
+      ps_note changed "$path" "$staged" "$expected"
+    else
+      ps_note "$status" "$path"
+    fi
   done < <(jq -c --arg kind "$kind" '.protocol_sync[$kind][]' "$manifest")
 }
 
@@ -254,6 +268,7 @@ ps_plan() {
     path="$(jq -r '.path' <<<"$entry")"
     canonical="$(jq -r '.canonical' <<<"$entry")"
     ps_check_declared_path "$path"
+    ps_ancestor_safe "$path" || { ps_note conflict "$path"; continue; }
     payload_rel="$(jq -r --arg c "$canonical" '.protocol_sync.managed[] | select(.path == $c) | .payload' "$manifest")"
     payload="$(ps_payload_file "$payload_rel")" || ps_die_unverified "payload"
     if [[ -e "$PS_CHECKOUT/$path" || -L "$PS_CHECKOUT/$path" ]]; then
@@ -315,16 +330,59 @@ ps_backup_file() {
   printf '%s\n' "$path" >> "$PS_WORK/backup/$list"
 }
 
+ps_conflict_note() {
+  local path="$1" rows="$PS_WORK/rows.next"
+  awk -F '\t' -v path="$path" '$3 != path || ($2 != "changed" && $2 != "removed")' \
+    "$PS_ROWS" > "$rows"
+  mv "$rows" "$PS_ROWS"
+  printf 'FILE\tconflict\t%s\n' "$path" >> "$PS_ROWS"
+  PS_CONFLICT=1
+}
+
+ps_preflight_apply() {
+  local path staged expected payload dest conflict=0 operational=0
+  while IFS=$'\t' read -r path staged expected; do
+    [[ -n "$path" ]] || continue
+    dest="$PS_CHECKOUT/$path"
+    if ! ps_ancestor_safe "$path" || [[ -L "$dest" || -d "$dest" || ( -e "$dest" && ! -f "$dest" ) ]]; then
+      ps_conflict_note "$path"
+      conflict=1
+      continue
+    fi
+    if [[ "$expected" == "-" ]]; then
+      if [[ -e "$dest" || -L "$dest" ]]; then
+        ps_conflict_note "$path"
+        conflict=1
+      fi
+    elif [[ ! -f "$dest" || -L "$dest" ]] || ! ps_bytes_equal "$dest" "$expected"; then
+      ps_conflict_note "$path"
+      conflict=1
+    fi
+    [[ -f "$staged" && ! -L "$staged" ]] || operational=1
+  done < "$PS_WRITES"
+  while IFS=$'\t' read -r path payload; do
+    [[ -n "$path" ]] || continue
+    dest="$PS_CHECKOUT/$path"
+    if ! ps_ancestor_safe "$path" || [[ ! -f "$dest" || -L "$dest" ]] ||
+      ! ps_bytes_equal "$dest" "$payload"; then
+      ps_conflict_note "$path"
+      conflict=1
+    fi
+  done < "$PS_REMOVALS"
+  [[ "$conflict" == 0 ]] || return 2
+  [[ "$operational" == 0 ]] || return 1
+}
+
 ps_apply() {
-  local path staged payload
-  [[ "$PS_CONFLICT" == 0 ]] || return 1
+  local path staged expected payload apply_status
+  [[ "$PS_CONFLICT" == 0 ]] || return 2
+  if ps_preflight_apply; then :; else return $?; fi
   mkdir -p -- "$PS_WORK/backup/files" || return 1
   : > "$PS_WORK/backup/restore"
   : > "$PS_WORK/backup/created"
   : > "$PS_WORK/backup/removed"
-  while IFS=$'\t' read -r path staged; do
+  while IFS=$'\t' read -r path staged expected; do
     [[ -n "$path" ]] || continue
-    [[ -L "$PS_CHECKOUT/$path" ]] && return 1
     if [[ -e "$PS_CHECKOUT/$path" ]]; then
       ps_backup_file "$path" restore || return 1
     else
@@ -333,17 +391,16 @@ ps_apply() {
   done < "$PS_WRITES"
   while IFS=$'\t' read -r path payload; do
     [[ -n "$path" ]] || continue
-    [[ -f "$PS_CHECKOUT/$path" && ! -L "$PS_CHECKOUT/$path" ]] || return 1
     ps_backup_file "$path" removed || return 1
   done < "$PS_REMOVALS"
-  while IFS=$'\t' read -r path staged; do
+  if ps_preflight_apply; then :; else return $?; fi
+  while IFS=$'\t' read -r path staged expected; do
     [[ -n "$path" ]] || continue
     mkdir -p -- "$PS_CHECKOUT/$(dirname "$path")" || { ps_rollback; return 1; }
     cp -- "$staged" "$PS_CHECKOUT/$path" || { ps_rollback; return 1; }
   done < "$PS_WRITES"
   while IFS=$'\t' read -r path payload; do
     [[ -n "$path" ]] || continue
-    if ! ps_bytes_equal "$PS_CHECKOUT/$path" "$payload"; then ps_rollback; return 1; fi
     rm -f -- "$PS_CHECKOUT/$path" || { ps_rollback; return 1; }
   done < "$PS_REMOVALS"
 }
@@ -475,6 +532,7 @@ protocol_sync_main() {
     ps_apply
     apply_status=$?
     set -e
+    if [[ "$apply_status" == 2 ]]; then ps_emit "$(ps_class)" conflict; exit 2; fi
     [[ "$apply_status" == 0 ]] || ps_die_unverified "apply"
   fi
   ps_emit exact exact

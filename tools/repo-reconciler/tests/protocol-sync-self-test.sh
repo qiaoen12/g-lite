@@ -121,6 +121,24 @@ write_consumer() {
   printf 'workflow-consumer\n' > "$dir/.github/workflows/ci.yml"
 }
 
+install_mutation_probe() {
+  PROBE_CHECKOUT="$1" PROBE_LOG="$2"
+  : > "$PROBE_LOG"
+  export PROBE_CHECKOUT PROBE_LOG
+  probe_checkout_write() {
+    case "$1" in "$PROBE_CHECKOUT"|"$PROBE_CHECKOUT"/*) printf '%s %s\n' "$2" "$1" >> "$PROBE_LOG" ;; esac
+  }
+  mkdir() { local target; for target; do :; done; probe_checkout_write "$target" mkdir; command mkdir "$@"; }
+  cp() { local target; for target; do :; done; probe_checkout_write "$target" cp; command cp "$@"; }
+  rm() { local target; for target; do [[ "$target" != -* ]] && probe_checkout_write "$target" rm; done; command rm "$@"; }
+  export -f probe_checkout_write mkdir cp rm
+}
+
+clear_mutation_probe() {
+  unset -f probe_checkout_write mkdir cp rm
+  unset PROBE_CHECKOUT PROBE_LOG
+}
+
 l1_reset() {
   rm -rf "$TMP/l1"
   PS_WORK="$TMP/l1"
@@ -128,6 +146,13 @@ l1_reset() {
   mkdir -p "$PS_CHECKOUT" "$PS_WORK/staged"
   printf '\n' > "$PS_WORK/nl-byte"
 }
+
+CASE="ancestor-filesystem-types"; l1_reset; mkdir -p "$PS_CHECKOUT/.github" "$TMP/ancestor-target"
+ps_ancestor_safe ".github/ISSUE_TEMPLATE/task.md" || fail "real directory ancestor rejected"
+rmdir "$PS_CHECKOUT/.github"; printf 'file\n' > "$PS_CHECKOUT/.github"
+if ps_ancestor_safe ".github/ISSUE_TEMPLATE/task.md"; then fail "ordinary-file ancestor accepted"; fi
+rm "$PS_CHECKOUT/.github"; ln -s "$TMP/ancestor-target" "$PS_CHECKOUT/.github"
+if ps_ancestor_safe ".github/ISSUE_TEMPLATE/task.md"; then fail "symlink ancestor accepted"; fi
 
 CASE="l1-interior"
 l1_reset
@@ -206,6 +231,50 @@ sync_source() {
   shift
   run_sync "$ERR" "$RECONCILE" protocol-sync --checkout "$dest" --source "$SRC" "$@"
 }
+
+CASE="non-directory-ancestor-zero-write"
+co="$TMP/non-directory-ancestor"
+mkdir -p "$co"
+printf '%s\nSTALE\n%s\n' "$PS_START" "$PS_END" > "$co/AGENTS.md"
+printf 'ordinary file\n' > "$co/.github"
+seal "$co" "$TMP/non-directory.before"
+install_mutation_probe "$co" "$TMP/non-directory.writes"
+run_sync "$ERR" "$RECONCILE" protocol-sync --checkout "$co" --source "$SRC" --write
+clear_mutation_probe
+assert_code 2
+assert_line $'FILE\tchanged\tAGENTS.md'
+assert_line $'FILE\tconflict\t.github/ISSUE_TEMPLATE/task.md'
+assert_line $'SYNC\tconflict'
+[[ ! -s "$TMP/non-directory.writes" ]] || fail "checkout mutation attempted before ancestor conflict"
+cmp -s <(printf 'ordinary file\n') "$co/.github" || fail ".github file changed"
+[[ ! -e "$co/.github/ISSUE_TEMPLATE/task.md" ]] || fail "nested task path created"
+seal "$co" "$TMP/non-directory.after"
+assert_unchanged "$TMP/non-directory.before" "$TMP/non-directory.after"
+
+CASE="legacy-changed-after-plan-zero-write"
+co="$TMP/legacy-race"
+mkdir -p "$co"
+install_exact "$SRC" "$co"
+printf '%s\nSTALE\n%s\n' "$PS_START" "$PS_END" > "$co/AGENTS.md"
+cp -- "$SRC/.github/ISSUE_TEMPLATE/task.md" "$co/.github/ISSUE_TEMPLATE/contract.md"
+cp -- "$co/AGENTS.md" "$TMP/legacy-race.agents.before"
+PS_WORK="$TMP/legacy-race-work"; PS_CHECKOUT="$co"; PS_SOURCE="$SRC"; PS_REF=source; PS_SHA=local
+mkdir -p "$PS_WORK/staged"; printf '\n' > "$PS_WORK/nl-byte"
+PS_ROWS="$PS_WORK/rows"; PS_WRITES="$PS_WORK/writes"; PS_REMOVALS="$PS_WORK/removals"
+ps_plan
+[[ "$PS_CONFLICT" == 0 && "$PS_CHANGE" == 1 && "$PS_LEGACY" == 1 ]] || fail "race fixture did not plan a write and legacy removal"
+[[ -s "$PS_WRITES" && -s "$PS_REMOVALS" ]] || fail "race plan omitted a transaction path"
+printf 'legacy changed after plan\n' > "$co/.github/ISSUE_TEMPLATE/contract.md"
+install_mutation_probe "$co" "$TMP/legacy-race.writes"
+set +e
+ps_apply
+apply_result=$?
+set -e
+clear_mutation_probe
+[[ "$apply_result" == 2 && "$PS_CONFLICT" == 1 ]] || fail "legacy race was not a pre-write conflict"
+[[ ! -s "$TMP/legacy-race.writes" ]] || fail "managed write attempted before legacy conflict"
+cmp -s "$TMP/legacy-race.agents.before" "$co/AGENTS.md" || fail "managed file was mutated before conflict"
+cmp -s <(printf 'legacy changed after plan\n') "$co/.github/ISSUE_TEMPLATE/contract.md" || fail "changed legacy alias was removed or rewritten"
 
 CASE="exact-report"
 co="$TMP/exact"
