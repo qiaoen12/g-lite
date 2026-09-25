@@ -86,6 +86,8 @@ need AGENTS.md 'merge-authorized'
 need AGENTS.md 'gh pr merge --squash --match-head-commit H'
 need AGENTS.md '.g-lite-local/credentials'
 need AGENTS.md 'configured role entry'
+need AGENTS.md 'entry 必须实时验证预期 API Actor 与目标仓库访问'
+need AGENTS.md '只有没有可调用 role entry 时，才按本机约定检查'
 need AGENTS.md '缺少 `approved` 只挡 Developer'
 need docs/machine-bootstrap.md 'Machine Bootstrap'
 need docs/machine-bootstrap.md 'role-exec developer check'
@@ -95,8 +97,22 @@ need tools/repo-reconciler/templates/minimal-consumer-AGENTS.md "must not write 
 need tools/repo-reconciler/templates/minimal-consumer-AGENTS.md 'B is an ancestor of H'
 need tools/repo-reconciler/templates/minimal-consumer-AGENTS.md 'merge-authorized'
 need tools/repo-reconciler/templates/minimal-consumer-AGENTS.md 'gh pr merge --squash --match-head-commit H'
-need tools/repo-reconciler/templates/minimal-consumer-AGENTS.md '.g-lite-local/credentials'
-need tools/repo-reconciler/templates/minimal-consumer-AGENTS.md 'if missing or unusable, check the machine-local'
+consumer_agents=tools/repo-reconciler/templates/minimal-consumer-AGENTS.md
+need "$consumer_agents" 'For Developer / Reviewer operations, first invoke the configured role entry'
+need "$consumer_agents" 'The role entry must live-verify the expected API Actor and target repository access'
+need "$consumer_agents" 'credential paths, environment variables, or a human `gh` login do not establish identity'
+need "$consumer_agents" 'An Actor or access mismatch is `BLOCK`: stop the role action'
+need "$consumer_agents" 'do not fall back to Human identity'
+need "$consumer_agents" 'Only when no callable role entry is available, inspect `.g-lite-local/credentials`'
+need "$consumer_agents" 'the machine-local `~/.config/g-lite/` entry for minimal existence, type, and accessibility metadata'
+need "$consumer_agents" 'Do not enumerate or display credential contents'
+need "$consumer_agents" 'private keys, JWTs, tokens, PATs, or resolved machine-specific credential absolute paths'
+consumer_role_entry_line=$(grep -nF 'For Developer / Reviewer operations, first invoke the configured role entry' "$consumer_agents" | cut -d: -f1 || true)
+consumer_fallback_line=$(grep -nF 'Only when no callable role entry is available' "$consumer_agents" | cut -d: -f1 || true)
+if [ -z "$consumer_role_entry_line" ] || [ -z "$consumer_fallback_line" ] || [ "$consumer_role_entry_line" -ge "$consumer_fallback_line" ]; then
+  echo 'consumer credential metadata must remain fallback-only after role-entry verification'
+  fail=1
+fi
 need tools/repo-reconciler/reconcile.sh "reconcile.sh audit"
 need tools/repo-reconciler/reconcile.sh "reconcile.sh plan"
 need tools/repo-reconciler/reconcile.sh "reconcile.sh bootstrap"
