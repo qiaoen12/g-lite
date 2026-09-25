@@ -273,16 +273,14 @@ ps_plan() {
     ps_ancestor_safe "$path" || { ps_guard_record legacy "$path" conflict -; ps_note conflict "$path"; continue; }
     payload_rel="$(jq -r --arg c "$canonical" '.protocol_sync.managed[] | select(.path == $c) | .payload' "$manifest")"
     payload="$(ps_payload_file "$payload_rel")" || ps_die_unverified "payload"
-    if [[ -e "$PS_CHECKOUT/$path" || -L "$PS_CHECKOUT/$path" ]]; then
-      if [[ -f "$PS_CHECKOUT/$path" && ! -L "$PS_CHECKOUT/$path" ]] && ps_bytes_equal "$PS_CHECKOUT/$path" "$payload"; then
-        ps_guard_record legacy "$path" removal -
-        ps_note removed "$path" "$payload"
-      else
-        ps_guard_record legacy "$path" conflict -
-        ps_note conflict "$path"
-      fi
-    else
+    if [[ ! -e "$PS_CHECKOUT/$path" && ! -L "$PS_CHECKOUT/$path" ]]; then
       ps_guard_record legacy "$path" absent -
+    elif [[ -f "$PS_CHECKOUT/$path" && ! -L "$PS_CHECKOUT/$path" ]] && ps_bytes_equal "$PS_CHECKOUT/$path" "$payload"; then
+      ps_guard_record legacy "$path" removal -
+      ps_note removed "$path" "$payload"
+    else
+      ps_guard_record legacy "$path" conflict -
+      ps_note conflict "$path"
     fi
   done < <(jq -c '.protocol_sync.legacy[]' "$manifest")
   if [[ -f "$PS_CHECKOUT/README.md" && ! -L "$PS_CHECKOUT/README.md" ]]; then
@@ -354,24 +352,16 @@ ps_conflict_note() {
 ps_guard_record() {
   local kind="$1" path="$2" status="$3" expected="${4:--}" dest="$PS_CHECKOUT/$2" state
   case "$status" in
-    changed|unchanged)
-      if [[ ! -e "$dest" && ! -L "$dest" ]]; then
+    changed|unchanged|removal)
+      state="$status"
+      if [[ "$status" == removal || ( -e "$dest" || -L "$dest" ) && "$expected" == "-" ]]; then
+        expected="$PS_WORK/guard.$PS_GUARD_N"
+        ((PS_GUARD_N += 1))
+        cp -p -- "$dest" "$expected" || ps_die_unverified "path guard snapshot"
+      elif [[ ! -e "$dest" && ! -L "$dest" ]]; then
         state=absent
         expected="-"
-      else
-        state="$status"
-        if [[ "$expected" == "-" ]]; then
-          expected="$PS_WORK/guard.$PS_GUARD_N"
-          PS_GUARD_N=$((PS_GUARD_N + 1))
-          cp -p -- "$dest" "$expected" || ps_die_unverified "path guard snapshot"
-        fi
       fi
-      ;;
-    removal)
-      state=removal
-      expected="$PS_WORK/guard.$PS_GUARD_N"
-      PS_GUARD_N=$((PS_GUARD_N + 1))
-      cp -p -- "$dest" "$expected" || ps_die_unverified "path guard snapshot"
       ;;
     absent|conflict) state="$status" ;;
     *) ps_die_unverified "path guard state" ;;
@@ -379,34 +369,24 @@ ps_guard_record() {
   printf '%s\t%s\t%s\t%s\n' "$kind" "$path" "$state" "$expected" >> "$PS_GUARDS"
 }
 
+ps_guard_matches() {
+  local path="$1" state="$2" expected="$3" dest="$PS_CHECKOUT/$1"
+  ps_ancestor_safe "$path" || return 1
+  case "$state" in
+    absent) [[ ! -e "$dest" && ! -L "$dest" ]] ;;
+    changed|unchanged|removal) [[ -f "$dest" && ! -L "$dest" ]] && ps_bytes_equal "$dest" "$expected" ;;
+    *) return 1 ;;
+  esac
+}
+
 ps_preflight_apply() {
-  local kind path state expected staged dest conflict=0 operational=0
+  local kind path state expected staged conflict=0 operational=0
   while IFS=$'\t' read -r kind path state expected; do
     [[ -n "$kind" ]] || continue
-    dest="$PS_CHECKOUT/$path"
-    if ! ps_ancestor_safe "$path"; then
+    if ! ps_guard_matches "$path" "$state" "$expected"; then
       ps_conflict_note "$path"
       conflict=1
-      continue
     fi
-    case "$state" in
-      absent)
-      if [[ -e "$dest" || -L "$dest" ]]; then
-        ps_conflict_note "$path"
-        conflict=1
-      fi
-        ;;
-      changed|unchanged|removal)
-        if [[ ! -f "$dest" || -L "$dest" ]] || ! ps_bytes_equal "$dest" "$expected"; then
-          ps_conflict_note "$path"
-          conflict=1
-        fi
-        ;;
-      *)
-        ps_conflict_note "$path"
-        conflict=1
-        ;;
-    esac
   done < "$PS_GUARDS"
   while IFS=$'\t' read -r path staged expected; do
     [[ -n "$path" ]] || continue
@@ -419,7 +399,7 @@ ps_preflight_apply() {
 ps_apply() {
   local path staged expected payload apply_status
   [[ "$PS_CONFLICT" == 0 ]] || return 2
-  if ps_preflight_apply; then :; else return $?; fi
+  ps_preflight_apply || return $?
   mkdir -p -- "$PS_WORK/backup/files" || return 1
   : > "$PS_WORK/backup/restore"
   : > "$PS_WORK/backup/created"
@@ -436,7 +416,7 @@ ps_apply() {
     [[ -n "$path" ]] || continue
     ps_backup_for_apply "$path" removed || return $?
   done < "$PS_REMOVALS"
-  if ps_preflight_apply; then :; else return $?; fi
+  ps_preflight_apply || return $?
   while IFS=$'\t' read -r path staged expected; do
     [[ -n "$path" ]] || continue
     mkdir -p -- "$PS_CHECKOUT/$(dirname "$path")" || { ps_rollback; return 1; }

@@ -139,6 +139,14 @@ clear_mutation_probe() {
   unset PROBE_CHECKOUT PROBE_LOG
 }
 
+expect_prewrite_conflict() {
+  local log="$1" message="$2" status
+  set +e; ps_apply; status=$?; set -e
+  clear_mutation_probe
+  [[ "$status" == 2 && "$PS_CONFLICT" == 1 ]] || fail "$message"
+  [[ ! -s "$log" ]] || fail "checkout mutation attempted before conflict"
+}
+
 l1_reset() {
   rm -rf "$TMP/l1"
   PS_WORK="$TMP/l1"
@@ -271,13 +279,7 @@ plan_source "$TMP/legacy-race-work" "$co"
 grep -F $'legacy\t.github/ISSUE_TEMPLATE/contract.md\tremoval\t' "$PS_GUARDS" >/dev/null || fail "legacy removal guard was not recorded"
 printf 'legacy changed after plan\n' > "$co/.github/ISSUE_TEMPLATE/contract.md"
 install_mutation_probe "$co" "$TMP/legacy-race.writes"
-set +e
-ps_apply
-apply_result=$?
-set -e
-clear_mutation_probe
-[[ "$apply_result" == 2 && "$PS_CONFLICT" == 1 ]] || fail "legacy race was not a pre-write conflict"
-[[ ! -s "$TMP/legacy-race.writes" ]] || fail "managed write attempted before legacy conflict"
+expect_prewrite_conflict "$TMP/legacy-race.writes" "legacy race was not a pre-write conflict"
 cmp -s "$TMP/legacy-race.agents.before" "$co/AGENTS.md" || fail "managed file was mutated before conflict"
 cmp -s <(printf 'legacy changed after plan\n') "$co/.github/ISSUE_TEMPLATE/contract.md" || fail "changed legacy alias was removed or rewritten"
 
@@ -299,13 +301,7 @@ cp() {
   if [[ "$target" == "$PS_WORK/backup/files/AGENTS.md" ]]; then printf 'divergent late alias\n' > "$co/.github/ISSUE_TEMPLATE/contract.md"; fi
   command cp "$@"
 }
-set +e
-ps_apply
-apply_result=$?
-set -e
-clear_mutation_probe
-[[ "$apply_result" == 2 && "$PS_CONFLICT" == 1 ]] || fail "appeared divergent legacy alias was not a pre-write conflict"
-[[ ! -s "$TMP/legacy-absent.writes" ]] || fail "managed write attempted before absent-alias conflict"
+expect_prewrite_conflict "$TMP/legacy-absent.writes" "appeared divergent legacy alias was not a pre-write conflict"
 cmp -s "$TMP/legacy-absent.agents.before" "$co/AGENTS.md" || fail "AGENTS changed before absent-alias conflict"
 [[ ! -e "$co/.github/ISSUE_TEMPLATE/task.md" ]] || fail "task.md created before absent-alias conflict"
 cmp -s <(printf 'divergent late alias\n') "$co/.github/ISSUE_TEMPLATE/contract.md" || fail "late divergent alias changed"
@@ -320,13 +316,7 @@ plan_source "$TMP/managed-unchanged-work" "$co"
 grep -F $'managed\t.github/ISSUE_TEMPLATE/task.md\tunchanged\t' "$PS_GUARDS" >/dev/null || fail "unchanged managed guard was not recorded"
 printf 'malformed late managed file\n' > "$co/.github/ISSUE_TEMPLATE/task.md"
 install_mutation_probe "$co" "$TMP/managed-unchanged.writes"
-set +e
-ps_apply
-apply_result=$?
-set -e
-clear_mutation_probe
-[[ "$apply_result" == 2 && "$PS_CONFLICT" == 1 ]] || fail "malformed unchanged managed file was not a pre-write conflict"
-[[ ! -s "$TMP/managed-unchanged.writes" ]] || fail "pending write occurred before unchanged-path conflict"
+expect_prewrite_conflict "$TMP/managed-unchanged.writes" "malformed unchanged managed file was not a pre-write conflict"
 cmp -s "$TMP/managed-unchanged.agents.before" "$co/AGENTS.md" || fail "AGENTS changed before unchanged-path conflict"
 cmp -s <(printf 'malformed late managed file\n') "$co/.github/ISSUE_TEMPLATE/task.md" || fail "malformed managed file changed"
 
@@ -339,13 +329,7 @@ plan_source "$TMP/managed-changed-work" "$co"
 grep -F $'managed\tAGENTS.md\tchanged\t' "$PS_GUARDS" >/dev/null || fail "changed managed guard was not recorded"
 printf '%s\nLATE\n%s\n' "$PS_START" "$PS_END" > "$co/AGENTS.md"
 install_mutation_probe "$co" "$TMP/managed-changed.writes"
-set +e
-ps_apply
-apply_result=$?
-set -e
-clear_mutation_probe
-[[ "$apply_result" == 2 && "$PS_CONFLICT" == 1 ]] || fail "changed managed source was not a pre-write conflict"
-[[ ! -s "$TMP/managed-changed.writes" ]] || fail "pending write overwrote changed managed source"
+expect_prewrite_conflict "$TMP/managed-changed.writes" "changed managed source was not a pre-write conflict"
 cmp -s <(printf '%s\nLATE\n%s\n' "$PS_START" "$PS_END") "$co/AGENTS.md" || fail "late managed source was overwritten"
 
 CASE="exact-report"
