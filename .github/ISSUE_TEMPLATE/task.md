@@ -20,6 +20,12 @@ assignees: []
 
 <!-- Observable conditions that must be true when complete. -->
 
+### Implementation & Verification Plan
+
+Medium or larger work names this before implementation: expected files and responsibility boundaries, estimated implementation LOC, estimated test LOC, primary risk, the L0-L4 levels this Contract uses, Local / CI / Pilot placement, Permanent / Stage / Pilot, LOCAL GREEN, CI GREEN, REVIEW-READY, and stop conditions.
+
+Trivial or docs-only work may say the full plan is not applicable.
+
 ### Out of scope
 
 <!-- What must not be changed or added in this task. -->
