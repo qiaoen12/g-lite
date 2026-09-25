@@ -53,8 +53,8 @@
     },
     "managed": [
       {"path": "AGENTS.md", "payload": "tools/repo-reconciler/templates/minimal-consumer-AGENTS.md"},
-      {"path": ".github/ISSUE_TEMPLATE/task.md", "payload": ".github/ISSUE_TEMPLATE/task.md"},
-      {"path": ".github/pull_request_template.md", "payload": ".github/pull_request_template.md"}
+      {"path": ".github/ISSUE_TEMPLATE/task.md", "payload": "tools/repo-reconciler/templates/consumer-task-protocol.md"},
+      {"path": ".github/pull_request_template.md", "payload": "tools/repo-reconciler/templates/consumer-pr-protocol.md"}
     ],
     "legacy": [
       {"path": ".github/ISSUE_TEMPLATE/contract.md", "canonical": ".github/ISSUE_TEMPLATE/task.md"}
