@@ -81,12 +81,30 @@ Developer / Reviewer 使用 short-lived Installation Access Token；private key�
 
 同一台 Mac 可存放 Human、Developer、Reviewer 三种凭据。每次关键 GitHub / Git 动作核对实际 API Actor、Git transport 与操作角色；Developer 不得实际以 Human Authority 身份 push / merge，Reviewer 不得实际以 Developer / Human Authority 身份 Review。发现串号即停止该动作并查明原因。物理凭据隔离是未来 hardening，不是 v3.4 Freeze 条件。
 
+## Primary checkout 与 native Git worktree
+
+- `primary checkout` 永远停留在 repository default branch（canonical 仓库为 `main`）。Main 可在此协调、fetch / fast-forward、只读检查和最终验证；Developer 不切换 primary 到 task branch，也不在 primary 修改 task files。
+- 修改 task files 前，确认 primary clean 且位于 default branch；通过已验证的 Developer role entry fetch `origin`，再仅对 primary main 执行 fast-forward。不得 reset、rebase，或把 primary 切换到 task branch。primary dirty、分支错误或无法安全 fast-forward 时停止并报告。
+- 用 native Git 从最新 `origin/main` 创建每个任务唯一的可写 branch/worktree：
+
+  ```sh
+  git fetch origin
+  git merge --ff-only origin/main
+  git worktree add -b <task-branch> <task-worktree> origin/main
+  git worktree list --porcelain
+  ```
+
+- 一个可写 task branch 只绑定一个 dedicated task worktree，一个 task worktree 只含一个可写 task branch。`git worktree list --porcelain` 是 branch/path binding 的唯一 source of truth；不创建 registry、数据库或其他持久 task state。Developer 只在自己的 task worktree 修改和提交。
+- Reviewer 默认远程读取 GitHub live facts。确实需要本地执行时，仅创建独立临时 detached-HEAD worktree（例如 `git worktree add --detach <review-worktree> <reviewed-head>`）；不得复用或切换 primary / Developer worktree，Review 后移除临时 worktree。
+- Human Authority 完成 Squash merge 后，先确认 GitHub 上目标 PR 已合并，再用 `git worktree remove <task-worktree>` 和 native Git 删除本地 branch；不删除 remote task branch。先用 `git branch -d <task-branch>`；如果它仅因 squash commit 不在 branch ancestry 而拒绝，确认 task worktree clean 且目标 PR 确为 merged 后，才可用 `git branch -D <task-branch>` 删除这个本地 ref。其他拒绝原因一律停止并调查，不得强制删除。
+- 之后通过 Developer role entry fetch `origin`，在仍位于 main 的 primary 执行 `git merge --ff-only origin/main`，确认目标 worktree 已移除、primary main + clean。Main 不需要也不应把 primary checkout 切到 task branch。
+
 ## 交付
 
 1. 读取当前 GitHub Issue Contract，不要用聊天摘要代替当前正文。
 2. 确认 Issue OPEN。
 3. 按本文件的 Developer authorization freshness 读取 GitHub 当前事实；只有 FRESH 且 Actor 独立才开工。
-4. Developer 从最新 `origin/main` 创建普通 Git branch / worktree。
+4. primary checkout 留在 default/main 且 clean；fast-forward 到最新 `origin/main`，再用 native Git 建立一个 task branch 对应一个 dedicated worktree，Developer 只在该 worktree 修改 task files。
 5. 只改 Contract 允许范围。
 6. 运行 consumer repo 自己要求的 test / lint / build / security checks。
 7. push 并开 PR；PR body 自己写 Why / What / Test / Unverified-Risks / `Fixes #N`。

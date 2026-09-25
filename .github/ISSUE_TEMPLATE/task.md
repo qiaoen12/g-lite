@@ -26,6 +26,8 @@ Medium or larger work names this before implementation: expected files and respo
 
 Trivial or docs-only work may say the full plan is not applicable.
 
+Repository task files are changed only in a dedicated native Git worktree with one writable task branch; the primary checkout stays on default/main. Use `git worktree list --porcelain` as the binding source of truth. Reviewer local execution, if needed, uses a separate temporary detached-HEAD worktree.
+
 ### Out of scope
 
 <!-- What must not be changed or added in this task. -->
