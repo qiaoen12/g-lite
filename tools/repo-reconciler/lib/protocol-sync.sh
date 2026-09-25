@@ -97,8 +97,7 @@ ps_render_managed() {
 
 # Print unchanged, changed, or conflict. A changed file is written to $3.
 ps_classify_managed() {
-  local rel="$1" payload="$2" staged="$3" dest sc ec so eo
-  dest="$PS_CHECKOUT/$rel"
+  local rel="$1" payload="$2" staged="$3" dest="${4:-$PS_CHECKOUT/$1}" sc ec so eo
   if [[ -L "$dest" || -d "$dest" || ( -e "$dest" && ! -f "$dest" ) ]]; then
     printf 'conflict'
     return 0
@@ -138,8 +137,7 @@ ps_classify_managed() {
 }
 
 ps_classify_exact() {
-  local rel="$1" payload="$2" staged="$3" dest
-  dest="$PS_CHECKOUT/$rel"
+  local rel="$1" payload="$2" staged="$3" dest="${4:-$PS_CHECKOUT/$1}"
   if [[ -L "$dest" || -d "$dest" || ( -e "$dest" && ! -f "$dest" ) ]]; then
     printf 'conflict'
     return 0
@@ -220,7 +218,7 @@ ps_payload_file() {
 }
 
 ps_plan_entries() {
-  local kind="$1" manifest="$2" entry path payload_rel payload staged status expected dest
+  local kind="$1" manifest="$2" entry path payload_rel payload staged status="" expected dest
   while IFS= read -r entry; do
     path="$(jq -r '.path' <<<"$entry")"
     payload_rel="$(jq -r '.payload' <<<"$entry")"
@@ -229,17 +227,22 @@ ps_plan_entries() {
     ps_ancestor_safe "$path" || { ps_guard_record "$kind" "$path" conflict -; ps_note conflict "$path"; continue; }
     payload="$(ps_payload_file "$payload_rel")" || ps_die_unverified "payload"
     staged="$PS_WORK/staged/$((PS_N++))"
-    if [[ "$kind" == owned_exact ]]; then
-      status="$(ps_classify_exact "$path" "$payload" "$staged")" || ps_die_unverified "classify"
-    else
-      status="$(ps_classify_managed "$path" "$payload" "$staged")" || ps_die_unverified "classify"
-    fi
+    dest="$PS_CHECKOUT/$path"
     expected="-"
-    if [[ "$status" == changed ]]; then
-      dest="$PS_CHECKOUT/$path"
-      if [[ -f "$dest" && ! -L "$dest" ]]; then
-        expected="$staged.before"
-        cp -- "$dest" "$expected" || ps_die_unverified "destination snapshot"
+    if [[ -f "$dest" && ! -L "$dest" ]]; then
+      expected="$staged.before"
+      cp -p -- "$dest" "$expected" || ps_die_unverified "destination snapshot"
+      dest="$expected"
+    elif [[ -e "$dest" || -L "$dest" ]]; then
+      status=conflict
+    else
+      dest="$staged.absent"
+    fi
+    if [[ "$status" != conflict ]]; then
+      if [[ "$kind" == owned_exact ]]; then
+        status="$(ps_classify_exact "$path" "$payload" "$staged" "$dest")" || ps_die_unverified "classify"
+      else
+        status="$(ps_classify_managed "$path" "$payload" "$staged" "$dest")" || ps_die_unverified "classify"
       fi
     fi
     ps_guard_record "$kind" "$path" "$status" "$expected"
@@ -249,7 +252,7 @@ ps_plan_entries() {
 
 ps_plan() {
   local manifest="$PS_SOURCE/tools/repo-reconciler/manifest.json"
-  local entry path canonical payload_rel payload
+  local entry path canonical payload_rel payload expected dest
   [[ -f "$manifest" && ! -L "$manifest" ]] || ps_die_unverified "snapshot manifest"
   ps_manifest_ok "$manifest" || ps_die_unverified "snapshot manifest"
   PS_LABEL="$(jq -r '.baseline' "$manifest")"
@@ -273,11 +276,20 @@ ps_plan() {
     ps_ancestor_safe "$path" || { ps_guard_record legacy "$path" conflict -; ps_note conflict "$path"; continue; }
     payload_rel="$(jq -r --arg c "$canonical" '.protocol_sync.managed[] | select(.path == $c) | .payload' "$manifest")"
     payload="$(ps_payload_file "$payload_rel")" || ps_die_unverified "payload"
-    if [[ ! -e "$PS_CHECKOUT/$path" && ! -L "$PS_CHECKOUT/$path" ]]; then
+    dest="$PS_CHECKOUT/$path"
+    if [[ ! -e "$dest" && ! -L "$dest" ]]; then
       ps_guard_record legacy "$path" absent -
-    elif [[ -f "$PS_CHECKOUT/$path" && ! -L "$PS_CHECKOUT/$path" ]] && ps_bytes_equal "$PS_CHECKOUT/$path" "$payload"; then
-      ps_guard_record legacy "$path" removal -
-      ps_note removed "$path" "$payload"
+    elif [[ -f "$dest" && ! -L "$dest" ]]; then
+      expected="$PS_WORK/guard.$PS_GUARD_N"
+      ((PS_GUARD_N += 1))
+      cp -p -- "$dest" "$expected" || ps_die_unverified "legacy snapshot"
+      if ps_bytes_equal "$expected" "$payload"; then
+        ps_guard_record legacy "$path" removal "$expected"
+        ps_note removed "$path" "$payload"
+      else
+        ps_guard_record legacy "$path" conflict -
+        ps_note conflict "$path"
+      fi
     else
       ps_guard_record legacy "$path" conflict -
       ps_note conflict "$path"
@@ -350,19 +362,10 @@ ps_conflict_note() {
 }
 
 ps_guard_record() {
-  local kind="$1" path="$2" status="$3" expected="${4:--}" dest="$PS_CHECKOUT/$2" state
+  local kind="$1" path="$2" status="$3" expected="${4:--}" state
   case "$status" in
-    changed|unchanged|removal)
-      state="$status"
-      if [[ "$status" == removal || ( -e "$dest" || -L "$dest" ) && "$expected" == "-" ]]; then
-        expected="$PS_WORK/guard.$PS_GUARD_N"
-        ((PS_GUARD_N += 1))
-        cp -p -- "$dest" "$expected" || ps_die_unverified "path guard snapshot"
-      elif [[ ! -e "$dest" && ! -L "$dest" ]]; then
-        state=absent
-        expected="-"
-      fi
-      ;;
+    changed|unchanged) state="$status"; [[ "$expected" != "-" ]] || state=absent ;;
+    removal) [[ "$expected" != "-" ]] || ps_die_unverified "removal guard snapshot"; state=removal ;;
     absent|conflict) state="$status" ;;
     *) ps_die_unverified "path guard state" ;;
   esac

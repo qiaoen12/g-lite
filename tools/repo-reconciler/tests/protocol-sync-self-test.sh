@@ -8,9 +8,15 @@ LIB="$ROOT/tools/repo-reconciler/lib/protocol-sync.sh"
 # shellcheck source=../lib/protocol-sync.sh
 source "$LIB"
 
+eval "$(declare -f ps_guard_record | sed '1s/ps_guard_record/ps_guard_record_saved/')"
+ps_guard_record() {
+  [[ "${PLAN_RACE_PATH:-}" != "$2" ]] || printf '%s\n' "${PLAN_RACE_BYTES:-malformed late managed file}" > "$PS_CHECKOUT/$2"
+  ps_guard_record_saved "$@"
+}
+
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-CASE=""
+CASE=""; unset PLAN_RACE_PATH PLAN_RACE_BYTES
 ERR="$TMP/err"
 PS_OUT=""
 PS_CODE=0
@@ -273,8 +279,10 @@ install_exact "$SRC" "$co"
 printf '%s\nSTALE\n%s\n' "$PS_START" "$PS_END" > "$co/AGENTS.md"
 cp -- "$SRC/.github/ISSUE_TEMPLATE/task.md" "$co/.github/ISSUE_TEMPLATE/contract.md"
 cp -- "$co/AGENTS.md" "$TMP/legacy-race.agents.before"
+PLAN_RACE_PATH=.github/ISSUE_TEMPLATE/contract.md; PLAN_RACE_BYTES='legacy changed during plan'
 plan_source "$TMP/legacy-race-work" "$co"
-[[ "$PS_CONFLICT" == 0 && "$PS_CHANGE" == 1 && "$PS_LEGACY" == 1 ]] || fail "race fixture did not plan a write and legacy removal"
+unset PLAN_RACE_PATH PLAN_RACE_BYTES
+[[ "$PS_CONFLICT" == 0 && "$PS_CHANGE" == 1 && "$PS_LEGACY" == 1 ]] && cmp -s <(printf 'legacy changed during plan\n') "$co/.github/ISSUE_TEMPLATE/contract.md" || fail "race fixture did not plan a write and legacy removal"
 [[ -s "$PS_WRITES" && -s "$PS_REMOVALS" ]] || fail "race plan omitted a transaction path"
 grep -F $'legacy\t.github/ISSUE_TEMPLATE/contract.md\tremoval\t' "$PS_GUARDS" >/dev/null || fail "legacy removal guard was not recorded"
 printf 'legacy changed after plan\n' > "$co/.github/ISSUE_TEMPLATE/contract.md"
@@ -312,7 +320,9 @@ mkdir -p "$co"
 install_exact "$SRC" "$co"
 printf '%s\nSTALE\n%s\n' "$PS_START" "$PS_END" > "$co/AGENTS.md"
 cp -- "$co/AGENTS.md" "$TMP/managed-unchanged.agents.before"
+PLAN_RACE_PATH=.github/ISSUE_TEMPLATE/task.md
 plan_source "$TMP/managed-unchanged-work" "$co"
+unset PLAN_RACE_PATH
 grep -F $'managed\t.github/ISSUE_TEMPLATE/task.md\tunchanged\t' "$PS_GUARDS" >/dev/null || fail "unchanged managed guard was not recorded"
 printf 'malformed late managed file\n' > "$co/.github/ISSUE_TEMPLATE/task.md"
 install_mutation_probe "$co" "$TMP/managed-unchanged.writes"
