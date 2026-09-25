@@ -232,6 +232,13 @@ sync_source() {
   run_sync "$ERR" "$RECONCILE" protocol-sync --checkout "$dest" --source "$SRC" "$@"
 }
 
+plan_source() {
+  PS_WORK="$1"; PS_CHECKOUT="$2"; PS_SOURCE="${3:-$SRC}"; PS_REF=source; PS_SHA=local
+  mkdir -p "$PS_WORK/staged"; printf '\n' > "$PS_WORK/nl-byte"
+  PS_ROWS="$PS_WORK/rows"; PS_WRITES="$PS_WORK/writes"; PS_REMOVALS="$PS_WORK/removals"
+  ps_plan
+}
+
 CASE="non-directory-ancestor-zero-write"
 co="$TMP/non-directory-ancestor"
 mkdir -p "$co"
@@ -258,12 +265,10 @@ install_exact "$SRC" "$co"
 printf '%s\nSTALE\n%s\n' "$PS_START" "$PS_END" > "$co/AGENTS.md"
 cp -- "$SRC/.github/ISSUE_TEMPLATE/task.md" "$co/.github/ISSUE_TEMPLATE/contract.md"
 cp -- "$co/AGENTS.md" "$TMP/legacy-race.agents.before"
-PS_WORK="$TMP/legacy-race-work"; PS_CHECKOUT="$co"; PS_SOURCE="$SRC"; PS_REF=source; PS_SHA=local
-mkdir -p "$PS_WORK/staged"; printf '\n' > "$PS_WORK/nl-byte"
-PS_ROWS="$PS_WORK/rows"; PS_WRITES="$PS_WORK/writes"; PS_REMOVALS="$PS_WORK/removals"
-ps_plan
+plan_source "$TMP/legacy-race-work" "$co"
 [[ "$PS_CONFLICT" == 0 && "$PS_CHANGE" == 1 && "$PS_LEGACY" == 1 ]] || fail "race fixture did not plan a write and legacy removal"
 [[ -s "$PS_WRITES" && -s "$PS_REMOVALS" ]] || fail "race plan omitted a transaction path"
+grep -F $'legacy\t.github/ISSUE_TEMPLATE/contract.md\tremoval\t' "$PS_GUARDS" >/dev/null || fail "legacy removal guard was not recorded"
 printf 'legacy changed after plan\n' > "$co/.github/ISSUE_TEMPLATE/contract.md"
 install_mutation_probe "$co" "$TMP/legacy-race.writes"
 set +e
@@ -275,6 +280,73 @@ clear_mutation_probe
 [[ ! -s "$TMP/legacy-race.writes" ]] || fail "managed write attempted before legacy conflict"
 cmp -s "$TMP/legacy-race.agents.before" "$co/AGENTS.md" || fail "managed file was mutated before conflict"
 cmp -s <(printf 'legacy changed after plan\n') "$co/.github/ISSUE_TEMPLATE/contract.md" || fail "changed legacy alias was removed or rewritten"
+
+CASE="legacy-absent-appears-divergent-zero-write"
+co="$TMP/legacy-absent-race"
+mkdir -p "$co"
+install_exact "$SRC" "$co"
+printf '%s\nSTALE\n%s\n' "$PS_START" "$PS_END" > "$co/AGENTS.md"
+rm -- "$co/.github/ISSUE_TEMPLATE/task.md"
+cp -- "$co/AGENTS.md" "$TMP/legacy-absent.agents.before"
+plan_source "$TMP/legacy-absent-work" "$co"
+[[ "$PS_CONFLICT" == 0 && "$PS_CHANGE" == 1 ]] || fail "absent-alias fixture did not plan managed writes"
+grep -F $'legacy\t.github/ISSUE_TEMPLATE/contract.md\tabsent\t-' "$PS_GUARDS" >/dev/null || fail "absent legacy guard was not recorded"
+install_mutation_probe "$co" "$TMP/legacy-absent.writes"
+cp() {
+  local target
+  for target; do :; done
+  probe_checkout_write "$target" cp
+  if [[ "$target" == "$PS_WORK/backup/files/AGENTS.md" ]]; then printf 'divergent late alias\n' > "$co/.github/ISSUE_TEMPLATE/contract.md"; fi
+  command cp "$@"
+}
+set +e
+ps_apply
+apply_result=$?
+set -e
+clear_mutation_probe
+[[ "$apply_result" == 2 && "$PS_CONFLICT" == 1 ]] || fail "appeared divergent legacy alias was not a pre-write conflict"
+[[ ! -s "$TMP/legacy-absent.writes" ]] || fail "managed write attempted before absent-alias conflict"
+cmp -s "$TMP/legacy-absent.agents.before" "$co/AGENTS.md" || fail "AGENTS changed before absent-alias conflict"
+[[ ! -e "$co/.github/ISSUE_TEMPLATE/task.md" ]] || fail "task.md created before absent-alias conflict"
+cmp -s <(printf 'divergent late alias\n') "$co/.github/ISSUE_TEMPLATE/contract.md" || fail "late divergent alias changed"
+
+CASE="managed-unchanged-malformed-after-plan-zero-write"
+co="$TMP/managed-unchanged-race"
+mkdir -p "$co"
+install_exact "$SRC" "$co"
+printf '%s\nSTALE\n%s\n' "$PS_START" "$PS_END" > "$co/AGENTS.md"
+cp -- "$co/AGENTS.md" "$TMP/managed-unchanged.agents.before"
+plan_source "$TMP/managed-unchanged-work" "$co"
+grep -F $'managed\t.github/ISSUE_TEMPLATE/task.md\tunchanged\t' "$PS_GUARDS" >/dev/null || fail "unchanged managed guard was not recorded"
+printf 'malformed late managed file\n' > "$co/.github/ISSUE_TEMPLATE/task.md"
+install_mutation_probe "$co" "$TMP/managed-unchanged.writes"
+set +e
+ps_apply
+apply_result=$?
+set -e
+clear_mutation_probe
+[[ "$apply_result" == 2 && "$PS_CONFLICT" == 1 ]] || fail "malformed unchanged managed file was not a pre-write conflict"
+[[ ! -s "$TMP/managed-unchanged.writes" ]] || fail "pending write occurred before unchanged-path conflict"
+cmp -s "$TMP/managed-unchanged.agents.before" "$co/AGENTS.md" || fail "AGENTS changed before unchanged-path conflict"
+cmp -s <(printf 'malformed late managed file\n') "$co/.github/ISSUE_TEMPLATE/task.md" || fail "malformed managed file changed"
+
+CASE="managed-changed-after-plan-zero-write"
+co="$TMP/managed-changed-race"
+mkdir -p "$co"
+install_exact "$SRC" "$co"
+printf '%s\nSTALE\n%s\n' "$PS_START" "$PS_END" > "$co/AGENTS.md"
+plan_source "$TMP/managed-changed-work" "$co"
+grep -F $'managed\tAGENTS.md\tchanged\t' "$PS_GUARDS" >/dev/null || fail "changed managed guard was not recorded"
+printf '%s\nLATE\n%s\n' "$PS_START" "$PS_END" > "$co/AGENTS.md"
+install_mutation_probe "$co" "$TMP/managed-changed.writes"
+set +e
+ps_apply
+apply_result=$?
+set -e
+clear_mutation_probe
+[[ "$apply_result" == 2 && "$PS_CONFLICT" == 1 ]] || fail "changed managed source was not a pre-write conflict"
+[[ ! -s "$TMP/managed-changed.writes" ]] || fail "pending write overwrote changed managed source"
+cmp -s <(printf '%s\nLATE\n%s\n' "$PS_START" "$PS_END") "$co/AGENTS.md" || fail "late managed source was overwritten"
 
 CASE="exact-report"
 co="$TMP/exact"
@@ -527,6 +599,28 @@ assert_line $'FILE\tunchanged\towned/exact.txt'
 assert_line $'SYNC\texact'
 seal "$co" "$TMP/owned.twice"
 assert_unchanged "$TMP/owned.once" "$TMP/owned.twice"
+
+CASE="owned-exact-changed-after-plan-zero-write"
+co="$TMP/owned-race"
+mkdir -p "$co"
+install_exact "$OWN" "$co"
+printf '%s\nSTALE\n%s\n' "$PS_START" "$PS_END" > "$co/AGENTS.md"
+mkdir -p "$co/owned"
+printf 'planned owned bytes\n' > "$co/owned/exact.txt"
+cp -- "$co/AGENTS.md" "$TMP/owned-race.agents.before"
+plan_source "$TMP/owned-race-work" "$co" "$OWN"
+grep -F $'owned_exact\towned/exact.txt\tchanged\t' "$PS_GUARDS" >/dev/null || fail "changed owned_exact guard was not recorded"
+printf 'late owned bytes\n' > "$co/owned/exact.txt"
+install_mutation_probe "$co" "$TMP/owned-race.writes"
+set +e
+ps_apply
+apply_result=$?
+set -e
+clear_mutation_probe
+[[ "$apply_result" == 2 && "$PS_CONFLICT" == 1 ]] || fail "changed owned_exact source was not a pre-write conflict"
+[[ ! -s "$TMP/owned-race.writes" ]] || fail "pending write occurred before owned_exact conflict"
+cmp -s "$TMP/owned-race.agents.before" "$co/AGENTS.md" || fail "AGENTS changed before owned_exact conflict"
+cmp -s <(printf 'late owned bytes\n') "$co/owned/exact.txt" || fail "late owned_exact source was overwritten"
 
 CASE="forbid-readme"
 bad="$TMP/bad-src"
