@@ -77,8 +77,8 @@ write_source() {
   local dir="$1" owned="${2:-[]}"
   mkdir -p "$dir/tools/repo-reconciler/templates" "$dir/.github/ISSUE_TEMPLATE" "$dir/payloads"
   printf 'agents-payload\n' > "$dir/tools/repo-reconciler/templates/minimal-consumer-AGENTS.md"
-  printf 'task-payload\n' > "$dir/.github/ISSUE_TEMPLATE/task.md"
-  printf 'pr-payload\n' > "$dir/.github/pull_request_template.md"
+  printf 'task-payload\n' > "$dir/tools/repo-reconciler/templates/consumer-task-protocol.md"
+  printf 'pr-payload\n' > "$dir/tools/repo-reconciler/templates/consumer-pr-protocol.md"
   printf 'owned-payload\n' > "$dir/payloads/owned.txt"
   jq -n --argjson owned "$owned" '{
     schema_version: 3,
@@ -90,8 +90,8 @@ write_source() {
       },
       managed: [
         {path: "AGENTS.md", payload: "tools/repo-reconciler/templates/minimal-consumer-AGENTS.md"},
-        {path: ".github/ISSUE_TEMPLATE/task.md", payload: ".github/ISSUE_TEMPLATE/task.md"},
-        {path: ".github/pull_request_template.md", payload: ".github/pull_request_template.md"}
+        {path: ".github/ISSUE_TEMPLATE/task.md", payload: "tools/repo-reconciler/templates/consumer-task-protocol.md"},
+        {path: ".github/pull_request_template.md", payload: "tools/repo-reconciler/templates/consumer-pr-protocol.md"}
       ],
       legacy: [
         {path: ".github/ISSUE_TEMPLATE/contract.md", canonical: ".github/ISSUE_TEMPLATE/task.md"}
@@ -113,11 +113,23 @@ wrap_file() {
   } > "$dest"
 }
 
+write_marked_file() {
+  local prefix="$1" payload="$2" suffix="$3" dest="$4"
+  mkdir -p "$(dirname "$dest")"
+  {
+    cat -- "$prefix"
+    printf '%s\n' "$PS_START"
+    cat -- "$payload"
+    printf '%s\n' "$PS_END"
+    cat -- "$suffix"
+  } > "$dest"
+}
+
 install_exact() {
   local src="$1" dest="$2"
   wrap_file "$src/tools/repo-reconciler/templates/minimal-consumer-AGENTS.md" "$dest/AGENTS.md"
-  wrap_file "$src/.github/ISSUE_TEMPLATE/task.md" "$dest/.github/ISSUE_TEMPLATE/task.md"
-  wrap_file "$src/.github/pull_request_template.md" "$dest/.github/pull_request_template.md"
+  wrap_file "$src/tools/repo-reconciler/templates/consumer-task-protocol.md" "$dest/.github/ISSUE_TEMPLATE/task.md"
+  wrap_file "$src/tools/repo-reconciler/templates/consumer-pr-protocol.md" "$dest/.github/pull_request_template.md"
 }
 
 write_consumer() {
@@ -240,10 +252,16 @@ fi
 write_source "$TMP/src"
 SRC="$TMP/src"
 
+sync_from() {
+  local source="$1" dest="$2"
+  shift 2
+  run_sync "$ERR" "$RECONCILE" protocol-sync --checkout "$dest" --source "$source" "$@"
+}
+
 sync_source() {
   local dest="$1"
   shift
-  run_sync "$ERR" "$RECONCILE" protocol-sync --checkout "$dest" --source "$SRC" "$@"
+  sync_from "$SRC" "$dest" "$@"
 }
 
 plan_source() {
@@ -277,7 +295,7 @@ co="$TMP/legacy-race"
 mkdir -p "$co"
 install_exact "$SRC" "$co"
 printf '%s\nSTALE\n%s\n' "$PS_START" "$PS_END" > "$co/AGENTS.md"
-cp -- "$SRC/.github/ISSUE_TEMPLATE/task.md" "$co/.github/ISSUE_TEMPLATE/contract.md"
+cp -- "$SRC/tools/repo-reconciler/templates/consumer-task-protocol.md" "$co/.github/ISSUE_TEMPLATE/contract.md"
 cp -- "$co/AGENTS.md" "$TMP/legacy-race.agents.before"
 PLAN_RACE_PATH=.github/ISSUE_TEMPLATE/contract.md; PLAN_RACE_BYTES='legacy changed during plan'
 plan_source "$TMP/legacy-race-work" "$co"
@@ -434,6 +452,75 @@ if cmp -s "$ROOT/AGENTS.md" "$co/AGENTS.md"; then
 fi
 printf 'agents-payload\n' > "$SRC/tools/repo-reconciler/templates/minimal-consumer-AGENTS.md"
 
+CASE="consumer-fragments-preserve-exterior"
+pilot_src="$TMP/consumer-source"
+mkdir -p "$pilot_src/tools/repo-reconciler/templates"
+cp -- "$ROOT/tools/repo-reconciler/manifest.json" "$pilot_src/tools/repo-reconciler/manifest.json"
+cp -- "$ROOT/tools/repo-reconciler/templates/minimal-consumer-AGENTS.md" \
+  "$pilot_src/tools/repo-reconciler/templates/minimal-consumer-AGENTS.md"
+cp -- "$ROOT/tools/repo-reconciler/templates/consumer-task-protocol.md" \
+  "$pilot_src/tools/repo-reconciler/templates/consumer-task-protocol.md"
+cp -- "$ROOT/tools/repo-reconciler/templates/consumer-pr-protocol.md" \
+  "$pilot_src/tools/repo-reconciler/templates/consumer-pr-protocol.md"
+co="$TMP/ops-consumer"
+mkdir -p "$co/.github/ISSUE_TEMPLATE" "$co/.github/workflows" "$co/docs" "$co/tools"
+write_consumer "$co"
+printf 'consumer docs\n' > "$co/docs/consumer.md"
+printf 'consumer tool\n' > "$co/tools/consumer-tool.sh"
+cat > "$TMP/ops-task.prefix" <<'EOF'
+---
+name: OPS Task
+---
+## Scope
+## Safety and public boundary
+EOF
+printf '%s\n' '## OPS acceptance' > "$TMP/ops-task.suffix"
+cat > "$TMP/ops-pr.prefix" <<'EOF'
+## Why
+## Test
+python3 -m unittest discover -s tests -p 'test_*.py'
+## Knowledge migrated
+## Deleted legacy architecture
+## Public-safety review
+EOF
+printf '%s\n' '## OPS release notes' > "$TMP/ops-pr.suffix"
+printf 'stale task interior\n' > "$TMP/stale-task"
+printf 'stale PR interior\n' > "$TMP/stale-pr"
+write_marked_file "$TMP/ops-task.prefix" "$TMP/stale-task" "$TMP/ops-task.suffix" \
+  "$co/.github/ISSUE_TEMPLATE/task.md"
+write_marked_file "$TMP/ops-pr.prefix" "$TMP/stale-pr" "$TMP/ops-pr.suffix" \
+  "$co/.github/pull_request_template.md"
+cp -a "$co" "$TMP/ops-consumer.before"
+sync_from "$pilot_src" "$co" --write
+assert_code 0
+assert_line $'FILE\tchanged\t.github/ISSUE_TEMPLATE/task.md'
+assert_line $'FILE\tchanged\t.github/pull_request_template.md'
+assert_line $'FILE\tpreserved\tREADME.md'
+assert_line $'FILE\tpreserved\t.github/workflows/ci.yml'
+assert_line $'SYNC\texact'
+write_marked_file "$TMP/ops-task.prefix" \
+  "$pilot_src/tools/repo-reconciler/templates/consumer-task-protocol.md" \
+  "$TMP/ops-task.suffix" "$TMP/ops-task.expected"
+write_marked_file "$TMP/ops-pr.prefix" \
+  "$pilot_src/tools/repo-reconciler/templates/consumer-pr-protocol.md" \
+  "$TMP/ops-pr.suffix" "$TMP/ops-pr.expected"
+cmp -s "$TMP/ops-task.expected" "$co/.github/ISSUE_TEMPLATE/task.md" || fail "task fragment or exterior bytes"
+cmp -s "$TMP/ops-pr.expected" "$co/.github/pull_request_template.md" || fail "PR fragment or exterior bytes"
+for path in README.md .github/workflows/ci.yml docs/consumer.md tools/consumer-tool.sh; do
+  cmp -s "$TMP/ops-consumer.before/$path" "$co/$path" || fail "consumer-owned path changed: $path"
+done
+grep -Fq "python3 -m unittest discover -s tests -p 'test_*.py'" \
+  "$co/.github/pull_request_template.md" || fail "consumer Test command was lost"
+if grep -Fq 'tests/run.sh' "$co/.github/ISSUE_TEMPLATE/task.md" "$co/.github/pull_request_template.md"; then
+  fail "canonical tests/run.sh entered the consumer"
+fi
+seal "$co" "$TMP/ops-consumer.once"
+sync_from "$pilot_src" "$co" --write
+assert_code 0
+assert_line $'SYNC\texact'
+seal "$co" "$TMP/ops-consumer.twice"
+assert_unchanged "$TMP/ops-consumer.once" "$TMP/ops-consumer.twice"
+
 CASE="absent"
 co="$TMP/absent"
 mkdir -p "$co"
@@ -446,8 +533,8 @@ sync_source "$co" --write
 assert_code 0
 assert_line $'SYNC\texact'
 wrap_file "$SRC/tools/repo-reconciler/templates/minimal-consumer-AGENTS.md" "$TMP/absent.agents"
-wrap_file "$SRC/.github/ISSUE_TEMPLATE/task.md" "$TMP/absent.task"
-wrap_file "$SRC/.github/pull_request_template.md" "$TMP/absent.pr"
+wrap_file "$SRC/tools/repo-reconciler/templates/consumer-task-protocol.md" "$TMP/absent.task"
+wrap_file "$SRC/tools/repo-reconciler/templates/consumer-pr-protocol.md" "$TMP/absent.pr"
 cmp -s "$TMP/absent.agents" "$co/AGENTS.md" || fail "absent AGENTS"
 cmp -s "$TMP/absent.task" "$co/.github/ISSUE_TEMPLATE/task.md" || fail "absent task"
 cmp -s "$TMP/absent.pr" "$co/.github/pull_request_template.md" || fail "absent pr"
@@ -456,9 +543,9 @@ CASE="legacy-migration"
 co="$TMP/legacy-ok"
 mkdir -p "$co"
 wrap_file "$SRC/tools/repo-reconciler/templates/minimal-consumer-AGENTS.md" "$co/AGENTS.md"
-wrap_file "$SRC/.github/pull_request_template.md" "$co/.github/pull_request_template.md"
+wrap_file "$SRC/tools/repo-reconciler/templates/consumer-pr-protocol.md" "$co/.github/pull_request_template.md"
 mkdir -p "$co/.github/ISSUE_TEMPLATE"
-cp -- "$SRC/.github/ISSUE_TEMPLATE/task.md" "$co/.github/ISSUE_TEMPLATE/contract.md"
+cp -- "$SRC/tools/repo-reconciler/templates/consumer-task-protocol.md" "$co/.github/ISSUE_TEMPLATE/contract.md"
 seal "$co" "$TMP/legacy-ok.before"
 sync_source "$co"
 assert_code 2
@@ -472,7 +559,7 @@ assert_unchanged "$TMP/legacy-ok.before" "$TMP/legacy-ok.after"
 sync_source "$co" --write
 assert_code 0
 [[ ! -e "$co/.github/ISSUE_TEMPLATE/contract.md" ]] || fail "legacy path remained"
-wrap_file "$SRC/.github/ISSUE_TEMPLATE/task.md" "$TMP/legacy-ok.task"
+wrap_file "$SRC/tools/repo-reconciler/templates/consumer-task-protocol.md" "$TMP/legacy-ok.task"
 cmp -s "$TMP/legacy-ok.task" "$co/.github/ISSUE_TEMPLATE/task.md" || fail "legacy did not become managed task.md"
 
 CASE="legacy-divergent"
@@ -497,13 +584,13 @@ CASE="duplicate-removed"
 co="$TMP/dup-ok"
 mkdir -p "$co"
 install_exact "$SRC" "$co"
-cp -- "$SRC/.github/ISSUE_TEMPLATE/task.md" "$co/.github/ISSUE_TEMPLATE/contract.md"
+cp -- "$SRC/tools/repo-reconciler/templates/consumer-task-protocol.md" "$co/.github/ISSUE_TEMPLATE/contract.md"
 sync_source "$co" --write
 assert_code 0
 assert_line $'FILE\tremoved\t.github/ISSUE_TEMPLATE/contract.md'
 assert_line $'FILE\tunchanged\t.github/ISSUE_TEMPLATE/task.md'
 [[ ! -e "$co/.github/ISSUE_TEMPLATE/contract.md" ]] || fail "identical duplicate remained"
-wrap_file "$SRC/.github/ISSUE_TEMPLATE/task.md" "$TMP/dup-ok.task"
+wrap_file "$SRC/tools/repo-reconciler/templates/consumer-task-protocol.md" "$TMP/dup-ok.task"
 cmp -s "$TMP/dup-ok.task" "$co/.github/ISSUE_TEMPLATE/task.md" || fail "canonical task changed"
 
 CASE="duplicate-divergent"
@@ -524,8 +611,8 @@ CASE="wrap-untouched-template"
 co="$TMP/wrap"
 mkdir -p "$co"
 cp -- "$SRC/tools/repo-reconciler/templates/minimal-consumer-AGENTS.md" "$co/AGENTS.md"
-wrap_file "$SRC/.github/ISSUE_TEMPLATE/task.md" "$co/.github/ISSUE_TEMPLATE/task.md"
-wrap_file "$SRC/.github/pull_request_template.md" "$co/.github/pull_request_template.md"
+wrap_file "$SRC/tools/repo-reconciler/templates/consumer-task-protocol.md" "$co/.github/ISSUE_TEMPLATE/task.md"
+wrap_file "$SRC/tools/repo-reconciler/templates/consumer-pr-protocol.md" "$co/.github/pull_request_template.md"
 sync_source "$co" --write
 assert_code 0
 wrap_file "$SRC/tools/repo-reconciler/templates/minimal-consumer-AGENTS.md" "$TMP/wrap.expect"
@@ -542,7 +629,7 @@ CASE="missing-markers-fail-closed"
 co="$TMP/missing"
 mkdir -p "$co/.github/ISSUE_TEMPLATE"
 printf 'NO MARKERS\n' > "$co/AGENTS.md"
-cp -- "$SRC/.github/ISSUE_TEMPLATE/task.md" "$co/.github/ISSUE_TEMPLATE/task.md"
+cp -- "$SRC/tools/repo-reconciler/templates/consumer-task-protocol.md" "$co/.github/ISSUE_TEMPLATE/task.md"
 seal "$co" "$TMP/missing.before"
 sync_source "$co" --write
 assert_code 2
@@ -550,7 +637,7 @@ assert_line $'FILE\tconflict\tAGENTS.md'
 assert_line $'SYNC\tconflict'
 seal "$co" "$TMP/missing.after"
 assert_unchanged "$TMP/missing.before" "$TMP/missing.after"
-cmp -s "$SRC/.github/ISSUE_TEMPLATE/task.md" "$co/.github/ISSUE_TEMPLATE/task.md" || fail "unwrapped task was written during conflict"
+cmp -s "$SRC/tools/repo-reconciler/templates/consumer-task-protocol.md" "$co/.github/ISSUE_TEMPLATE/task.md" || fail "unwrapped task was written during conflict"
 
 CASE="duplicate-markers-fail-closed"
 co="$TMP/markers"
@@ -562,7 +649,7 @@ mkdir -p "$co"
   printf '%s\n' "$PS_END"
 } > "$co/AGENTS.md"
 mkdir -p "$co/.github"
-cp -- "$SRC/.github/pull_request_template.md" "$co/.github/pull_request_template.md"
+cp -- "$SRC/tools/repo-reconciler/templates/consumer-pr-protocol.md" "$co/.github/pull_request_template.md"
 seal "$co" "$TMP/markers.before"
 sync_source "$co" --write
 assert_code 2
