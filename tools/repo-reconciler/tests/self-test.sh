@@ -1245,5 +1245,6 @@ run_self_test() {
     return 1
   fi
   echo "self-test: no credential handling or consumer CI generation: PASS"
+  bash "$SCRIPT_DIR/tests/protocol-sync-self-test.sh"
   echo "self-test: PASS"
 }

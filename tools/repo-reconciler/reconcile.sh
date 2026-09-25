@@ -15,6 +15,7 @@ Usage:
   reconcile.sh activate  --required-check NAME --check-sha FULL_COMMIT_SHA [--repo OWNER/REPO] [--branch NAME] --human-authority-verified --developer-app-verified --reviewer-app-verified
   reconcile.sh apply     [--repo OWNER/REPO] [--branch NAME] --human-authority-verified --developer-app-verified --reviewer-app-verified
   reconcile.sh upgrade   [--repo OWNER/REPO] [--branch NAME] [--phase bootstrap|active] [--required-check NAME]
+  reconcile.sh protocol-sync --checkout DIR [--target-ref REF] [--source DIR] [--write]
   reconcile.sh self-test
 
 Read-only audit, plan, upgrade, and self-test do not require Human Authority
@@ -35,6 +36,10 @@ It never selects, generates, or edits consumer CI.
 Activate checks the exact context on the supplied commit SHA through live GitHub
 Check Runs and commit statuses before binding it. It does not select a SHA from
 the default branch or infer a check name from a workflow.
+
+protocol-sync aligns one local checkout to one resolved snapshot. It does not
+write GitHub state, create a branch, commit, or open a pull request, and it does
+not accept --human-authority-verified.
 USAGE
 }
 
@@ -45,9 +50,17 @@ fi
 shift || true
 
 case "$ACTION" in
-  audit|plan|bootstrap|activate|apply|upgrade|self-test) ;;
+  audit|plan|bootstrap|activate|apply|upgrade|self-test|protocol-sync) ;;
   *) echo "unknown action: $ACTION" >&2; usage >&2; exit 64 ;;
 esac
+
+if [[ "$ACTION" == "protocol-sync" ]]; then
+  command -v jq >/dev/null 2>&1 || { echo "missing dependency: jq" >&2; exit 69; }
+  # shellcheck source=lib/protocol-sync.sh
+  source "$SCRIPT_DIR/lib/protocol-sync.sh"
+  protocol_sync_main "$@"
+  exit $?
+fi
 
 REPO=""
 BRANCH=""

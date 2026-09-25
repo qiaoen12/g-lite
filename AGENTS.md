@@ -253,6 +253,7 @@ consumer 的 Required Check 应检查自己的真实技术栈风险，不要求�
 - `bootstrap` 只建立缺失的最小 consumer 协议文件、`approved` label，并报告 Developer / Reviewer App prerequisites；不接管项目文件或 CI。
 - `activate --required-check NAME` 只接受 Agent 提供的真实成功 Check name，建立或校准 G-lite-owned Ruleset。
 - `apply` 幂等执行安全基线与 Ruleset 修复；`upgrade` 只读输出可审查差异。
+- `protocol-sync` 对一个本地 checkout 做确定性协议同步：精确替换声明的 owned exact，只替换 managed block 内部，不改 consumer 自有内容；不写 GitHub，不创建 branch、commit 或 PR。
 - 工具只检查 required protocol markers，作为 deterministic mechanical baseline；成熟仓的实际语义判断与补丁由 Agent 负责，工具不整文件覆盖。
 - 工具不保存 GitHub durable facts，不管理凭据，不创建 consumer CI。
 - `--developer-app-verified` / `--reviewer-app-verified` 是外部 identity / installation preflight，分别断言 Developer 与 Reviewer App 的当前身份、独立性和目标仓库 installation access。

@@ -16,7 +16,9 @@ required=(
   tools/repo-reconciler/lib/apply.sh
   tools/repo-reconciler/lib/audit.sh
   tools/repo-reconciler/lib/github.sh
+  tools/repo-reconciler/lib/protocol-sync.sh
   tools/repo-reconciler/tests/self-test.sh
+  tools/repo-reconciler/tests/protocol-sync-self-test.sh
   tools/repo-reconciler/templates/minimal-consumer-AGENTS.md
   tools/machine-bootstrap/role-exec
   tools/machine-bootstrap/tests/self-test.py
@@ -99,6 +101,7 @@ need tools/repo-reconciler/reconcile.sh "reconcile.sh bootstrap"
 need tools/repo-reconciler/reconcile.sh "reconcile.sh activate"
 need tools/repo-reconciler/reconcile.sh "reconcile.sh apply"
 need tools/repo-reconciler/reconcile.sh "reconcile.sh upgrade"
+need tools/repo-reconciler/reconcile.sh "reconcile.sh protocol-sync"
 need tools/repo-reconciler/reconcile.sh "--human-authority-verified"
 need tools/repo-reconciler/lib/apply.sh "write_preflight"
 need AGENTS.md "L0 Static"
@@ -137,7 +140,7 @@ need .github/pull_request_template.md "tests/run.sh"
 
 bash -n tools/repo-reconciler/reconcile.sh
 bash -n tests/run.sh
-for file in tools/repo-reconciler/lib/*.sh tools/repo-reconciler/tests/self-test.sh; do
+for file in tools/repo-reconciler/lib/*.sh tools/repo-reconciler/tests/self-test.sh tools/repo-reconciler/tests/protocol-sync-self-test.sh; do
   bash -n "$file"
 done
 jq -e '
@@ -148,6 +151,21 @@ jq -e '
   (.required_label.name == "approved") and
   (.canonical.current_bindings.developer_app == {id:5017695,slug:"g-lite-developer",actor:"g-lite-developer[bot]"}) and
   (.canonical.current_bindings.reviewer_app == {id:5010632,slug:"g-lite-reviewer",actor:"g-lite-reviewer[bot]"}) and
+  (.canonical.repo == "qiaoen12/g-lite") and
+  (.canonical.ref == "main") and
+  (.protocol_sync.markers.start == "<!-- g-lite:managed protocol start -->") and
+  (.protocol_sync.markers.end == "<!-- g-lite:managed protocol end -->") and
+  (.protocol_sync.managed == [
+    {"path":"AGENTS.md","payload":"tools/repo-reconciler/templates/minimal-consumer-AGENTS.md"},
+    {"path":".github/ISSUE_TEMPLATE/task.md","payload":".github/ISSUE_TEMPLATE/task.md"},
+    {"path":".github/pull_request_template.md","payload":".github/pull_request_template.md"}
+  ]) and
+  (.protocol_sync.legacy == [
+    {"path":".github/ISSUE_TEMPLATE/contract.md","canonical":".github/ISSUE_TEMPLATE/task.md"}
+  ]) and
+  (.protocol_sync.owned_exact == []) and
+  all(.protocol_sync.managed[].path, .protocol_sync.legacy[].path;
+    . != "README.md" and (startswith(".github/workflows/") | not) and (startswith("docs/") | not) and (startswith("tools/") | not)) and
   (.ruleset.allowed_merge_methods == ["squash"]) and
   (["PASS", "DRIFT", "PLATFORM_BLOCKER", "PERMISSION_BLOCKER", "UNVERIFIED"] - .states | length == 0)
 ' tools/repo-reconciler/manifest.json >/dev/null
