@@ -119,6 +119,28 @@ need AGENTS.md "tests/run.sh"
 need AGENTS.md "LOCAL GREEN"
 need AGENTS.md "CI GREEN"
 need AGENTS.md "REVIEW-READY"
+need AGENTS.md "## Primary checkout 与 native Git worktree"
+need AGENTS.md "永远停留在 repository default branch"
+need AGENTS.md "git worktree add -b <task-branch> <task-worktree> origin/main"
+need AGENTS.md "git worktree list --porcelain"
+need AGENTS.md "git worktree remove <task-worktree>"
+need AGENTS.md "git branch -d <task-branch>"
+need AGENTS.md "git branch -D <task-branch>"
+need AGENTS.md "primary main + clean"
+need README.md "primary checkout stays on default/main"
+need README.md "one dedicated native Git task worktree"
+need README.md "temporary detached-HEAD worktree"
+need .github/ISSUE_TEMPLATE/task.md "primary checkout stays on default/main"
+need .github/ISSUE_TEMPLATE/task.md "git worktree list --porcelain"
+protocol_files=(AGENTS.md README.md .github/ISSUE_TEMPLATE/task.md tests/run.sh)
+if grep -En '/(Users|home)/[^[:space:]]+' "${protocol_files[@]}"; then
+  echo "machine-specific absolute path found in protocol files"
+  exit 1
+fi
+if find tools -type f \( -iname '*worktree*' -o -iname '*task-state*' -o -iname '*task-registry*' \) -print -quit | grep -q .; then
+  echo "task worktree helper/runtime or persistent task state has appeared"
+  exit 1
+fi
 need README.md "LOCAL GREEN"
 need README.md "CI GREEN"
 need README.md "REVIEW-READY"

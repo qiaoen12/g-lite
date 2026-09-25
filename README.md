@@ -32,7 +32,11 @@ Issue Contract
   ↓
 fresh independent approved
   ↓
-ordinary Git branch / worktree
+primary checkout stays on default/main
+  ↓
+one dedicated native Git task worktree
+  ↓
+one writable task branch
   ↓
 Developer Agent
   ↓
@@ -54,6 +58,8 @@ Human Authority: Squash merge（可按任务级授权由 Main 机械执行）
 实现先到达 LOCAL GREEN，再开 PR。
 当前 HEAD 的 CI GREEN 之后才是 REVIEW-READY，然后进入独立 Reviewer。
 CI 为红则回到 Developer。Reviewer 不是第二个 debugger。
+
+primary checkout 始终停留在 default/main，Main 在那里协调和验证。每个任务使用一个 native Git worktree 和一个可写 task branch；Developer 只在该 worktree 修改 task files，`git worktree list --porcelain` 是实际 binding 的 source of truth。Reviewer 默认远程 Review；本地执行需要独立 temporary detached-HEAD worktree。Human Authority merge 后 native Git 清理 task worktree 与本地 branch，再 fast-forward primary 并确认 main + clean；保留 remote task branch。
 
 对本 canonical 仓库，LOCAL GREEN 是 `tests/run.sh` 通过。
 CI GREEN 是同一 runner 在当前 PR HEAD 上通过。
@@ -163,7 +169,7 @@ GitHub 是 Issue authorization、PR、Checks、Review、Ruleset、merge eligibil
 1. 读取当前 GitHub Issue 正文，不要用聊天摘要代替。
 2. 确认 Issue 为 OPEN。
 3. 读取当前 `approved` 及最新 label event、Contract 最近 body edit；确认 authorization FRESH 且批准 Actor 独立。
-4. Developer 从最新 `origin/main` 创建普通 branch / worktree。
+4. 保持 primary checkout 在 default/main 且 clean，fetch 并 fast-forward 最新 `origin/main`；用 native Git 为 task 创建唯一 dedicated worktree 和一个可写 branch。Developer 只在该 worktree 修改 task files，primary 不切换到 task branch。
 5. 只改 Contract 允许的范围。中等或更大的工作先有 Implementation & Verification Plan；纯文档或琐碎工作可以写明完整计划不适用。
 6. 跑到 LOCAL GREEN。canonical 仓库跑 `tests/run.sh`。
 7. push 并开 PR；PR 用 `Fixes #N` 关联 Issue。
