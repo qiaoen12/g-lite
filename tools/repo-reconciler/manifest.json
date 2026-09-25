@@ -46,5 +46,20 @@
     "do_not_enforce_on_create": false,
     "bypass": "none"
   },
+  "protocol_sync": {
+    "markers": {
+      "start": "<!-- g-lite:managed protocol start -->",
+      "end": "<!-- g-lite:managed protocol end -->"
+    },
+    "managed": [
+      {"path": "AGENTS.md", "payload": "tools/repo-reconciler/templates/minimal-consumer-AGENTS.md"},
+      {"path": ".github/ISSUE_TEMPLATE/task.md", "payload": ".github/ISSUE_TEMPLATE/task.md"},
+      {"path": ".github/pull_request_template.md", "payload": ".github/pull_request_template.md"}
+    ],
+    "legacy": [
+      {"path": ".github/ISSUE_TEMPLATE/contract.md", "canonical": ".github/ISSUE_TEMPLATE/task.md"}
+    ],
+    "owned_exact": []
+  },
   "states": ["PASS", "DRIFT", "PLATFORM_BLOCKER", "PERMISSION_BLOCKER", "UNVERIFIED"]
 }

@@ -211,6 +211,8 @@ canonical G-lite 的 Required Check 名为 `pr-gate`；consumer repo 可以使�
 
 `tools/repo-reconciler/` 提供无状态 `audit`、`plan`、`bootstrap`、`activate`、`apply`、`upgrade`；它只处理稳定、机械、重复的 GitHub 治理事实，bootstrap 只建立最小协议基线，不生成 consumer CI、不接管 consumer 业务文件。
 
+`protocol-sync` 把一个 consumer checkout 对齐到一次解析得到的 canonical 快照，只做本地文件同步：声明过的 owned exact 可以整文件替换，managed block 只替换 marker 内部。它不写 GitHub，也不创建 branch、commit 或 PR。
+
 文件审计仅检查 `required protocol markers present`，属于 deterministic mechanical baseline，不证明 semantic correctness。manifest 使用 `protocol.markers` 描述这些字面 marker；成熟仓的实际语义判断和上下文相关补丁仍由 Agent 负责，不增加 LLM、parser 或 semantic engine。
 
 Bootstrap 坚持 same target or fail，不会在写入失败后删除 `branch` 重试。只有实时确认 GitHub `repository.isEmpty = true`，并确认目标 branch 等于当前默认分支，才允许省略 `branch` 创建首个 commit；每个缺失文件写入前重新判断，不缓存空仓状态。非空仓、非默认目标或无法证明为空时都保留显式目标，失败保留原写入错误分类。
