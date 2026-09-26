@@ -12,6 +12,10 @@ assignees: []
 
 ## Contract
 
+### Context
+
+<!-- Describe the current situation, problem, and concrete examples. -->
+
 ### Goal
 
 <!-- What outcome is required? -->
@@ -20,23 +24,31 @@ assignees: []
 
 <!-- Observable conditions that must be true when complete. -->
 
-### Implementation & Verification Plan
+### Constraints
 
-Medium or larger work names this before implementation: expected files and responsibility boundaries, estimated implementation LOC, estimated test LOC, primary risk, the L0-L4 levels this Contract uses, Local / CI / Pilot placement, Permanent / Stage / Pilot, LOCAL GREEN, CI GREEN, REVIEW-READY, and stop conditions.
-
-Trivial or docs-only work may say the full plan is not applicable.
-
-Repository task files are changed only in a dedicated native Git worktree with one writable task branch; the primary checkout stays on default/main. Use `git worktree list --porcelain` as the binding source of truth. Reviewer local execution, if needed, uses a separate temporary detached-HEAD worktree.
+<!-- Already-decided limits or requirements; do not invent implementation details. -->
 
 ### Out of scope
 
 <!-- What must not be changed or added in this task. -->
+
+### Execution Plan (optional)
+
+<!-- May be left empty. If repository reading and design have produced a useful plan, record it here in any suitable format. -->
+
+G-lite does not require an Execution Plan or parse its contents. Without a plan, Developer uses the current repository facts and Issue goals to implement and verify the task. Editing this section follows the same Issue body freshness rules as any other edit.
 
 ### Authorization
 
 Human Authority controls repository governance; Developer may create or edit the Contract. The independent Reviewer authorizes the current version. A GitHub Actor that wrote or materially edited this Contract must not add `approved` to the same Contract version.
 
 Chat instructions do not replace fresh `approved` for development. Work starts only after the independent Reviewer adds it. Developer and Reviewer must not merge; final Squash merge belongs to Human Authority after GitHub gates pass.
+
+### Delivery lifecycle
+
+Repository task files are changed only in a dedicated native Git worktree with one writable task branch; the primary checkout stays on default/main. Use `git worktree list --porcelain` as the binding source of truth. Reviewer local execution, if needed, uses a separate temporary detached-HEAD worktree.
+
+Reach LOCAL GREEN before opening the PR, then CI GREEN for the current PR HEAD before REVIEW-READY and independent Review.
 
 ### Merge authorization
 

@@ -4,7 +4,7 @@ This repository uses the G-lite GitHub-native protocol.
 
 ## Contract
 
-For new tasks, record Original Intent (the user's words or a fixed PRD reference) before the Issue Contract containing Goal, Acceptance, Out of scope, and Authorization. This version does not require reconciler to audit older consumers for Original Intent.
+For new tasks, record Original Intent (the user's words or a fixed PRD reference) before the Issue Contract containing Context, Goal, observable Acceptance, Constraints / Out of scope, and Authorization. Execution Plan is optional and may be empty for any task size; G-lite neither requires it nor parses its contents. Without a plan, Developer uses current repository facts and Issue goals to implement and verify. Plan edits follow the same Issue body freshness rules. This version does not require reconciler to audit older consumers for Original Intent.
 
 Before development and again before PR review, read the current OPEN Issue Contract, author/editor, lastEditedAt, current approved label and latest approved label event (actor and timestamp). Missing approval is INVALID; lastEditedAt absent or <= approvedAt is FRESH; later edits are STALE. Stop if facts cannot be verified or authorization is invalid/stale. The Actor that writes or materially edits the current Contract version cannot approve it. Reauthorization requires independent fresh approved; do not cache authorization.
 

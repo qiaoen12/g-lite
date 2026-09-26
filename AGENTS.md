@@ -119,11 +119,13 @@ Codex / Cursor / Claude Code / Grok 等只是可替换工作台。
 不创建 label、数据库字段、cache、文件或本地状态机来记录验证进度。
 Git、GitHub 与测试结果仍是事实。
 
-中等或更大的工作，在实现前把 Implementation & Verification Plan 写进当前 Contract。
-计划至少写明：预期文件与责任边界、实现与测试的大致规模、主要复杂度或风险、本任务选用的验证层级、Local / CI / Pilot 放置、Permanent / Stage / Pilot、LOCAL GREEN、CI GREEN、REVIEW-READY，以及停止条件。
-纯文档或琐碎工作可以写明完整计划不适用。
+Issue Contract 描述任务事实：Original Intent / Context、Goal、Acceptance、Constraints / Out of scope 与 Authorization。
+Execution Plan 是可选区域，可以为空；中等或更大的任务也不要求预先填写实现与验证计划。
+已有仓库阅读和方案设计结果时，可按合适形式记录；G-lite 不要求该区域存在，不解析内部结构，也不把它作为开发门禁或单独授权对象。
+没有预先计划时，Developer 根据当前仓库事实、Issue 目标与边界自主完成实现和必要验证；canonical G-lite 自身开发同样适用。
+Execution Plan 的正文编辑沿用同一 Issue body freshness 规则，不豁免重新授权。
 
-Contract 只选用能提供该任务证据的层级，不必填满每一级：
+以下验证层级用于选择能提供任务证据的验证，不是 Issue 必填字段，也不要求每级都运行：
 
 - **L0 Static** — 语法、必需文件、schema 或基本一致性，以及 `git diff --check`。
 - **L1 Unit** — 单个函数或变换。

@@ -68,8 +68,8 @@ Required Check 名仍是 `pr-gate`。
 consumer repo 不要求复制这条 canonical runner，继续使用自己的稳定 Required Check。
 
 REVIEW-READY 由这些事实推出，不是 label、数据库字段、cache、文件或本地状态机。
-中等及以上工作先在 Contract 写 Implementation & Verification Plan。
-纯文档或琐碎工作可以写明完整计划不适用。
+Execution Plan 可选且可以为空，所有规模的任务均不要求预先填写完整实现与验证计划。
+没有计划时，Developer 根据当前仓库事实与 Issue 目标自主完成实现和必要验证；canonical G-lite 自身开发同样适用。
 验证层级、Permanent / Stage / Pilot 的定义见 `AGENTS.md`。
 
 删掉本仓库里任何一个非协议模块之后，这条闭环必须仍然完整。
@@ -103,11 +103,16 @@ Human Authority 或 Developer 在 GitHub Issue 正文写契约。模板最小结
 ```text
 Original Intent（用户原话或固定 PRD 引用）
 Contract
+├ Context（背景、当前情况与真实案例）
 ├ Goal
-├ Acceptance
-├ Out of scope
-└ Authorization
+├ Acceptance（可观察结果）
+├ Constraints / Out of scope（已确定的约束与非目标）
+├ Execution Plan（optional，可空）
+├ Authorization
+└ Merge authorization
 ```
+
+任务定义不要求提前确定具体实现方式。已有仓库阅读和方案设计结果时，可写入 Execution Plan；G-lite 不要求该区域存在，不解析内部结构，也不据此新增状态、授权或门禁。编辑该区域仍适用同一 Issue body freshness 规则。
 
 v3.4 新任务填写 Original Intent。现行 reconciler 仍只检查四个 Contract marker，不自动审计旧 consumer 是否补齐该字段。
 
@@ -170,7 +175,7 @@ GitHub 是 Issue authorization、PR、Checks、Review、Ruleset、merge eligibil
 2. 确认 Issue 为 OPEN。
 3. 读取当前 `approved` 及最新 label event、Contract 最近 body edit；确认 authorization FRESH 且批准 Actor 独立。
 4. 保持 primary checkout 在 default/main 且 clean，fetch 并 fast-forward 最新 `origin/main`；用 native Git 为 task 创建唯一 dedicated worktree 和一个可写 branch。Developer 只在该 worktree 修改 task files，primary 不切换到 task branch。
-5. 只改 Contract 允许的范围。中等或更大的工作先有 Implementation & Verification Plan；纯文档或琐碎工作可以写明完整计划不适用。
+5. 只改 Contract 允许的范围。Execution Plan 可选；根据任务与仓库事实选择必要的实现和验证。
 6. 跑到 LOCAL GREEN。canonical 仓库跑 `tests/run.sh`。
 7. push 并开 PR；PR 用 `Fixes #N` 关联 Issue。
 8. 等待当前 HEAD 的 CI GREEN。失败则修本 PR 引入的问题，不绕过门。canonical 的 `pr-gate` 只跑同一入口。
