@@ -170,16 +170,24 @@ need README.md "bash tests/run.sh"
 need README.md "Permanent"
 need README.md "Stage"
 need README.md "Pilot"
-need .github/ISSUE_TEMPLATE/task.md "### Implementation & Verification Plan"
-need .github/ISSUE_TEMPLATE/task.md "L0-L4"
-need .github/ISSUE_TEMPLATE/task.md "Permanent"
-need .github/ISSUE_TEMPLATE/task.md "Stage"
-need .github/ISSUE_TEMPLATE/task.md "Pilot"
-need .github/ISSUE_TEMPLATE/task.md "LOCAL GREEN"
-need .github/ISSUE_TEMPLATE/task.md "CI GREEN"
-need .github/ISSUE_TEMPLATE/task.md "REVIEW-READY"
+need .github/ISSUE_TEMPLATE/task.md "### Context"
+need .github/ISSUE_TEMPLATE/task.md "### Constraints"
+need .github/ISSUE_TEMPLATE/task.md "### Execution Plan (optional)"
+need .github/ISSUE_TEMPLATE/task.md "May be left empty"
+need .github/ISSUE_TEMPLATE/task.md "G-lite does not require an Execution Plan or parse its contents"
+for file in AGENTS.md README.md; do
+  need "$file" "Execution Plan"
+  need "$file" "可以为空"
+done
+for file in "$consumer_agents" tools/repo-reconciler/templates/consumer-task-protocol.md; do
+  need "$file" "Execution Plan is optional and may be empty for any task size"
+done
+if grep -Fn 'Implementation & Verification Plan' AGENTS.md README.md .github/ISSUE_TEMPLATE/task.md \
+  "$consumer_agents" tools/repo-reconciler/templates/consumer-task-protocol.md; then
+  echo "legacy mandatory planning contract reappeared"
+  exit 1
+fi
 need .github/pull_request_template.md "tests/run.sh"
-need tools/repo-reconciler/templates/consumer-task-protocol.md "Implementation & Verification Plan"
 need tools/repo-reconciler/templates/consumer-task-protocol.md "default/main"
 need tools/repo-reconciler/templates/consumer-task-protocol.md "dedicated native Git worktree"
 need tools/repo-reconciler/templates/consumer-task-protocol.md "LOCAL GREEN"
