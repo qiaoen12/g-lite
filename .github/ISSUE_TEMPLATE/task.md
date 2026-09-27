@@ -36,7 +36,7 @@ assignees: []
 
 <!-- May be left empty. If repository reading and design have produced a useful plan, record it here in any suitable format. -->
 
-G-lite does not require an Execution Plan or parse its contents. Without a plan, Developer uses the current repository facts and Issue goals to implement and verify the task. Editing this section follows the same Issue body freshness rules as any other edit.
+Execution Plan is optional and may be empty for any task size. G-lite does not require an Execution Plan or parse its contents. Without a plan, Developer uses the current repository facts and Issue goals to implement and verify the task. Editing this section follows the same Issue body freshness rules as any other edit.
 
 ### Authorization
 

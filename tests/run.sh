@@ -20,8 +20,6 @@ required=(
   tools/repo-reconciler/tests/self-test.sh
   tools/repo-reconciler/tests/protocol-sync-self-test.sh
   tools/repo-reconciler/templates/minimal-consumer-AGENTS.md
-  tools/repo-reconciler/templates/consumer-task-protocol.md
-  tools/repo-reconciler/templates/consumer-pr-protocol.md
   tools/machine-bootstrap/role-exec
   tools/machine-bootstrap/tests/self-test.py
   tests/run.sh
@@ -151,9 +149,7 @@ need README.md "temporary detached-HEAD worktree"
 need .github/ISSUE_TEMPLATE/task.md "primary checkout stays on default/main"
 need .github/ISSUE_TEMPLATE/task.md "git worktree list --porcelain"
 protocol_files=(AGENTS.md README.md .github/ISSUE_TEMPLATE/task.md .github/pull_request_template.md tests/run.sh \
-  tools/repo-reconciler/templates/minimal-consumer-AGENTS.md \
-  tools/repo-reconciler/templates/consumer-task-protocol.md \
-  tools/repo-reconciler/templates/consumer-pr-protocol.md)
+  tools/repo-reconciler/templates/minimal-consumer-AGENTS.md)
 if grep -En '/(Users|home)/[^[:space:]]+' "${protocol_files[@]}"; then
   echo "machine-specific absolute path found in protocol files"
   exit 1
@@ -179,30 +175,29 @@ for file in AGENTS.md README.md; do
   need "$file" "Execution Plan"
   need "$file" "可以为空"
 done
-for file in "$consumer_agents" tools/repo-reconciler/templates/consumer-task-protocol.md; do
+for file in "$consumer_agents" .github/ISSUE_TEMPLATE/task.md; do
   need "$file" "Execution Plan is optional and may be empty for any task size"
 done
 if grep -Fn 'Implementation & Verification Plan' AGENTS.md README.md .github/ISSUE_TEMPLATE/task.md \
-  "$consumer_agents" tools/repo-reconciler/templates/consumer-task-protocol.md; then
+  "$consumer_agents" .github/ISSUE_TEMPLATE/task.md; then
   echo "legacy mandatory planning contract reappeared"
   exit 1
 fi
-need .github/pull_request_template.md "tests/run.sh"
-need tools/repo-reconciler/templates/consumer-task-protocol.md "default/main"
-need tools/repo-reconciler/templates/consumer-task-protocol.md "dedicated native Git worktree"
-need tools/repo-reconciler/templates/consumer-task-protocol.md "LOCAL GREEN"
-need tools/repo-reconciler/templates/consumer-task-protocol.md "CI GREEN"
-need tools/repo-reconciler/templates/consumer-task-protocol.md "REVIEW-READY"
-need tools/repo-reconciler/templates/consumer-task-protocol.md "independent Reviewer"
-need tools/repo-reconciler/templates/consumer-task-protocol.md "Human Authority"
-need tools/repo-reconciler/templates/consumer-pr-protocol.md "approved Issue Contract reference"
-need tools/repo-reconciler/templates/consumer-pr-protocol.md "LOCAL GREEN evidence"
-need tools/repo-reconciler/templates/consumer-pr-protocol.md "PR HEAD"
-need tools/repo-reconciler/templates/consumer-pr-protocol.md "CI GREEN evidence for the current PR HEAD"
-need tools/repo-reconciler/templates/consumer-pr-protocol.md "Unverified / Risks"
+need .github/ISSUE_TEMPLATE/task.md "default/main"
+need .github/ISSUE_TEMPLATE/task.md "dedicated native Git worktree"
+need .github/ISSUE_TEMPLATE/task.md "LOCAL GREEN"
+need .github/ISSUE_TEMPLATE/task.md "CI GREEN"
+need .github/ISSUE_TEMPLATE/task.md "REVIEW-READY"
+need .github/ISSUE_TEMPLATE/task.md "independent Reviewer"
+need .github/ISSUE_TEMPLATE/task.md "Human Authority"
+need .github/pull_request_template.md "approved Issue Contract reference"
+need .github/pull_request_template.md "LOCAL GREEN evidence"
+need .github/pull_request_template.md "PR HEAD"
+need .github/pull_request_template.md "CI GREEN evidence for the current PR HEAD"
+need .github/pull_request_template.md "Unverified / Risks"
 if grep -En 'tests/run\.sh|pr-gate|(^|[^[:alnum:]_])unit([^[:alnum:]_]|$)|pytest|npm test' \
-  tools/repo-reconciler/templates/consumer-task-protocol.md \
-  tools/repo-reconciler/templates/consumer-pr-protocol.md; then
+  .github/ISSUE_TEMPLATE/task.md \
+  .github/pull_request_template.md; then
   echo "consumer protocol fragment contains a project-specific test/check command"
   exit 1
 fi
@@ -223,19 +218,13 @@ jq -e '
   (.canonical.current_bindings.reviewer_app == {id:5010632,slug:"g-lite-reviewer",actor:"g-lite-reviewer[bot]"}) and
   (.canonical.repo == "qiaoen12/g-lite") and
   (.canonical.ref == "main") and
-  (.protocol_sync.markers.start == "<!-- g-lite:managed protocol start -->") and
-  (.protocol_sync.markers.end == "<!-- g-lite:managed protocol end -->") and
-  (.protocol_sync.managed == [
-    {"path":"AGENTS.md","payload":"tools/repo-reconciler/templates/minimal-consumer-AGENTS.md"},
-    {"path":".github/ISSUE_TEMPLATE/task.md","payload":"tools/repo-reconciler/templates/consumer-task-protocol.md"},
-    {"path":".github/pull_request_template.md","payload":"tools/repo-reconciler/templates/consumer-pr-protocol.md"}
-  ]) and
-  (.protocol_sync.legacy == [
-    {"path":".github/ISSUE_TEMPLATE/contract.md","canonical":".github/ISSUE_TEMPLATE/task.md"}
-  ]) and
-  (.protocol_sync.owned_exact == []) and
-  all(.protocol_sync.managed[].path, .protocol_sync.legacy[].path;
-    . != "README.md" and (startswith(".github/workflows/") | not) and (startswith("docs/") | not) and (startswith("tools/") | not)) and
+  (.protocol_sync == {
+    managed_prefix: {path:"AGENTS.md",payload:"tools/repo-reconciler/templates/minimal-consumer-AGENTS.md"},
+    owned_exact: [
+      {path:".github/ISSUE_TEMPLATE/task.md",payload:".github/ISSUE_TEMPLATE/task.md"},
+      {path:".github/pull_request_template.md",payload:".github/pull_request_template.md"}
+    ]
+  }) and
   (.ruleset.allowed_merge_methods == ["squash"]) and
   (["PASS", "DRIFT", "PLATFORM_BLOCKER", "PERMISSION_BLOCKER", "UNVERIFIED"] - .states | length == 0)
 ' tools/repo-reconciler/manifest.json >/dev/null

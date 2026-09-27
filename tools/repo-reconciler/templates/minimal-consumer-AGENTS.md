@@ -1,3 +1,6 @@
+<!-- g-lite:managed protocol start -->
+G-lite Protocol-Version: v3.7.3
+
 # Agent protocol
 
 This repository uses the G-lite GitHub-native protocol.
@@ -67,3 +70,5 @@ The default branch requires PRs, at least one independent approval, stale review
    Without a strict latest-base Ruleset, main can advance between the last read and merge.
 6. Ask Human Authority for scope changes, unverifiable identity/authorization/gates, governance or high-impact actions,
    or about three failures on one path without new evidence. Continue routine CI and Review rework within scope.
+
+<!-- g-lite:managed protocol end -->
