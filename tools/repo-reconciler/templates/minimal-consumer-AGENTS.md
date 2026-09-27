@@ -1,5 +1,5 @@
 <!-- g-lite:managed protocol start -->
-G-lite Protocol-Version: v3.7.3
+G-lite Protocol-Version: v3.7.4
 
 # Agent protocol
 
@@ -7,7 +7,7 @@ This repository uses the G-lite GitHub-native protocol.
 
 ## Contract
 
-For new tasks, record Original Intent (the user's words or a fixed PRD reference) before the Issue Contract containing Context, Goal, observable Acceptance, Constraints / Out of scope, and Authorization. Execution Plan is optional and may be empty for any task size; G-lite neither requires it nor parses its contents. Without a plan, Developer uses current repository facts and Issue goals to implement and verify. Plan edits follow the same Issue body freshness rules. This version does not require reconciler to audit older consumers for Original Intent.
+The whole Issue body is the current Issue Contract. Use Background for the request or fixed PRD reference, problem, desired outcome, observable completion conditions, and task-specific limits. No additional wrapper or separate subsection for each fact is required. Execution is optional and may be empty or omitted for any task size; when a useful plan exists, add implementation and verification details to the same body. Comments hold discussion, evidence, and reports, not a second Contract. G-lite does not parse the plan or require it as a gate. Without a plan, Developer uses current repository facts and Issue goals to implement and verify. Body edits follow the same freshness rules. Common authorization, role, worktree, verification, and merge rules belong in AGENTS, not in each Issue.
 
 Before development and again before PR review, read the current OPEN Issue Contract, author/editor, lastEditedAt, current approved label and latest approved label event (actor and timestamp). Missing approval is INVALID; lastEditedAt absent or <= approvedAt is FRESH; later edits are STALE. Stop if facts cannot be verified or authorization is invalid/stale. The Actor that writes or materially edits the current Contract version cannot approve it. Reauthorization requires independent fresh approved; do not cache authorization.
 
@@ -30,17 +30,17 @@ In ACTIVE, Developer + Reviewer handle daily tasks; Human Authority intervenes a
 
 Local Bootstrap ≠ Repository Task. Local App private key installation/rotation, ~/.config/g-lite/ credential directories, token helpers, shell identity bootstrap, read-only identity preflight, and new-machine identity setup need no Issue Contract. They do not authorize changing repository durable facts; repository changes enter the appropriate lifecycle.
 
-In each checkout that uses the local credential entry, first add `.g-lite-local/` to that checkout's Git local exclude (locate it with `git rev-parse --git-path info/exclude`). Then create a `.g-lite-local/credentials` symlink to the actual machine credential root. Neither the symlink nor its target belongs in Git; do not change repository `.gitignore` or assume fixed Developer / Reviewer private-key file layouts. Verify the entry is ignored and a previously clean `git status` remains clean.
+The canonical runtime path is `tools/machine-bootstrap/role-exec → ~/.config/g-lite/bin/app-env.sh`; the existing machine-local `G_LITE_APP_ENV` override may select a compatible bridge. The entry asks Machine Bootstrap for a short-lived token; credential layout remains machine-owned. If the entry is unavailable, stop the role action and report the Machine Bootstrap prerequisite. Do not discover or invent alternative authentication paths.
 
 Developer / Reviewer use short-lived Installation Access Tokens. Never put private keys, JWTs, tokens, or PATs in repo, Issue, PR, evidence logs, or canonical state; do not persist tokens in state files. Local credentials stay in external secure mechanisms, outside canonical runtime.
 
 For Developer / Reviewer operations, first invoke the configured role entry available in the current workspace / machine. The role entry must live-verify the expected API Actor and target repository access; credential paths, environment variables, or a human `gh` login do not establish identity. An Actor or access mismatch is `BLOCK`: stop the role action, do not guess private-key layouts or attempt temporary authentication, and do not fall back to Human identity.
 
-Only when no callable role entry is available, inspect `.g-lite-local/credentials` and the machine-local `~/.config/g-lite/` entry for minimal existence, type, and accessibility metadata. Do not enumerate or display credential contents, or record private keys, JWTs, tokens, PATs, or resolved machine-specific credential absolute paths in the repository, Issue, PR, evidence logs, or canonical state.
+Do not enumerate or display credential contents, or record private keys, JWTs, tokens, PATs, or resolved machine-specific credential absolute paths in the repository, Issue, PR, evidence logs, or canonical state.
 
 Verify API Actor, commit author, and Git transport separately. Developer clone/fetch/push uses App HTTPS credentials. Before each operation verify the effective HTTPS remote and absence of applicable insteadOf rewrite: user/global Git config can silently turn HTTPS into human SSH authentication. Prefer task-process config/credential isolation, inspect repo-local config, and preserve existing user global Git / SSH settings.
 
-Human, Developer, and Reviewer credentials may coexist on one Mac. Before each key GitHub / Git action verify the actual API Actor, transport, and role. Developer must not push/merge as Human Authority; Reviewer must not Review as Developer or Human Authority. Stop an action on identity mismatch. Physical credential isolation is future hardening, not a v3.4 Freeze condition.
+Human, Developer, and Reviewer credentials may coexist on one Mac. Before each key GitHub / Git action verify the actual API Actor, transport, and role. Developer must not push/merge as Human Authority; Reviewer must not Review as Developer or Human Authority. Stop an action on identity mismatch. Physical credential isolation may be hardened separately; live role verification is required now.
 
 ## GitHub facts
 

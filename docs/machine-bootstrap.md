@@ -4,6 +4,8 @@ Machine Bootstrap 为一台机器准备 Developer 和 Reviewer role entry，通�
 
 canonical reference entry 是 `tools/machine-bootstrap/role-exec`。每次调用都会通过机器本地 bootstrap 按需 mint short-lived Installation Access Token，再实时验证 GraphQL Actor 和目标仓库访问。默认 bridge 是 `$HOME/.config/g-lite/bin/app-env.sh`；其他机器可以通过本机环境变量 `G_LITE_APP_ENV` 指向兼容的 bootstrap entry。helper 以 `developer` 或 `reviewer` 作为 bridge 参数；成功时 bridge 必须导出匹配的 `GITHUB_APP_ROLE` 和短期 `GH_TOKEN`（或 `GITHUB_TOKEN`），失败时返回非零。bridge 自己管理本地凭据，可以采用任意 private-key 布局；G-lite 不复制或读取这些凭据。
 
+当前协议只使用上述 role entry → machine bridge 链路，不要求 checkout 建立凭据软链接或执行 credential discovery。entry 不可用时停止并报告机器 bootstrap 缺口；canonical checkout locator 与跨机器部署改进留在 [#75](https://github.com/qiaoen12/g-lite/issues/75)，不增加替代认证路径。
+
 ## 核验角色访问
 
 从包含 helper 的 checkout 执行：

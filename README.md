@@ -68,7 +68,7 @@ Required Check 名仍是 `pr-gate`。
 consumer repo 不要求复制这条 canonical runner，继续使用自己的稳定 Required Check。
 
 REVIEW-READY 由这些事实推出，不是 label、数据库字段、cache、文件或本地状态机。
-Execution Plan 可选且可以为空，所有规模的任务均不要求预先填写完整实现与验证计划。
+Execution 可选且可以为空，所有规模的任务均不要求预先填写完整实现与验证计划。
 没有计划时，Developer 根据当前仓库事实与 Issue 目标自主完成实现和必要验证；canonical G-lite 自身开发同样适用。
 验证层级、Permanent / Stage / Pilot 的定义见 `AGENTS.md`。
 
@@ -98,23 +98,16 @@ Developer Actor ≠ Reviewer Actor。
 
 ## Issue Contract
 
-Human Authority 或 Developer 在 GitHub Issue 正文写契约。模板最小结构：
+Human Authority 或 Developer 在同一个 GitHub Issue 正文记录任务；整个正文就是当前 Contract。
 
-```text
-Original Intent（用户原话或固定 PRD 引用）
-Contract
-├ Context（背景、当前情况与真实案例）
-├ Goal
-├ Acceptance（可观察结果）
-├ Constraints / Out of scope（已确定的约束与非目标）
-├ Execution Plan（optional，可空）
-├ Authorization
-└ Merge authorization
-```
+- `Background`：保留用户请求或固定 PRD 引用、问题、目标、可观察的完成条件和任务特有边界。
+- `Execution`：可选，可以为空或省略；已有方案时将实施与验证细节补入同一正文。
 
-任务定义不要求提前确定具体实现方式。已有仓库阅读和方案设计结果时，可写入 Execution Plan；G-lite 不要求该区域存在，不解析内部结构，也不据此新增状态、授权或门禁。编辑该区域仍适用同一 Issue body freshness 规则。
+不要求额外的包裹层或逐项子标题。评论用于讨论、证据和执行报告，不能成为第二份 Contract。通用授权、角色、worktree、验证和 merge 规则统一见 `AGENTS.md`，不复制进每个 Issue。
 
-v3.4 新任务填写 Original Intent。现行 reconciler 仍只检查四个 Contract marker，不自动审计旧 consumer 是否补齐该字段。
+Execution 不被解析，也不是开发门禁；编辑它仍适用同一 Issue body freshness 规则。
+
+真实任务样例：[本轮 #80](https://github.com/qiaoen12/g-lite/issues/80) 的 Background 记录六类残留、目标与不扩 core 的边界，Execution 记录六项修正、各项完成条件和最终全树扫描。仅用这两个字段即可表达请求、验收和执行方案，无需重复通用生命周期。
 
 两种批准必须分开：
 
@@ -161,7 +154,7 @@ ACTIVE 日常任务由 Developer + Reviewer 推进；Human Authority 只在治�
 
 **Local Bootstrap ≠ Repository Task**。安装/轮换 GitHub App private key、建立本地 `~/.config/g-lite/` 凭据目录、本地 token helper / shell identity bootstrap、只读 identity preflight、新机器本地身份配置，无需 GitHub Issue Contract。这不授权改变任何 repository durable facts；改变仓库状态必须进入对应 repository lifecycle。
 
-Developer / Reviewer 使用 short-lived Installation Access Token。private key 仅由外部本机安全凭据机制管理；private key、JWT、Installation Access Token、PAT 不得写入 repo、Issue、PR、日志证据或 canonical state，token 不得持久化到状态文件。`tools/machine-bootstrap/` 提供独立、可选的薄参考 role entry 与[部署说明](docs/machine-bootstrap.md)：它调用机器本地 bootstrap 按需 mint token，实时验证 Actor 和目标仓库访问，再将 token 交给子进程；不规定 private-key 文件名/布局、不保存凭据或 token。它不改 Human `gh auth`，也不回退到 Human 身份。
+Developer / Reviewer 使用 short-lived Installation Access Token。private key 仅由外部本机安全凭据机制管理；private key、JWT、Installation Access Token、PAT 不得写入 repo、Issue、PR、日志证据或 canonical state，token 不得持久化到状态文件。`tools/machine-bootstrap/` 提供独立、可选的薄参考 role entry 与[部署说明](docs/machine-bootstrap.md)：它调用机器本地 bootstrap 按需 mint token，实时验证 Actor 和目标仓库访问，再将 token 交给子进程；不规定 private-key 文件名/布局、不保存凭据或 token。当前链路为 `tools/machine-bootstrap/role-exec → ~/.config/g-lite/bin/app-env.sh`，可通过已有 `G_LITE_APP_ENV` 覆盖 bridge；不可调用时停止并报告 Machine Bootstrap 缺口。它不改 Human `gh auth`，也不回退到 Human 身份。
 
 GitHub API Actor、commit 作者和 Git transport identity 必须分别核验。Installation Token 若不能调用 REST `/user`，可用同一 token 的 GraphQL `viewer.login` 核验 Actor，不回退人类凭据。Developer clone / fetch / push 使用 App HTTPS credential：用户级/global Git `insteadOf` 可能将 HTTPS 静默改写为 SSH。每次 transport 前确认有效 remote 是 HTTPS、无影响它的 rewrite；优先任务进程级隔离（例如 `GIT_CONFIG_GLOBAL=/dev/null`、`GIT_CONFIG_NOSYSTEM=1`、`GIT_ALLOW_PROTOCOL=https`，同时检查 repo-local 配置与 credential helper）。不要要求删除用户全局 Git / SSH 配置。
 
@@ -175,7 +168,7 @@ GitHub 是 Issue authorization、PR、Checks、Review、Ruleset、merge eligibil
 2. 确认 Issue 为 OPEN。
 3. 读取当前 `approved` 及最新 label event、Contract 最近 body edit；确认 authorization FRESH 且批准 Actor 独立。
 4. 保持 primary checkout 在 default/main 且 clean，fetch 并 fast-forward 最新 `origin/main`；用 native Git 为 task 创建唯一 dedicated worktree 和一个可写 branch。Developer 只在该 worktree 修改 task files，primary 不切换到 task branch。
-5. 只改 Contract 允许的范围。Execution Plan 可选；根据任务与仓库事实选择必要的实现和验证。
+5. 只改 Contract 允许的范围。Execution 可选；根据任务与仓库事实选择必要的实现和验证。
 6. 跑到 LOCAL GREEN。canonical 仓库跑 `tests/run.sh`。
 7. push 并开 PR；PR 用 `Fixes #N` 关联 Issue。
 8. 等待当前 HEAD 的 CI GREEN。失败则修本 PR 引入的问题，不绕过门。canonical 的 `pr-gate` 只跑同一入口。
@@ -184,9 +177,9 @@ GitHub 是 Issue authorization、PR、Checks、Review、Ruleset、merge eligibil
 
 Codex / Cursor / Claude Code / Grok 等只是可替换工作台。
 
-## Main 连续交付 SOP（v3.4）
+## Main 连续交付 SOP
 
-同一台 Mac 可以存放 Human、Developer App、Reviewer App 三种凭据。每次关键 GitHub / Git 动作前核对 API Actor、有效 Git transport 和操作角色；Developer 不得以人类身份 push / merge，Reviewer 不得以 Developer 或人类身份 Review。物理隔离属于未来 hardening，不是本版 Freeze 条件。
+同一台 Mac 可以存放 Human、Developer App、Reviewer App 三种凭据。每次关键 GitHub / Git 动作前核对 API Actor、有效 Git transport 和操作角色；Developer 不得以人类身份 push / merge，Reviewer 不得以 Developer 或人类身份 Review。物理隔离可单独 harden；当前每次角色操作仍须核验身份。
 
 Main 持续读取 CI 与 Review：CI 失败由 Developer 修本任务范围内的问题；`REQUEST_CHANGES` 交 Developer 修改并 push 新 HEAD，再等该 HEAD 的 Required Checks 和独立 Reviewer 重审。范围变化、身份或授权无法核实、治理/高影响动作、同一路径约三次失败且无新证据时，Main 询问 Human Authority。
 
@@ -206,7 +199,7 @@ Human Authority 可在任务开始明确授权过门禁后合并。首次使用�
 
 一个 consumer repo 同时满足下面条件，才称为 G-lite-compatible：
 
-1. Issue Contract 至少包含 Goal / Acceptance / Out of scope / Authorization。
+1. Issue 正文以 Background 记录请求、目标、完成条件和任务边界；Execution 可选。
 2. GitHub Issue 上存在独立、当前有效的 `approved` 授权事实。
 3. Developer 与 Reviewer 为独立机器 Actor，且两个 App prerequisite 可被验证或明确报告 `UNVERIFIED`。
 4. main 要求通过 PR 合入。
@@ -222,7 +215,7 @@ canonical G-lite 的 Required Check 名为 `pr-gate`；consumer repo 可以使�
 
 `tools/repo-reconciler/` 提供无状态 `audit`、`plan`、`bootstrap`、`activate`、`apply`、`upgrade`；它只处理稳定、机械、重复的 GitHub 治理事实，bootstrap 只建立最小协议基线，不生成 consumer CI、不接管 consumer 业务文件。
 
-`protocol-sync` 把一个 consumer checkout 对齐到一次解析得到的 canonical 快照，只做本地文件同步：`.github/ISSUE_TEMPLATE/task.md` 与 `.github/pull_request_template.md` 整文件使用 canonical 模板；`AGENTS.md` 仅同步首行开始的 managed protocol block，包含 `G-lite Protocol-Version: v3.7.3`，end marker 后的 consumer 内容字节级保留。没有 marker 时 prepend 协议块；marker 不完整、重复或不在首行时 fail closed。它不写 GitHub，也不创建 branch、commit 或 PR。
+`protocol-sync` 把一个 consumer checkout 对齐到一次解析得到的 canonical 快照，只做本地文件同步：`.github/ISSUE_TEMPLATE/task.md` 与 `.github/pull_request_template.md` 整文件使用 canonical 模板；`AGENTS.md` 仅同步首行开始的 managed protocol block，包含目标 snapshot 的 `G-lite Protocol-Version`，end marker 后的 consumer 内容字节级保留。没有 marker 时 prepend 协议块；marker 不完整、重复或不在首行时 fail closed。它不写 GitHub，也不创建 branch、commit 或 PR。
 
 同步范围固定为上述三个文件；README、workflows、业务文档、代码、测试及旧 `contract.md` 均不参与同步。不再执行旧模板迁移或通用 ownership 组合。Issue / PR templates 不支持 consumer 自定义内容；重复同步恢复 canonical 内容并保持幂等。bootstrap 也使用同一组 canonical 文件。
 
@@ -279,54 +272,20 @@ canonical G-lite 不提供、不维护：
 
 这些能力若有价值，放在 consumer repo、独立工具或 GitHub 平台。
 
-## 版本与冻结
+## 版本与历史
 
-Current governance baseline = v3.4
+当前发布协议版本以 canonical / consumer managed block 的 `G-lite Protocol-Version` 与 Git tag 为准。repository Description 不携带版本。tag 是发布事实；GitHub Release 可按人类指令单独创建，不是 tag 的必需伴随操作。
 
-v3.4 Freeze evidence：
+同步器从目标 payload 第二行读取唯一版本声明，接受稳定发布格式 `vMAJOR.MINOR.PATCH`（非负整数、无多余前导零）。缺失、非法或重复声明在写入前拒绝；切换合法版本无需修改引擎。
 
-- Implementation：[Issue #47](https://github.com/qiaoen12/g-lite/issues/47) → [PR #48](https://github.com/qiaoen12/g-lite/pull/48)，Main continuous-delivery SOP。
-- Regression protection：[Issue #50](https://github.com/qiaoen12/g-lite/issues/50) → [PR #52](https://github.com/qiaoen12/g-lite/pull/52)，确定性 `pr-gate` 断言。
-- Pilot A：Actor / HTTPS transport separation PASS。
-- Pilot B：[g-ci-catalog #10](https://github.com/qiaoen12/g-ci-catalog/issues/10) / [PR #12](https://github.com/qiaoen12/g-ci-catalog/pull/12)：CI failure → Developer fix → REQUEST_CHANGES → fix → new HEAD → CI → APPROVE，PASS。
-- Pilot C：[g-ci-catalog #9](https://github.com/qiaoen12/g-ci-catalog/issues/9) / [PR #11](https://github.com/qiaoen12/g-ci-catalog/pull/11)：`merge-authorized` → 无二次人类确认 → Human Authority merge，PASS。
-- Pilot D：并行 PR #11 合入后发现 PR #12 stale base → Developer refresh → new HEAD → CI + re-review，PASS。
+manifest schema 4 将历史字段命名为 `governance_lineage`，仅记录治理沿革，不表示当前发布版本。`protocol-sync` 输出 `PROTOCOL current/target`（状态或 ref、SHA、Protocol-Version）和独立的 `GOVERNANCE_LINEAGE target`。只有内容完全匹配目标时才确认 current 的版本与 SHA，否则输出 `unrecorded` / `-`，不猜已有 checkout 的来源。
 
-四个 Pilot 已通过；v3.4 不依赖 Jev。已知限制：`strict_required_status_checks_policy=false`，latest-main 保护仍是 Main 的 SOP 祖先检查，不是 GitHub 平台的原子保证；最后核对与 merge 之间仍可能有竞态。
+schema 3 及更早或未知 schema 的 source / target snapshot 在任何目标写入前以 `UNVERIFIED` 拒绝；需要旧 payload 时使用对应 tag 的工具。此边界不影响当前工具升级含旧 managed prefix 的 consumer checkout：其 remainder 仍按原 ownership 字节级保留。
 
-v3.4 Freeze 从 [Issue #53](https://github.com/qiaoen12/g-lite/issues/53) 对应 PR 的 squash merge commit 开始；合并前不预写未知 Freeze SHA。该 SHA 用于 annotated `v3.4.0` tag 与 GitHub Release。
+### History / governance lineage
 
-[#43](https://github.com/qiaoen12/g-lite/issues/43) 是 Human Authority 明确授权的架构修正，显式 supersede v2.6 Freeze 对普通非 P0 变更的暂停。
+- v3.4 的 Main 连续交付 SOP、回归保护与 Pilot 证据见 [#47](https://github.com/qiaoen12/g-lite/issues/47)、[#50](https://github.com/qiaoen12/g-lite/issues/50)、[#53](https://github.com/qiaoen12/g-lite/issues/53) 及 `v3.4.0` tag。manifest 的 `v3.4-main-continuous-delivery` 仅指这一历史沿革。
+- v3.1 的独立机器 Actor 与 HTTPS transport E2E 证据见 [#43](https://github.com/qiaoen12/g-lite/issues/43) 和 [fixture PR #4](https://github.com/qiaoen12/g-lite-developer-e2e/pull/4)。
+- 早期 runtime 收缩为 GitHub-native 协议的决策见 [#27](https://github.com/qiaoen12/g-lite/issues/27)。历史 Freeze 不作为当前版本的授权或开发条件。
 
-v3.1 evidence（Issue #43 记录的真实 E2E）：
-
-- Fixture: [g-lite-developer-e2e](https://github.com/qiaoen12/g-lite-developer-e2e)，[Contract #3](https://github.com/qiaoen12/g-lite-developer-e2e/issues/3)，[PR #4](https://github.com/qiaoen12/g-lite-developer-e2e/pull/4)。
-- Developer App HTTPS push；Reviewer 独立 Contract approval 与 HEAD `7fa2d99e23bf7d8b090cf7b0a69beb703196c6fa` 的 APPROVE。
-- 该 fixture 的 Human Authority merge Actor 为 `qiaoen12`（部署 evidence，不是通用角色绑定），Squash SHA `16308fd3aad2ec8e57109bf02d455e339042d770`；Issue #3 CLOSED / COMPLETED；Developer / Reviewer 均未 merge。
-- [Issue #1](https://github.com/qiaoen12/g-lite-developer-e2e/issues/1) / [PR #2](https://github.com/qiaoen12/g-lite-developer-e2e/pull/2) 因 global Git rewrite 将 HTTPS 转为人类 SSH identity 而 BLOCKED 并关闭；第二轮进程级隔离后 PASS。
-
-v3.1 Freeze 从 Issue #43 对应 PR 的 squash merge commit 开始；merge 前以 [Issue #43](https://github.com/qiaoen12/g-lite/issues/43) 及其关联 PR 为 durable referent，不预写未知 merge SHA。
-
-`v1.0.0` 发布时的产品形态是 framework/runtime，并声明了至少 15 天 Freeze。
-
-随后人类通过 [#27](https://github.com/qiaoen12/g-lite/issues/27) 明确改变产品方向，提前进入 GitHub-native contraction。这个决策应被理解为对旧 runtime Freeze 的显式 supersede / override，而不是假装旧 Freeze 按原计划完整执行。
-
-R6 将 runtime/framework → protocol 作为 breaking architecture change，最初目标版本为 `v2.0.0`；该版本说明现在仅作为历史架构基线保留。
-
-当前 Freeze baseline 以上方 v3.4 为准。
-
-v3.4 Freeze 生效后：
-
-- P0 / security blocker 可以立即修复；
-- 非 P0 friction / ergonomics 只记录，不立即扩 canonical core；
-- Router / Controller / Reviewer App / Worker / CLI / stack-specific CI framework 不得借普通修复重新进入 core。
-
-tag / Release 是 GitHub 上的人类发布动作，不由 G-lite runtime 自动生成。
-
-## Provenance
-
-最初从 `qiaoen12/Project-qiaoen` @ `988ba573c8bc8b841539223e547e82f70719f52c`（Freeze UTC `2026-09-09T10:55:57Z`）按 allowlist 抽出。
-
-R0–R5 把 runtime 收缩为 GitHub-native 协议；R5.5 再删掉 workspace / scaffolding / backup / 本地治理；R6 只负责授权语义、adoption contract、最终 Pilot 与版本收口。
-
-历史实现留在 Git history / tag / archived repositories，不留在当前产品树。
+最初从 `qiaoen12/Project-qiaoen` @ `988ba573c8bc8b841539223e547e82f70719f52c` 抽出。历史实现与发布证据留在 Git history / tag / archived repositories；当前规则以本文件和 `AGENTS.md` 为准。

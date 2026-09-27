@@ -125,7 +125,9 @@ for dep in gh jq git base64; do
 done
 
 jq -e '
-  .schema_version == 3 and
+  .schema_version == 4 and
+  (has("baseline") | not) and
+  (.governance_lineage | type == "string" and test("^[A-Za-z0-9._/-]+$")) and
   (.bootstrap | length == 3) and
   (.protocol.markers | length == 3) and
   (([.bootstrap[].path, .protocol.markers[].path] | index("README.md")) == null) and

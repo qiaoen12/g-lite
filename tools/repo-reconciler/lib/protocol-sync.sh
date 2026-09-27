@@ -8,7 +8,7 @@ PS_END='<!-- g-lite:managed protocol end -->'
 ps_die_unverified() {
   echo "protocol-sync: unverified: $1" >&2
   if [[ -n "${PS_REF:-}" ]]; then
-    printf 'BASELINE\ttarget\t%s\t%s\t-\n' "$PS_REF" "${PS_SHA:-unrecorded}"
+    printf 'PROTOCOL\ttarget\t%s\t%s\t-\n' "$PS_REF" "${PS_SHA:-unrecorded}"
   fi
   printf 'SYNC\tunverified\n'
   exit 3
@@ -23,8 +23,9 @@ ps_decode_base64() {
 # This is a fixed ownership contract, not a general file-sync manifest.
 ps_manifest_ok() {
   jq -e '
-    .schema_version == 3 and
-    (.baseline | type == "string" and test("^[A-Za-z0-9._/-]+$")) and
+    .schema_version == 4 and
+    (has("baseline") | not) and
+    (.governance_lineage | type == "string" and test("^[A-Za-z0-9._/-]+$")) and
     .protocol_sync == {
       managed_prefix: {path:"AGENTS.md", payload:"tools/repo-reconciler/templates/minimal-consumer-AGENTS.md"},
       owned_exact: [
@@ -68,7 +69,7 @@ ps_plan() {
   local manifest="$PS_SOURCE/tools/repo-reconciler/manifest.json" rel payload dest expected staged status end
   ps_ancestor_safe tools/repo-reconciler/manifest.json "$PS_SOURCE" || ps_die_unverified "snapshot path"
   [[ -f "$manifest" && ! -L "$manifest" ]] && ps_manifest_ok "$manifest" || ps_die_unverified "snapshot manifest"
-  PS_LABEL="$(jq -r '.baseline' "$manifest")"
+  PS_LINEAGE="$(jq -r '.governance_lineage' "$manifest")"
   : > "$PS_ROWS"; : > "$PS_WRITES"
   PS_GUARDS="$PS_WORK/guards"; : > "$PS_GUARDS"
   PS_CONFLICT=0 PS_CHANGE=0 PS_PRESENT=0
@@ -79,7 +80,11 @@ ps_plan() {
     cp -- "$PS_SOURCE/$payload" "$staged" || ps_die_unverified "snapshot copy"
     if [[ "$rel" == AGENTS.md ]]; then
       end="$(ps_prefix_end "$staged")" || ps_die_unverified "canonical prefix"
-      [[ "$(sed -n '2p' "$staged")" == 'G-lite Protocol-Version: v3.7.3' ]] || ps_die_unverified "protocol version"
+      # Stable release declaration belongs to the payload, never the engine.
+      [[ "$(grep -acF 'G-lite Protocol-Version' "$staged")" == 1 ]] || ps_die_unverified "protocol version"
+      PS_VERSION="$(sed -n '2p' "$staged")"
+      [[ "$PS_VERSION" =~ ^G-lite\ Protocol-Version:\ v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || ps_die_unverified "protocol version"
+      PS_VERSION="${PS_VERSION#G-lite Protocol-Version: }"
       [[ "$(tail -n +$((end + 1)) "$staged" | wc -c | tr -d '[:space:]')" == 0 ]] || ps_die_unverified "canonical remainder"
     fi
     dest="$PS_CHECKOUT/$rel" expected=- status=changed
@@ -168,10 +173,11 @@ ps_apply() {
 }
 
 ps_emit() {
-  local class="$1" sync="$2" cur_sha="unrecorded" cur_label="-"
-  if [[ "$class" == exact ]]; then cur_sha="$PS_SHA"; cur_label="$PS_LABEL"; fi
-  printf 'BASELINE\tcurrent\t%s\t%s\t%s\n' "$class" "$cur_sha" "$cur_label"
-  printf 'BASELINE\ttarget\t%s\t%s\t%s\n' "$PS_REF" "$PS_SHA" "$PS_LABEL"
+  local class="$1" sync="$2" cur_sha="unrecorded" cur_version="-"
+  if [[ "$class" == exact ]]; then cur_sha="$PS_SHA"; cur_version="$PS_VERSION"; fi
+  printf 'PROTOCOL\tcurrent\t%s\t%s\t%s\n' "$class" "$cur_sha" "$cur_version"
+  printf 'PROTOCOL\ttarget\t%s\t%s\t%s\n' "$PS_REF" "$PS_SHA" "$PS_VERSION"
+  printf 'GOVERNANCE_LINEAGE\ttarget\t%s\n' "$PS_LINEAGE"
   LC_ALL=C sort -t $'\t' -k3,3 "$PS_ROWS"
   printf 'SYNC\t%s\n' "$sync"
 }
