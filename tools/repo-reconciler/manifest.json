@@ -1,6 +1,6 @@
 {
-  "schema_version": 3,
-  "baseline": "v3.4-main-continuous-delivery",
+  "schema_version": 4,
+  "governance_lineage": "v3.4-main-continuous-delivery",
   "canonical": {
     "repo": "qiaoen12/g-lite",
     "ref": "main",
@@ -17,7 +17,7 @@
   "protocol": {
     "markers": [
       {"path": "AGENTS.md", "markers": ["Issue Contract", "approved", "Developer", "Reviewer", "Human Authority", "Genesis", "ACTIVE", "Local Bootstrap", "Squash merge"]},
-      {"path": ".github/ISSUE_TEMPLATE/task.md", "markers": ["## Contract", "### Goal", "### Acceptance", "### Out of scope", "### Authorization"]},
+      {"path": ".github/ISSUE_TEMPLATE/task.md", "markers": ["## Background"]},
       {"path": ".github/pull_request_template.md", "markers": ["## Why", "Issue Contract:", "## What", "## Test", "## Unverified / Risks", "Fixes #"]}
     ]
   },

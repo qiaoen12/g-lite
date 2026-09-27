@@ -629,9 +629,9 @@ ruleset_self_test() (
 )
 
 ruleset_live_normalization_self_test() (
-  local fixture="$SCRIPT_DIR/tests/fixtures/pilot-ruleset-live.json"
-  local live="$tmpdir/pilot-live-ruleset.json" calls="$tmpdir/pilot-ruleset-calls"
-  local output="$tmpdir/pilot-ruleset-write.json" status=0
+  local fixture="$SCRIPT_DIR/tests/fixtures/ruleset-live.json"
+  local live="$tmpdir/normalized-live-ruleset.json" calls="$tmpdir/ruleset-calls"
+  local output="$tmpdir/ruleset-write.json" status=0
   REPO="self-test/fixture" BRANCH="main" DEFAULT_BRANCH="main"
   REQUIRED_CHECK="" PHASE="bootstrap"
   RULESET_NAME="$(jq -r '.ruleset.name' "$MANIFEST")"
@@ -658,7 +658,7 @@ ruleset_live_normalization_self_test() (
   audit_ruleset
   grep -q $'^PASS\tlive\truleset\t' "$RESULTS" &&
     grep -q $'^PASS\tlive\trequired_check\t' "$RESULTS" || {
-      echo "self-test failed: Pilot live normalized Ruleset did not audit as BOOTSTRAPPED" >&2; return 1;
+      echo "self-test failed: Live normalized Ruleset did not audit as BOOTSTRAPPED" >&2; return 1;
     }
   ensure_base_ruleset >/dev/null
   ensure_base_ruleset >/dev/null
@@ -701,7 +701,7 @@ ruleset_live_normalization_self_test() (
   [[ "$status" -ne 0 && ! -s "$calls" ]] || {
     echo "self-test failed: nonempty required_reviewers was discarded by PUT" >&2; return 1;
   }
-  echo "self-test: Pilot normalized PR fields audit PASS, repeated apply inert, owned drift exact, extra policy fail closed: PASS"
+  echo "self-test: Normalized PR fields audit PASS, repeated apply inert, owned drift exact, extra policy fail closed: PASS"
 )
 
 ruleset_migration_self_test() (

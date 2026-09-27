@@ -72,7 +72,7 @@ write_source() {
   mkdir -p "$dir/tools/repo-reconciler/templates" "$dir/.github/ISSUE_TEMPLATE"
   cp "$ROOT/tools/repo-reconciler/manifest.json" "$dir/tools/repo-reconciler/manifest.json"
   # Exercise the real canonical files, not a second ownership fixture schema.
-  jq '.baseline = "fixture-baseline"' "$dir/tools/repo-reconciler/manifest.json" > "$dir/manifest.next"
+  jq '.governance_lineage = "fixture-lineage"' "$dir/tools/repo-reconciler/manifest.json" > "$dir/manifest.next"
   mv "$dir/manifest.next" "$dir/tools/repo-reconciler/manifest.json"
   cp "$ROOT/tools/repo-reconciler/templates/minimal-consumer-AGENTS.md" "$dir/tools/repo-reconciler/templates/"
   cp "$ROOT/.github/ISSUE_TEMPLATE/task.md" "$dir/.github/ISSUE_TEMPLATE/"
@@ -102,6 +102,7 @@ plan_source() {
 }
 write_source "$TMP/src"
 SRC="$TMP/src"
+VERSION="$(sed -n '2s/^G-lite Protocol-Version: //p' "$SRC/tools/repo-reconciler/templates/minimal-consumer-AGENTS.md")"
 
 CASE=initialize-prepend-exact-restore-idempotent
 co="$TMP/consumer"; mkdir -p "$co/.github/ISSUE_TEMPLATE"
@@ -227,6 +228,72 @@ for kind in manifest prefix symlink-parent symlink-file; do
   seal "$co" "$TMP/after"; assert_unchanged "$TMP/before" "$TMP/after"
 done
 
+# All cases use this same engine and prove preflight rejection leaves every
+# target byte/path unchanged, even with earlier exact-template drift pending.
+CASE=payload-version-independent
+for version in v0.0.0 v3.7.4 v3.8.0 v12.34.567; do
+  src="$TMP/version-$version"; write_source "$src"
+  payload="$src/tools/repo-reconciler/templates/minimal-consumer-AGENTS.md"
+  sed "2s/.*/G-lite Protocol-Version: $version/" "$payload" > "$src/next"
+  mv "$src/next" "$payload"
+  run_sync "$ERR" "$RECONCILE" protocol-sync --checkout "$co" --source "$src" --write
+  assert_code 0
+  assert_line "$(printf 'PROTOCOL\ttarget\tsource\tlocal\t%s' "$version")"
+  assert_line $'GOVERNANCE_LINEAGE\ttarget\tfixture-lineage'
+  cmp "$payload" "$co/AGENTS.md" || fail 'snapshot version not used'
+  seal "$co" "$TMP/once"
+  run_sync "$ERR" "$RECONCILE" protocol-sync --checkout "$co" --source "$src" --write
+  assert_code 0
+  seal "$co" "$TMP/twice"; assert_unchanged "$TMP/once" "$TMP/twice"
+done
+
+CASE=invalid-version-zero-write
+for kind in missing invalid duplicate misplaced leading-zero suffix inline-duplicate nul crlf; do
+  src="$TMP/version-$kind"; write_source "$src"
+  payload="$src/tools/repo-reconciler/templates/minimal-consumer-AGENTS.md"
+  case "$kind" in
+    nul|crlf)
+      { head -n 1 "$payload"
+        if [[ "$kind" == nul ]]; then printf 'G-lite Protocol-Version: v3.7.4\000\n'
+        else printf 'G-lite Protocol-Version: v3.7.4\r\n'; fi
+        tail -n +3 "$payload"
+      } > "$src/next" ;;
+    missing) sed '2d' "$payload" > "$src/next" ;;
+    invalid) sed '2s/.*/G-lite Protocol-Version: latest/' "$payload" > "$src/next" ;;
+    duplicate) sed '2p' "$payload" > "$src/next" ;;
+    misplaced) sed '2i\
+
+' "$payload" > "$src/next" ;;
+    leading-zero) sed '2s/.*/G-lite Protocol-Version: v03.7.4/' "$payload" > "$src/next" ;;
+    suffix) sed '2s/.*/G-lite Protocol-Version: v3.7.4-rc.1/' "$payload" > "$src/next" ;;
+    inline-duplicate) sed '3s/.*/also G-lite Protocol-Version: v1.2.3/' "$payload" > "$src/next" ;;
+  esac
+  mv "$src/next" "$payload"
+  printf drift > "$co/.github/ISSUE_TEMPLATE/task.md"
+  seal "$co" "$TMP/before"
+  run_sync "$ERR" "$RECONCILE" protocol-sync --checkout "$co" --source "$src" --write
+  assert_code 3; assert_line $'SYNC\tunverified'
+  seal "$co" "$TMP/after"; assert_unchanged "$TMP/before" "$TMP/after"
+done
+
+CASE=manifest-lineage-boundary
+for kind in old-schema unknown-schema ambiguous-field missing-lineage invalid-lineage; do
+  src="$TMP/lineage-$kind"; write_source "$src"
+  manifest="$src/tools/repo-reconciler/manifest.json"
+  case "$kind" in
+    old-schema) filter='.schema_version=3 | .baseline=.governance_lineage | del(.governance_lineage)' ;;
+    unknown-schema) filter='.schema_version=999' ;;
+    ambiguous-field) filter='.baseline="legacy"' ;;
+    missing-lineage) filter='del(.governance_lineage)' ;;
+    invalid-lineage) filter='.governance_lineage=""' ;;
+  esac
+  jq "$filter" "$manifest" > "$src/next"; mv "$src/next" "$manifest"
+  seal "$co" "$TMP/before"
+  run_sync "$ERR" "$RECONCILE" protocol-sync --checkout "$co" --source "$src" --write
+  assert_code 3; assert_line $'SYNC\tunverified'
+  seal "$co" "$TMP/after"; assert_unchanged "$TMP/before" "$TMP/after"
+done
+
 CASE=usage
 run_sync "$ERR" "$RECONCILE" protocol-sync; assert_code 64
 run_sync "$ERR" "$RECONCILE" protocol-sync --checkout "$co" --source "$SRC" --target-ref main; assert_code 64
@@ -306,7 +373,7 @@ run_sync "$ERR" env PATH="$TMP/ghbin:$PATH" PS_GH_FAIL_ALL=1 "$RECONCILE" protoc
   --checkout "$co" --target-ref latest --write
 assert_code 3
 assert_line $'SYNC\tunverified'
-assert_line $'BASELINE\ttarget\tlatest\tunrecorded\t-'
+assert_line $'PROTOCOL\ttarget\tlatest\tunrecorded\t-'
 [[ "$(grep -c '/contents/' "$PS_GH_LOG" || true)" == 0 ]] || fail "fetch followed a failed resolve"
 seal "$co" "$TMP/gh-fail.after"
 assert_unchanged "$TMP/gh-fail.before" "$TMP/gh-fail.after"
@@ -340,8 +407,8 @@ seal "$co" "$TMP/latest.before"
 : > "$PS_GH_LOG"
 run_sync "$ERR" env PATH="$TMP/ghbin:$PATH" "$RECONCILE" protocol-sync --checkout "$co" --target-ref latest
 assert_code 2
-assert_line "$(printf 'BASELINE\ttarget\tlatest\t%s\tfixture-baseline' "$SHA")"
-assert_line $'BASELINE\tcurrent\tabsent\tunrecorded\t-'
+assert_line "$(printf 'PROTOCOL\ttarget\tlatest\t%s\t%s' "$SHA" "$VERSION")"
+assert_line $'PROTOCOL\tcurrent\tabsent\tunrecorded\t-'
 assert_line $'SYNC\tpending'
 [[ "$(grep -c '/commits/' "$PS_GH_LOG" || true)" == 1 ]] || fail "latest resolved more than once"
 grep -q 'commits/main' "$PS_GH_LOG" || fail "latest did not use canonical main"
@@ -358,8 +425,8 @@ assert_unchanged "$TMP/latest.before" "$TMP/latest.after"
 : > "$PS_GH_LOG"
 run_sync "$ERR" env PATH="$TMP/ghbin:$PATH" "$RECONCILE" protocol-sync --checkout "$co" --target-ref latest --write
 assert_code 0
-assert_line "$(printf 'BASELINE\tcurrent\texact\t%s\tfixture-baseline' "$SHA")"
-assert_line "$(printf 'BASELINE\ttarget\tlatest\t%s\tfixture-baseline' "$SHA")"
+assert_line "$(printf 'PROTOCOL\tcurrent\texact\t%s\t%s' "$SHA" "$VERSION")"
+assert_line "$(printf 'PROTOCOL\ttarget\tlatest\t%s\t%s' "$SHA" "$VERSION")"
 cp "$SRC/tools/repo-reconciler/templates/minimal-consumer-AGENTS.md" "$TMP/latest.agents"
 cmp -s "$TMP/latest.agents" "$co/AGENTS.md" || fail "resolved snapshot bytes were not written"
 cmp -s <(printf 'readme-consumer\n') "$co/README.md" || fail "latest sync changed README"
@@ -372,7 +439,7 @@ mkdir -p "$co"
 : > "$PS_GH_LOG"
 run_sync "$ERR" env PATH="$TMP/ghbin:$PATH" "$RECONCILE" protocol-sync --checkout "$co"
 assert_code 2
-assert_line "$(printf 'BASELINE\ttarget\tmain\t%s\tfixture-baseline' "$SHA")"
+assert_line "$(printf 'PROTOCOL\ttarget\tmain\t%s\t%s' "$SHA" "$VERSION")"
 grep -q 'commits/main' "$PS_GH_LOG" || fail "default ref was not main"
 [[ "$(grep -c '/commits/' "$PS_GH_LOG" || true)" == 1 ]] || fail "default ref resolved more than once"
 
@@ -382,7 +449,7 @@ mkdir -p "$co"
 : > "$PS_GH_LOG"
 run_sync "$ERR" env PATH="$TMP/ghbin:$PATH" "$RECONCILE" protocol-sync --checkout "$co" --target-ref "$SHA"
 assert_code 2
-assert_line "$(printf 'BASELINE\ttarget\t%s\t%s\tfixture-baseline' "$SHA" "$SHA")"
+assert_line "$(printf 'PROTOCOL\ttarget\t%s\t%s\t%s' "$SHA" "$SHA" "$VERSION")"
 grep -q "commits/$SHA" "$PS_GH_LOG" || fail "explicit SHA was not resolved"
 if grep -q 'commits/main' "$PS_GH_LOG"; then
   fail "explicit SHA fell back to main"

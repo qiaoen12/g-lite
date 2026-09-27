@@ -53,14 +53,6 @@ need AGENTS.md "## 开工"
 need AGENTS.md "## Reviewer protocol"
 need AGENTS.md "lastEditedAt"
 need AGENTS.md "Fresh authorization:"
-need .github/ISSUE_TEMPLATE/task.md "## Original Intent"
-need .github/ISSUE_TEMPLATE/task.md "## Contract"
-need .github/ISSUE_TEMPLATE/task.md "### Merge authorization"
-need .github/ISSUE_TEMPLATE/task.md 'merge-authorized'
-need .github/ISSUE_TEMPLATE/task.md "### Goal"
-need .github/ISSUE_TEMPLATE/task.md "### Acceptance"
-need .github/ISSUE_TEMPLATE/task.md "### Out of scope"
-need .github/ISSUE_TEMPLATE/task.md "### Authorization"
 need .github/pull_request_template.md "## Why"
 need .github/pull_request_template.md "Issue Contract:"
 need .github/pull_request_template.md "## What"
@@ -82,10 +74,7 @@ need AGENTS.md 'Main 不写 PR branch'
 need AGENTS.md 'B` 是 `H` 祖先'
 need AGENTS.md 'merge-authorized'
 need AGENTS.md 'gh pr merge --squash --match-head-commit H'
-need AGENTS.md '.g-lite-local/credentials'
 need AGENTS.md 'configured role entry'
-need AGENTS.md 'entry 必须实时验证预期 API Actor 与目标仓库访问'
-need AGENTS.md '只有没有可调用 role entry 时，才按本机约定检查'
 need AGENTS.md '缺少 `approved` 只挡 Developer'
 need docs/machine-bootstrap.md 'Machine Bootstrap'
 need docs/machine-bootstrap.md 'role-exec developer check'
@@ -96,21 +85,13 @@ need tools/repo-reconciler/templates/minimal-consumer-AGENTS.md 'B is an ancesto
 need tools/repo-reconciler/templates/minimal-consumer-AGENTS.md 'merge-authorized'
 need tools/repo-reconciler/templates/minimal-consumer-AGENTS.md 'gh pr merge --squash --match-head-commit H'
 consumer_agents=tools/repo-reconciler/templates/minimal-consumer-AGENTS.md
-need "$consumer_agents" 'For Developer / Reviewer operations, first invoke the configured role entry'
-need "$consumer_agents" 'The role entry must live-verify the expected API Actor and target repository access'
-need "$consumer_agents" 'credential paths, environment variables, or a human `gh` login do not establish identity'
-need "$consumer_agents" 'An Actor or access mismatch is `BLOCK`: stop the role action'
-need "$consumer_agents" 'do not fall back to Human identity'
-need "$consumer_agents" 'Only when no callable role entry is available, inspect `.g-lite-local/credentials`'
-need "$consumer_agents" 'the machine-local `~/.config/g-lite/` entry for minimal existence, type, and accessibility metadata'
-need "$consumer_agents" 'Do not enumerate or display credential contents'
-need "$consumer_agents" 'private keys, JWTs, tokens, PATs, or resolved machine-specific credential absolute paths'
-consumer_role_entry_line=$(grep -nF 'For Developer / Reviewer operations, first invoke the configured role entry' "$consumer_agents" | cut -d: -f1 || true)
-consumer_fallback_line=$(grep -nF 'Only when no callable role entry is available' "$consumer_agents" | cut -d: -f1 || true)
-if [ -z "$consumer_role_entry_line" ] || [ -z "$consumer_fallback_line" ] || [ "$consumer_role_entry_line" -ge "$consumer_fallback_line" ]; then
-  echo 'consumer credential metadata must remain fallback-only after role-entry verification'
-  fail=1
-fi
+# Check stable role-interface identifiers here; behavior and fail-closed paths
+# are exercised by the machine-bootstrap self-test below.
+for file in AGENTS.md "$consumer_agents" docs/machine-bootstrap.md; do
+  need "$file" 'tools/machine-bootstrap/role-exec'
+  need "$file" '.config/g-lite/bin/app-env.sh'
+  need "$file" 'G_LITE_APP_ENV'
+done
 need tools/repo-reconciler/reconcile.sh "reconcile.sh audit"
 need tools/repo-reconciler/reconcile.sh "reconcile.sh plan"
 need tools/repo-reconciler/reconcile.sh "reconcile.sh bootstrap"
@@ -146,8 +127,6 @@ need AGENTS.md "primary main + clean"
 need README.md "primary checkout stays on default/main"
 need README.md "one dedicated native Git task worktree"
 need README.md "temporary detached-HEAD worktree"
-need .github/ISSUE_TEMPLATE/task.md "primary checkout stays on default/main"
-need .github/ISSUE_TEMPLATE/task.md "git worktree list --porcelain"
 protocol_files=(AGENTS.md README.md .github/ISSUE_TEMPLATE/task.md .github/pull_request_template.md tests/run.sh \
   tools/repo-reconciler/templates/minimal-consumer-AGENTS.md)
 if grep -En '/(Users|home)/[^[:space:]]+' "${protocol_files[@]}"; then
@@ -166,30 +145,31 @@ need README.md "bash tests/run.sh"
 need README.md "Permanent"
 need README.md "Stage"
 need README.md "Pilot"
-need .github/ISSUE_TEMPLATE/task.md "### Context"
-need .github/ISSUE_TEMPLATE/task.md "### Constraints"
-need .github/ISSUE_TEMPLATE/task.md "### Execution Plan (optional)"
-need .github/ISSUE_TEMPLATE/task.md "May be left empty"
-need .github/ISSUE_TEMPLATE/task.md "G-lite does not require an Execution Plan or parse its contents"
-for file in AGENTS.md README.md; do
-  need "$file" "Execution Plan"
-  need "$file" "可以为空"
-done
-for file in "$consumer_agents" .github/ISSUE_TEMPLATE/task.md; do
-  need "$file" "Execution Plan is optional and may be empty for any task size"
-done
-if grep -Fn 'Implementation & Verification Plan' AGENTS.md README.md .github/ISSUE_TEMPLATE/task.md \
-  "$consumer_agents" .github/ISSUE_TEMPLATE/task.md; then
-  echo "legacy mandatory planning contract reappeared"
-  exit 1
-fi
-need .github/ISSUE_TEMPLATE/task.md "default/main"
-need .github/ISSUE_TEMPLATE/task.md "dedicated native Git worktree"
-need .github/ISSUE_TEMPLATE/task.md "LOCAL GREEN"
-need .github/ISSUE_TEMPLATE/task.md "CI GREEN"
-need .github/ISSUE_TEMPLATE/task.md "REVIEW-READY"
-need .github/ISSUE_TEMPLATE/task.md "independent Reviewer"
-need .github/ISSUE_TEMPLATE/task.md "Human Authority"
+# Task facts use one body. Explanation text is deliberately not asserted.
+python3 - <<'PYTHON'
+import json
+import re
+from pathlib import Path
+manifest = json.loads(Path('tools/repo-reconciler/manifest.json').read_text())
+task_path = '.github/ISSUE_TEMPLATE/task.md'
+task = Path(task_path).read_text()
+assert re.findall(r'^#{1,6} .+$', task, re.M) == ['## Background', '## Execution'], 'task fields'
+markers = next(item['markers'] for item in manifest['protocol']['markers'] if item['path'] == task_path)
+assert markers == ['## Background'], 'Execution must not become a required marker'
+for item in manifest['protocol']['markers']:
+    text = Path(item['path']).read_text()
+    assert all(marker in text for marker in item['markers']), item['path']
+versions = []
+for path in ('AGENTS.md', 'tools/repo-reconciler/templates/minimal-consumer-AGENTS.md'):
+    text = Path(path).read_text()
+    declarations = re.findall(r'^G-lite Protocol-Version: (.+)$', text, re.M)
+    assert len(declarations) == 1 and re.fullmatch(r'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', declarations[0]), path
+    versions += declarations
+    assert '.g-lite-local/' not in text, 'retired credential entry'
+    assert 'v3.4' not in text, 'historical Freeze in current protocol'
+    assert 'Background' in text and 'Execution' in text, 'task structure missing'
+assert versions[0] == versions[1], 'canonical and consumer protocol versions differ'
+PYTHON
 need .github/pull_request_template.md "approved Issue Contract reference"
 need .github/pull_request_template.md "LOCAL GREEN evidence"
 need .github/pull_request_template.md "PR HEAD"
@@ -209,7 +189,9 @@ for file in tools/repo-reconciler/lib/*.sh tools/repo-reconciler/tests/self-test
   bash -n "$file"
 done
 jq -e '
-  .schema_version == 3 and
+  .schema_version == 4 and
+  (has("baseline") | not) and
+  (.governance_lineage | type == "string" and test("^[A-Za-z0-9._/-]+$")) and
   (.bootstrap | length == 3) and
   (.protocol.markers | length == 3) and
   (([.bootstrap[].path, .protocol.markers[].path] | index("README.md")) == null) and

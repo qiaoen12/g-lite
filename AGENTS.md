@@ -1,5 +1,5 @@
 <!-- g-lite:managed protocol start -->
-G-lite Protocol-Version: v3.7.3
+G-lite Protocol-Version: v3.7.4
 
 # G-lite agent-card
 
@@ -74,15 +74,15 @@ Genesis 由 Human Authority 控制：创建仓库，安装/授权 Developer App 
 
 Local Bootstrap ≠ Repository Task：安装/轮换 GitHub App private key、建立 `~/.config/g-lite/` 凭据目录、本地 token helper / shell identity bootstrap、只读 identity preflight、新机器本地身份配置无需 Issue Contract；不因此授权修改任何 repository durable facts。
 
-在使用本机凭据入口的每个 checkout 中，Local Bootstrap 先将 `.g-lite-local/` 加入该 checkout 的 Git 本地 exclude（可用 `git rev-parse --git-path info/exclude` 定位），再创建 `.g-lite-local/credentials` 软链接，指向实际机器凭据根目录。软链接及目标均不进入 Git；不要改仓库 `.gitignore`，也不要假定 Developer / Reviewer 私钥的固定文件布局。确认 `git check-ignore` 覆盖该入口；从干净 checkout 出发，创建后 `git status` 仍应干净。
+当前 canonical 机器身份链路是 `tools/machine-bootstrap/role-exec → ~/.config/g-lite/bin/app-env.sh`；已有本机环境变量 `G_LITE_APP_ENV` 可覆盖 bridge。入口通过机器 bootstrap 按需取得短期 token，凭据布局留在机器安全机制中。入口不可调用时停止该角色动作并报告 Machine Bootstrap 缺口；不要自行寻找替代认证路径。
 
 Developer / Reviewer 使用 short-lived Installation Access Token；private key、JWT、Installation Access Token、PAT 不得写入 repo、Issue、PR、日志证据或 canonical state。私钥仅由外部本机安全机制管理，token 不持久化到状态文件。不创建 identity registry 或 credential runtime。
 
-需要 Developer / Reviewer 身份时，先调用当前 workspace / machine 可用的 configured role entry；entry 必须实时验证预期 API Actor 与目标仓库访问。Credential path、环境变量存在或 Human `gh` 登录都不是身份凭据。Actor / access mismatch = BLOCK：停止该角色动作，不猜私钥布局、不尝试临时认证路径，也不回退到 Human 身份。只有没有可调用 role entry 时，才按本机约定检查 `.g-lite-local/credentials` 与 `~/.config/g-lite/` 的最小存在性、类型和可访问性元数据；不遍历或展示凭据内容，不记录私钥、JWT、token、PAT 或实际机器凭据绝对路径到 repo / Issue / PR / 日志。
+需要 Developer / Reviewer 身份时，先调用当前 workspace / machine 可用的 configured role entry；entry 必须实时验证预期 API Actor 与目标仓库访问。Credential path、环境变量存在或 Human `gh` 登录都不是身份凭据。Actor / access mismatch = BLOCK：停止该角色动作，不猜私钥布局、不尝试临时认证路径，也不回退到 Human 身份。不遍历或展示凭据内容，不记录私钥、JWT、token、PAT 或实际机器凭据绝对路径到 repo / Issue / PR / 日志。
 
 核验 API Actor（Installation Token 可用 GraphQL viewer）、commit 作者和 transport identity。Developer clone / fetch / push 必须使用 App HTTPS credential；每次操作前确认有效 remote 为 HTTPS、无影响 GitHub HTTPS 的 insteadOf rewrite。优先进程级 Git config / credential isolation，检查 local 配置，不删除用户 global Git / SSH 配置；防止 HTTPS 静默改写成 SSH。
 
-同一台 Mac 可存放 Human、Developer、Reviewer 三种凭据。每次关键 GitHub / Git 动作核对实际 API Actor、Git transport 与操作角色；Developer 不得实际以 Human Authority 身份 push / merge，Reviewer 不得实际以 Developer / Human Authority 身份 Review。发现串号即停止该动作并查明原因。物理凭据隔离是未来 hardening，不是 v3.4 Freeze 条件。
+同一台 Mac 可存放 Human、Developer、Reviewer 三种凭据。每次关键 GitHub / Git 动作核对实际 API Actor、Git transport 与操作角色；Developer 不得实际以 Human Authority 身份 push / merge，Reviewer 不得实际以 Developer / Human Authority 身份 Review。发现串号即停止该动作并查明原因。物理凭据隔离可作为后续 hardening；当前每次角色操作仍须通过身份核验。
 
 ## Primary checkout 与 native Git worktree
 
@@ -122,11 +122,12 @@ Codex / Cursor / Claude Code / Grok 等只是可替换工作台。
 不创建 label、数据库字段、cache、文件或本地状态机来记录验证进度。
 Git、GitHub 与测试结果仍是事实。
 
-Issue Contract 描述任务事实：Original Intent / Context、Goal、Acceptance、Constraints / Out of scope 与 Authorization。
-Execution Plan 是可选区域，可以为空；中等或更大的任务也不要求预先填写实现与验证计划。
-已有仓库阅读和方案设计结果时，可按合适形式记录；G-lite 不要求该区域存在，不解析内部结构，也不把它作为开发门禁或单独授权对象。
-没有预先计划时，Developer 根据当前仓库事实、Issue 目标与边界自主完成实现和必要验证；canonical G-lite 自身开发同样适用。
-Execution Plan 的正文编辑沿用同一 Issue body freshness 规则，不豁免重新授权。
+Issue 正文整体就是当前 Issue Contract，以 `Background` 和可选的 `Execution` 表达任务事实。
+Background 保留重要用户原话或固定 PRD 引用、问题、目标、可观察的完成条件及任务特有边界，不要求额外包裹层或逐项子标题。
+Execution 可以为空或省略；已有方案时，将实施与验证细节补入同一 Issue 正文。评论用于讨论、证据和报告，不承载第二份 Contract。
+所有规模的任务均不要求预先填写完整方案；没有计划时，Developer 根据当前仓库事实、Issue 目标与边界自主完成实现和必要验证。
+通用授权、角色、worktree、验证和 merge 生命周期由本文件规定，不复制进每个 Issue。
+Execution 的正文编辑沿用同一 Issue body freshness 规则，不豁免重新授权。
 
 以下验证层级用于选择能提供任务证据的验证，不是 Issue 必填字段，也不要求每级都运行：
 
@@ -170,8 +171,7 @@ CI 失败就回到 Developer。Reviewer 不是第二个 debugger。
 
 ## Main 连续交付 SOP
 
-1. 新任务先记录 Original Intent（用户原话或固定 PRD 引用），再写当前 Issue Contract。
-   现行 reconciler 不自动检查旧 consumer 是否已有 Original Intent。
+1. 新任务在 Issue 正文 Background 中保留请求、目标、完成条件和任务边界；已有方案时补入同一正文的 Execution。
 2. Main 可主动调用已验证的 Developer / Reviewer role entry；缺少 `approved` 只挡 Developer，不挡 Main 协调。Reviewer 可在人重新确认当前 Contract 后独立补 fresh `approved`。Main 持续读 CI 和 Review。CI 失败交 Developer 在当前范围修复；
    `REQUEST_CHANGES` 交 Developer 修改并 push 新 HEAD。
    等待该 HEAD 的 Required Checks，独立 Reviewer 对新 HEAD 重审；Main 再读取当前事实。
@@ -192,7 +192,7 @@ CI 失败就回到 Developer。Reviewer 不是第二个 debugger。
 7. 读取 GitHub 实际 merged 状态、merge commit SHA 和 Issue 状态；
    报告 Issue、PR、Checks、Review、merge SHA 与未验证项。
    当前 Ruleset strict latest-base=false；上述祖先检查是 SOP，main 在最后核对与 merge 间仍可能前进。
-8. Contract / Original Intent / Out of scope 发生实质范围变化，身份、授权、transport 或门禁无法可靠核实，
+8. Issue 正文的请求、目标或任务边界发生实质范围变化，身份、授权、transport 或门禁无法可靠核实，
    需要治理/高影响操作，或同一路径约三次失败且无新证据时，请 Human Authority 介入；
    当前范围内的普通 CI / Review 返工继续执行。
 
