@@ -82,8 +82,9 @@ ps_plan() {
       end="$(ps_prefix_end "$staged")" || ps_die_unverified "canonical prefix"
       # Stable release declaration belongs to the payload, never the engine.
       [[ "$(grep -acF 'G-lite Protocol-Version' "$staged")" == 1 ]] || ps_die_unverified "protocol version"
+      # Validate raw bytes first: command substitution can discard NUL bytes.
+      sed -n '2p' "$staged" | LC_ALL=C grep -axE 'G-lite Protocol-Version: v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)' >/dev/null || ps_die_unverified "protocol version"
       PS_VERSION="$(sed -n '2p' "$staged")"
-      [[ "$PS_VERSION" =~ ^G-lite\ Protocol-Version:\ v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || ps_die_unverified "protocol version"
       PS_VERSION="${PS_VERSION#G-lite Protocol-Version: }"
       [[ "$(tail -n +$((end + 1)) "$staged" | wc -c | tr -d '[:space:]')" == 0 ]] || ps_die_unverified "canonical remainder"
     fi

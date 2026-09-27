@@ -248,10 +248,16 @@ for version in v0.0.0 v3.7.4 v3.8.0 v12.34.567; do
 done
 
 CASE=invalid-version-zero-write
-for kind in missing invalid duplicate misplaced leading-zero suffix inline-duplicate; do
+for kind in missing invalid duplicate misplaced leading-zero suffix inline-duplicate nul crlf; do
   src="$TMP/version-$kind"; write_source "$src"
   payload="$src/tools/repo-reconciler/templates/minimal-consumer-AGENTS.md"
   case "$kind" in
+    nul|crlf)
+      { head -n 1 "$payload"
+        if [[ "$kind" == nul ]]; then printf 'G-lite Protocol-Version: v3.7.4\000\n'
+        else printf 'G-lite Protocol-Version: v3.7.4\r\n'; fi
+        tail -n +3 "$payload"
+      } > "$src/next" ;;
     missing) sed '2d' "$payload" > "$src/next" ;;
     invalid) sed '2s/.*/G-lite Protocol-Version: latest/' "$payload" > "$src/next" ;;
     duplicate) sed '2p' "$payload" > "$src/next" ;;
