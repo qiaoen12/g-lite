@@ -47,19 +47,20 @@
     "bypass": "none"
   },
   "protocol_sync": {
-    "markers": {
-      "start": "<!-- g-lite:managed protocol start -->",
-      "end": "<!-- g-lite:managed protocol end -->"
+    "managed_prefix": {
+      "path": "AGENTS.md",
+      "payload": "tools/repo-reconciler/templates/minimal-consumer-AGENTS.md"
     },
-    "managed": [
-      {"path": "AGENTS.md", "payload": "tools/repo-reconciler/templates/minimal-consumer-AGENTS.md"},
-      {"path": ".github/ISSUE_TEMPLATE/task.md", "payload": "tools/repo-reconciler/templates/consumer-task-protocol.md"},
-      {"path": ".github/pull_request_template.md", "payload": "tools/repo-reconciler/templates/consumer-pr-protocol.md"}
-    ],
-    "legacy": [
-      {"path": ".github/ISSUE_TEMPLATE/contract.md", "canonical": ".github/ISSUE_TEMPLATE/task.md"}
-    ],
-    "owned_exact": []
+    "owned_exact": [
+      {
+        "path": ".github/ISSUE_TEMPLATE/task.md",
+        "payload": ".github/ISSUE_TEMPLATE/task.md"
+      },
+      {
+        "path": ".github/pull_request_template.md",
+        "payload": ".github/pull_request_template.md"
+      }
+    ]
   },
   "states": ["PASS", "DRIFT", "PLATFORM_BLOCKER", "PERMISSION_BLOCKER", "UNVERIFIED"]
 }

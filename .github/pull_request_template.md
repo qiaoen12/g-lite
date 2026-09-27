@@ -1,12 +1,14 @@
 ## Why
 
-Issue Contract: #
+Issue Contract: # <!-- approved Issue Contract reference -->
 
 ## What
 
 ## Test
 
-Canonical local entry for this repo: `tests/run.sh`.
+- LOCAL GREEN evidence (use this repository’s own verification commands):
+- PR HEAD:
+- CI GREEN evidence for the current PR HEAD:
 
 ## Unverified / Risks
 

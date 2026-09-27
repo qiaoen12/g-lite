@@ -222,7 +222,11 @@ canonical G-lite 的 Required Check 名为 `pr-gate`；consumer repo 可以使�
 
 `tools/repo-reconciler/` 提供无状态 `audit`、`plan`、`bootstrap`、`activate`、`apply`、`upgrade`；它只处理稳定、机械、重复的 GitHub 治理事实，bootstrap 只建立最小协议基线，不生成 consumer CI、不接管 consumer 业务文件。
 
-`protocol-sync` 把一个 consumer checkout 对齐到一次解析得到的 canonical 快照，只做本地文件同步：声明过的 owned exact 可以整文件替换，managed block 只替换 marker 内部。它不写 GitHub，也不创建 branch、commit 或 PR。
+`protocol-sync` 把一个 consumer checkout 对齐到一次解析得到的 canonical 快照，只做本地文件同步：`.github/ISSUE_TEMPLATE/task.md` 与 `.github/pull_request_template.md` 整文件使用 canonical 模板；`AGENTS.md` 仅同步首行开始的 managed protocol block，包含 `G-lite Protocol-Version: v3.7.3`，end marker 后的 consumer 内容字节级保留。没有 marker 时 prepend 协议块；marker 不完整、重复或不在首行时 fail closed。它不写 GitHub，也不创建 branch、commit 或 PR。
+
+同步范围固定为上述三个文件；README、workflows、业务文档、代码、测试及旧 `contract.md` 均不参与同步。不再执行旧模板迁移或通用 ownership 组合。Issue / PR templates 不支持 consumer 自定义内容；重复同步恢复 canonical 内容并保持幂等。bootstrap 也使用同一组 canonical 文件。
+
+`protocol-sync` 依赖 Bash、jq 与系统文件工具。所有目标先检查冲突，再用同目录临时文件与 rename 逐文件原子替换；写入失败回滚已替换文件。它不是跨进程事务，执行期间必须避免其他进程修改目标 checkout；写前会复核三个目标的存在性、类型与内容。治理配置、Ruleset、身份与权限仍由 Genesis / reconciler 独立负责。
 
 文件审计仅检查 `required protocol markers present`，属于 deterministic mechanical baseline，不证明 semantic correctness。manifest 使用 `protocol.markers` 描述这些字面 marker；成熟仓的实际语义判断和上下文相关补丁仍由 Agent 负责，不增加 LLM、parser 或 semantic engine。
 
