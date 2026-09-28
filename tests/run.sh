@@ -233,8 +233,16 @@ banned=(
   .github/workflows/main-guard.yml
 )
 fail=0
+# Git-ignored local workbench files (e.g. .claude/settings.local.json) are not repository content.
+in_git=0
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 && in_git=1
 for p in "${banned[@]}"; do
-  if [ -e "$p" ]; then
+  if [ "$in_git" = 1 ]; then
+    present="$(git ls-files --cached --others --exclude-standard -- "$p")"
+  else
+    present="$([ -e "$p" ] && echo "$p" || true)"
+  fi
+  if [ -n "$present" ]; then
     echo "legacy path reappeared: $p"
     fail=1
   fi
