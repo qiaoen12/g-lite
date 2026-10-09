@@ -1,17 +1,18 @@
-## Why
+## Result
 
-Issue Contract: # <!-- approved Issue Contract reference -->
+<!-- Outcome and where to see it (links, paths). -->
 
-## What
+## Changes
 
-## Test
+<!-- Change summary: what changed and why. -->
 
-- LOCAL GREEN evidence (use this repository’s own verification commands):
-- PR HEAD:
-- CI GREEN evidence for the current PR HEAD:
+## Verification
+
+<!-- Checks actually run with this repository's own commands, and their results. -->
 
 ## Unverified / Risks
 
 None.
 
+<!-- Keep the next line with the Issue number when this PR closes an Issue; otherwise delete it. -->
 Fixes #

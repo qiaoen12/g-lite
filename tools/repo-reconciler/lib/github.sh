@@ -17,7 +17,7 @@ record_write_failure() {
 }
 
 api_get() {
-  if [[ "$1" == *"/labels?"* || "$1" == *"/rulesets?"* ]]; then
+  if [[ "$1" == *"/rulesets?"* ]]; then
     # A partial first page cannot establish that an owned object is absent.
     gh api --paginate --slurp --method GET "$1" >"$2.pages" 2>"$3" || return 1
     jq -e 'if type == "array" and all(.[]; type == "array") then add else error("invalid paginated response") end' \

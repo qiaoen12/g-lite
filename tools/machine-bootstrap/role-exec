@@ -12,10 +12,9 @@ import urllib.request
 from pathlib import Path
 
 API = "https://api.github.com"
-ROLES = ("developer", "reviewer")
+ROLES = ("developer",)
 EXPECTED_ACTORS = {
     "developer": "g-lite-developer[bot]",
-    "reviewer": "g-lite-reviewer[bot]",
 }
 
 
@@ -34,7 +33,7 @@ def repo_name(value):
 
 
 def parse_args(args):
-    usage = "role-exec {developer|reviewer} check --repo OWNER/REPO | [--repo OWNER/REPO] -- COMMAND"
+    usage = "role-exec developer check --repo OWNER/REPO | [--repo OWNER/REPO] -- COMMAND"
     if len(args) < 2 or args[0] not in ROLES:
         block("usage: " + usage)
     role, rest = args[0], args[1:]

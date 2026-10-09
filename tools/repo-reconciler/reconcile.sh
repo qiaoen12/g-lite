@@ -11,27 +11,27 @@ usage() {
 Usage:
   reconcile.sh audit     [--repo OWNER/REPO] [--branch NAME] [--phase bootstrap|active] [--required-check NAME]
   reconcile.sh plan      [--repo OWNER/REPO] [--branch NAME] [--phase bootstrap|active] [--required-check NAME]
-  reconcile.sh bootstrap [--repo OWNER/REPO] [--branch NAME] --human-authority-verified --developer-app-verified --reviewer-app-verified
-  reconcile.sh activate  --required-check NAME --check-sha FULL_COMMIT_SHA [--repo OWNER/REPO] [--branch NAME] --human-authority-verified --developer-app-verified --reviewer-app-verified
-  reconcile.sh apply     [--repo OWNER/REPO] [--branch NAME] --human-authority-verified --developer-app-verified --reviewer-app-verified
+  reconcile.sh bootstrap [--repo OWNER/REPO] [--branch NAME] --human-authority-verified --developer-app-verified
+  reconcile.sh activate  --required-check NAME --check-sha FULL_COMMIT_SHA [--repo OWNER/REPO] [--branch NAME] --human-authority-verified --developer-app-verified
+  reconcile.sh apply     [--repo OWNER/REPO] [--branch NAME] --human-authority-verified --developer-app-verified
   reconcile.sh upgrade   [--repo OWNER/REPO] [--branch NAME] [--phase bootstrap|active] [--required-check NAME]
   reconcile.sh protocol-sync --checkout DIR [--target-ref REF] [--source DIR] [--write]
   reconcile.sh self-test
 
 Read-only audit, plan, upgrade, and self-test do not require Human Authority
-authorization. Write actions bootstrap, activate, and apply require all three
-invocation-only assertions: --human-authority-verified, --developer-app-verified,
-and --reviewer-app-verified. The Human Authority assertion means the caller
+authorization. Write actions bootstrap, activate, and apply require both
+invocation-only assertions: --human-authority-verified and
+--developer-app-verified. The Human Authority assertion means the caller
 externally confirmed explicit governance-write authorization and appropriate
-identity for this invocation. App assertions are external identity / installation
-preflights for the Developer and Reviewer roles. A unified write preflight runs
+identity for this invocation. The App assertion is an external identity /
+installation preflight for the Developer role. A unified write preflight runs
 before any remote governance write; a missing assertion is UNVERIFIED (exit 3)
-and stops before bootstrap_file, ensure_label, or ensure_ruleset. The tool does
-not read private keys, generate JWTs/tokens, save credentials, or persist any
-assertion; none of these assertions grants Developer / Reviewer governance powers.
+and stops before bootstrap_file or ensure_ruleset. The tool does not read
+private keys, generate JWTs/tokens, save credentials, or persist any assertion;
+neither assertion grants Developer governance powers.
 
 The tool reads GitHub facts with gh, writes only the bootstrap baseline and
-G-lite-owned label/ruleset facts, and keeps all intermediate data ephemeral.
+G-lite-owned settings/ruleset facts, and keeps all intermediate data ephemeral.
 It never selects, generates, or edits consumer CI.
 Activate checks the exact context on the supplied commit SHA through live GitHub
 Check Runs and commit statuses before binding it. It does not select a SHA from
@@ -69,7 +69,6 @@ REQUIRED_CHECK=""
 CHECK_SHA=""
 HUMAN_AUTHORITY_VERIFIED=false
 DEVELOPER_APP_VERIFIED=false
-REVIEWER_APP_VERIFIED=false
 PHASE="active"
 
 while [[ $# -gt 0 ]]; do
@@ -81,7 +80,6 @@ while [[ $# -gt 0 ]]; do
     --check-sha) CHECK_SHA="${2:?missing --check-sha value}"; shift 2 ;;
     --human-authority-verified) HUMAN_AUTHORITY_VERIFIED=true; shift ;;
     --developer-app-verified) DEVELOPER_APP_VERIFIED=true; shift ;;
-    --reviewer-app-verified) REVIEWER_APP_VERIFIED=true; shift ;;
     --manifest) MANIFEST="${2:?missing --manifest value}"; shift 2 ;;
     *) echo "unknown option: $1" >&2; exit 64 ;;
   esac
@@ -131,7 +129,6 @@ jq -e '
   (.bootstrap | length == 3) and
   (.protocol.markers | length == 3) and
   (([.bootstrap[].path, .protocol.markers[].path] | index("README.md")) == null) and
-  (.required_label.name == "approved") and
   (.repository_settings.allow_merge_commit == false) and
   (.repository_settings.allow_squash_merge == true) and
   (.repository_settings.allow_rebase_merge == false) and
@@ -176,7 +173,7 @@ run_upgrade() {
   echo
   echo "UPGRADE REVIEW (read-only)"
   plan_from_results
-  echo "No consumer files, labels, Rulesets, workflows, commits, or pull requests were changed."
+  echo "No consumer files, repository settings, Rulesets, workflows, commits, or pull requests were changed."
   overall_exit || return $?
 }
 

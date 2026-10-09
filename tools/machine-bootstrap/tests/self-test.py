@@ -19,15 +19,14 @@ spec.loader.exec_module(role)
 
 class RoleEntryTests(unittest.TestCase):
     def test_bad_role_and_missing_command(self):
-        for args in ([], ["human", "check", "--repo", "o/r"], ["developer", "--"]):
+        for args in ([], ["human", "check", "--repo", "o/r"],
+                     ["reviewer", "check", "--repo", "o/r"], ["developer", "--"]):
             with self.assertRaises(role.Blocked):
                 role.parse_args(args)
 
-    def test_role_actors_are_distinct(self):
-        self.assertEqual(role.EXPECTED_ACTORS["developer"], "g-lite-developer[bot]")
-        self.assertEqual(role.EXPECTED_ACTORS["reviewer"], "g-lite-reviewer[bot]")
-        self.assertNotEqual(role.EXPECTED_ACTORS["developer"],
-                            role.EXPECTED_ACTORS["reviewer"])
+    def test_only_developer_role_is_available(self):
+        self.assertEqual(role.ROLES, ("developer",))
+        self.assertEqual(role.EXPECTED_ACTORS, {"developer": "g-lite-developer[bot]"})
 
     def test_actor_mismatch_and_repo_access_fail_closed(self):
         viewer = {"data": {"viewer": {"login": "qiaoen12"}}}
@@ -71,7 +70,7 @@ class RoleEntryTests(unittest.TestCase):
             "GH_TOKEN": "human",
             "GITHUB_TOKEN": "human",
             "GH_CONFIG_DIR": "human-config",
-            "GITHUB_APP_ROLE": "reviewer",
+            "GITHUB_APP_ROLE": "other",
             "G_LITE_DEVELOPER_PRIVATE_KEY_FILE": "secret-path",
             "GIT_CONFIG_KEY_0": "url.ssh://git@github.com/.insteadOf",
             "PATH": "/usr/bin",
@@ -143,7 +142,6 @@ class RoleEntryTests(unittest.TestCase):
         with patch.dict(os.environ, human):
             env = role.child_environment(
                 "developer", "app-token", "empty-config", "askpass", identity)
-            reviewer_env = role.child_environment("reviewer", "reviewer-token", "empty-config")
         self.assertEqual(env["GH_TOKEN"], "app-token")
         self.assertEqual(env["GH_CONFIG_DIR"], "empty-config")
         self.assertEqual(env["GIT_ASKPASS"], "askpass")
@@ -156,9 +154,6 @@ class RoleEntryTests(unittest.TestCase):
         self.assertTrue(all(key not in env for key in (
             "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "G_LITE_DEVELOPER_PRIVATE_KEY_FILE")))
         self.assertEqual(env["GIT_CONFIG_KEY_0"], "credential.helper")
-        self.assertTrue(all(key not in reviewer_env for key in (
-            "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
-            "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL")))
 
     def test_askpass_answers_only_exact_github_password_prompts(self):
         with tempfile.TemporaryDirectory() as tmp:

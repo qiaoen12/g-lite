@@ -1,4 +1,4 @@
-# Read-only repository, label, App, Ruleset, and security audits.
+# Read-only repository, App, Ruleset, and security audits.
 
 marker_audit() {
   local entry path target error missing marker
@@ -30,50 +30,6 @@ marker_audit() {
       record DRIFT markers "$path" "missing markers: ${missing[*]}"
     fi
   done < <(jq -c '.protocol.markers[]' "$MANIFEST")
-}
-
-label_inventory_is_readable() {
-  jq -e 'type == "array" and all(.[]; (.name | type) == "string")' "$1" >/dev/null 2>&1
-}
-
-label_candidates() {
-  jq --slurpfile manifest "$MANIFEST" '
-    ($manifest[0].required_label) as $desired |
-    [.[] | select(.name as $actual |
-      (($actual | ascii_downcase) == ($desired.name | ascii_downcase)) or
-      any($desired.legacy_names[]?; . == $actual))]
-  ' "$1"
-}
-
-label_metadata_is_desired() {
-  local labels="$1"
-  label_candidates "$labels" | jq -e --arg name "$(jq -r '.required_label.name' "$MANIFEST")" \
-    --arg color "$(jq -r '.required_label.color' "$MANIFEST")" \
-    --arg description "$(jq -r '.required_label.description' "$MANIFEST")" '
-      length == 1 and
-      .[0].name == $name and
-      .[0].color == $color and
-      .[0].description == $description
-    ' >/dev/null
-}
-
-audit_label() {
-  local labels="$tmpdir/labels.json" error="$tmpdir/labels.err"
-  local name
-  name="$(jq -r '.required_label.name' "$MANIFEST")"
-  if ! api_get "repos/$REPO/labels?per_page=100" "$labels" "$error"; then
-    record "$(api_error_state "$(cat "$error")")" live label "cannot read labels"
-  elif ! label_inventory_is_readable "$labels"; then
-    record UNVERIFIED live label "GitHub returned an invalid label inventory"
-  elif label_metadata_is_desired "$labels"; then
-    record PASS live label "$name name/color/description match canonical metadata"
-  elif [[ "$(label_candidates "$labels" | jq 'length')" -gt 1 ]]; then
-    record DRIFT live label "multiple G-lite-owned equivalent labels; refusing ambiguous migration"
-  elif [[ "$(label_candidates "$labels" | jq 'length')" -eq 1 ]]; then
-    record DRIFT live label "G-lite-owned label must converge to exact '$name' name/color/description"
-  else
-    record DRIFT live label "$name missing"
-  fi
 }
 
 repository_settings_are_desired() {
@@ -130,18 +86,11 @@ audit_security() {
 }
 
 audit_apps() {
-  local role verified
-  for role in developer reviewer; do
-    case "$role" in
-      developer) verified="$DEVELOPER_APP_VERIFIED" ;;
-      reviewer) verified="$REVIEWER_APP_VERIFIED" ;;
-    esac
-    if [[ "$verified" == true ]]; then
-      record PASS live "${role}_app" "Agent asserted external $role App identity, independence, and installation access to $REPO (this invocation only; consumer binding)"
-    else
-      record UNVERIFIED live "${role}_app" "Agent must verify the consumer $role App identity, independence, and installation access to $REPO externally, then pass --${role}-app-verified"
-    fi
-  done
+  if [[ "$DEVELOPER_APP_VERIFIED" == true ]]; then
+    record PASS live developer_app "Agent asserted external Developer App identity and installation access to $REPO (this invocation only; consumer binding)"
+  else
+    record UNVERIFIED live developer_app "Agent must verify the consumer Developer App identity and installation access to $REPO externally, then pass --developer-app-verified"
+  fi
 }
 
 ruleset_applies_to_branch() {
@@ -405,7 +354,6 @@ audit_ruleset() {
 
 audit_foundation() {
   marker_audit
-  audit_label
   audit_repository_settings
   audit_security
   audit_apps
@@ -446,11 +394,10 @@ plan_from_results() {
     case "$key" in
       AGENTS.md|.github/ISSUE_TEMPLATE/task.md|.github/pull_request_template.md)
         echo "PLAN: seed missing $key only; existing files require Agent-assisted semantic patch." ;;
-      label) echo "PLAN: create or update exact approved label metadata; preserve other labels." ;;
       repository_settings) echo "PLAN: patch only manifest-owned repository merge settings." ;;
       secret_scanning|secret_scanning_push_protection)
         echo "PLAN: enable the supported security setting or report its platform/permission blocker." ;;
-      developer_app|reviewer_app) echo "PLAN: complete external consumer ${key%_app} App identity, independence, and installation preflight, then pass --${key%_app}-app-verified for this invocation; no credential manager is used." ;;
+      developer_app) echo "PLAN: complete external consumer Developer App identity and installation preflight, then pass --developer-app-verified for this invocation; no credential manager is used." ;;
       ruleset) echo "PLAN: safely migrate/consolidate only G-lite-owned Rulesets for the target branch." ;;
       required_check) echo "PLAN: provide the exact real Required Check context; never infer it from a workflow file." ;;
       *) echo "PLAN: $category/$key -> $detail" ;;

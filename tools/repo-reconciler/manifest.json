@@ -1,12 +1,11 @@
 {
   "schema_version": 4,
-  "governance_lineage": "v3.4-main-continuous-delivery",
+  "governance_lineage": "v4.0-tiered-confirmation",
   "canonical": {
     "repo": "qiaoen12/g-lite",
     "ref": "main",
     "current_bindings": {
-      "developer_app": {"id": 5017695, "slug": "g-lite-developer", "actor": "g-lite-developer[bot]"},
-      "reviewer_app": {"id": 5010632, "slug": "g-lite-reviewer", "actor": "g-lite-reviewer[bot]"}
+      "developer_app": {"id": 5017695, "slug": "g-lite-developer", "actor": "g-lite-developer[bot]"}
     }
   },
   "bootstrap": [
@@ -16,12 +15,11 @@
   ],
   "protocol": {
     "markers": [
-      {"path": "AGENTS.md", "markers": ["Issue Contract", "approved", "Developer", "Reviewer", "Human Authority", "Genesis", "ACTIVE", "Local Bootstrap", "Squash merge"]},
+      {"path": "AGENTS.md", "markers": ["常规", "上线", "结果汇报", "改动摘要", "Human Authority", "Developer"]},
       {"path": ".github/ISSUE_TEMPLATE/task.md", "markers": ["## Background"]},
-      {"path": ".github/pull_request_template.md", "markers": ["## Why", "Issue Contract:", "## What", "## Test", "## Unverified / Risks", "Fixes #"]}
+      {"path": ".github/pull_request_template.md", "markers": ["## Result", "## Changes", "## Verification", "## Unverified / Risks"]}
     ]
   },
-  "required_label": {"name": "approved", "legacy_names": ["G-lite approved"], "color": "0e8a16", "description": "Independent authorization for the current Issue Contract version"},
   "repository_settings": {
     "allow_merge_commit": false,
     "allow_squash_merge": true,
@@ -42,7 +40,7 @@
     "allowed_merge_methods": ["squash"],
     "block_deletions": true,
     "block_non_fast_forward": true,
-    "strict_required_status_checks_policy": false,
+    "strict_required_status_checks_policy": true,
     "do_not_enforce_on_create": false,
     "bypass": "none"
   },

@@ -13,15 +13,13 @@ write_preflight_self_test() (
   run_activate() { printf 'activate\n' >> "$calls"; }
   run_apply() { printf 'apply\n' >> "$calls"; }
 
-  for missing in human-authority developer reviewer; do
+  for missing in human-authority developer; do
     for action in bootstrap activate apply; do
       HUMAN_AUTHORITY_VERIFIED=true
       DEVELOPER_APP_VERIFIED=true
-      REVIEWER_APP_VERIFIED=true
       case "$missing" in
         human-authority) HUMAN_AUTHORITY_VERIFIED=false ;;
         developer) DEVELOPER_APP_VERIFIED=false ;;
-        reviewer) REVIEWER_APP_VERIFIED=false ;;
       esac
       : > "$calls"
       status=0
@@ -38,12 +36,10 @@ write_preflight_self_test() (
   done
   echo "self-test: bootstrap/activate/apply missing Human Authority -> zero writes / fail before write: PASS"
   echo "self-test: bootstrap/activate/apply missing Developer assertion -> zero writes / fail before write: PASS"
-  echo "self-test: bootstrap/activate/apply missing Reviewer assertion -> zero writes / fail before write: PASS"
 
   for action in bootstrap activate apply; do
     HUMAN_AUTHORITY_VERIFIED=true
     DEVELOPER_APP_VERIFIED=true
-    REVIEWER_APP_VERIFIED=true
     : > "$calls"
     status=0
     run_write_action "run_$action" >/dev/null 2>"$tmpdir/write-preflight.err" || status=$?
@@ -52,11 +48,10 @@ write_preflight_self_test() (
       return 1
     }
   done
-  echo "self-test: bootstrap/activate/apply with all three assertions -> mocked write path: PASS"
+  echo "self-test: bootstrap/activate/apply with both assertions -> mocked write path: PASS"
 
   HUMAN_AUTHORITY_VERIFIED=false
   DEVELOPER_APP_VERIFIED=false
-  REVIEWER_APP_VERIFIED=false
   : > "$calls"
   status=0
   run_write_action run_apply >/dev/null 2>"$tmpdir/write-preflight.err" || status=$?
@@ -154,32 +149,25 @@ bootstrap_target_self_test() (
 existing_behavior_self_test() (
   local fixture="$tmpdir/ruleset.json" mutated="$tmpdir/ruleset-mutated.json"
   local permission_error="$tmpdir/permission.err" platform_error="$tmpdir/platform.err"
-  local app_exit=0 drift_exit=0 developer reviewer expected role state
+  local app_exit=0 drift_exit=0 developer expected state
   write_preflight_self_test
-  # Both missing, either missing, both present, then absent again: no persistence.
+  # Missing, present, then absent again: no persistence.
   REPO="self-test/fixture"
-  for pair in "false false" "true false" "false true" "true true" "false false"; do
-    read -r developer reviewer <<< "$pair"
+  for developer in false true false; do
     DEVELOPER_APP_VERIFIED="$developer"
-    REVIEWER_APP_VERIFIED="$reviewer"
     : > "$RESULTS"
     audit_apps
     app_exit=0
     overall_exit || app_exit=$?
-    expected=3
-    if [[ "$developer" == true && "$reviewer" == true ]]; then expected=0; fi
+    expected=3 state=UNVERIFIED
+    if [[ "$developer" == true ]]; then expected=0 state=PASS; fi
     [[ "$app_exit" -eq "$expected" ]] || {
-      echo "self-test failed: dual App assertions exit status" >&2; return 1;
+      echo "self-test failed: Developer App assertion exit status" >&2; return 1;
     }
-    for role in developer reviewer; do
-      state=UNVERIFIED
-      if [[ "$role" == developer && "$developer" == true ]] ||
-         [[ "$role" == reviewer && "$reviewer" == true ]]; then state=PASS; fi
-      grep -q "^${state}"$'\tlive\t'"${role}_app"$'\t' "$RESULTS" || return 1
-    done
+    grep -q "^${state}"$'\tlive\tdeveloper_app\t' "$RESULTS" || return 1
   done
   : > "$RESULTS"
-  echo "self-test: both App assertions / partial preflight / no persistence: PASS"
+  echo "self-test: Developer App assertion / missing preflight / no persistence: PASS"
   # Role-driven markers accept an unbound consumer, reject missing role semantics.
   (
     local marker_source="$ROOT/tools/repo-reconciler/templates/minimal-consumer-AGENTS.md"
@@ -198,7 +186,7 @@ existing_behavior_self_test() (
     : > "$RESULTS"
     marker_audit
     overall_exit
-    for marker in "Human Authority" "Local Bootstrap" "Developer" "Reviewer"; do
+    for marker in "Human Authority" "Developer" "上线" "结果汇报"; do
       omitted="$marker"
       : > "$RESULTS"
       marker_audit
@@ -330,133 +318,6 @@ JSON
   fi
   echo "self-test: PASS"
 )
-label_self_test() (
-  local mock_labels_file="$tmpdir/self-test-labels.json" captured_payload="$tmpdir/self-test-label-payload.json"
-  local manifest="$MANIFEST" name color description
-  name="$(jq -r '.required_label.name' "$manifest")"
-  color="$(jq -r '.required_label.color' "$manifest")"
-  description="$(jq -r '.required_label.description' "$manifest")"
-  jq -n --arg name "$name" --arg color "$color" --arg description "$description" \
-    '[{name:$name,color:$color,description:$description},{name:"bug",color:"ffffff",description:"consumer label"}]' > "$mock_labels_file"
-  api_get() { cp "$mock_labels_file" "$2"; }
-  : > "$RESULTS"
-  audit_label
-  grep -q $'^PASS\tlive\tlabel\t' "$RESULTS" || {
-    echo "self-test failed: exact label metadata was not accepted" >&2; return 1;
-  }
-  jq '.[0].color = "abcdef"' "$mock_labels_file" > "$tmpdir/label-drift.json"
-  cp "$tmpdir/label-drift.json" "$mock_labels_file"
-  : > "$RESULTS"
-  audit_label
-  grep -q $'^DRIFT\tlive\tlabel\t' "$RESULTS" || {
-    echo "self-test failed: label color drift was accepted" >&2; return 1;
-  }
-  gh() {
-    [[ "$3" == PATCH && "$4" == "repos/$REPO/labels/$name" && "$5" == --input ]] || return 99
-    cp "$6" "$captured_payload"
-  }
-  ensure_label >/dev/null
-  jq -e --arg color "$color" --arg description "$description" \
-    '.color == $color and .description == $description' "$captured_payload" >/dev/null || {
-    echo "self-test failed: label repair payload did not match canonical metadata" >&2; return 1;
-  }
-  local rename_calls="$tmpdir/case-label-calls"
-  jq -n --arg color "$color" --arg description "$description" \
-    '[{name:"Approved",color:$color,description:"legacy description"},{name:"bug",color:"ffffff",description:"consumer label"}]' \
-    > "$mock_labels_file"
-  : > "$rename_calls"
-  gh() {
-    if [[ "$3" == PATCH && "$4" == "repos/$REPO/labels/Approved" && "$5" == --input ]]; then
-      cp "$6" "$captured_payload"
-      jq --slurpfile patch "$6" '
-        map(if .name == "Approved" then
-          .name = $patch[0].new_name | .color = $patch[0].color | .description = $patch[0].description
-        else . end)
-      ' "$mock_labels_file" > "$tmpdir/case-label-next.json"
-      cp "$tmpdir/case-label-next.json" "$mock_labels_file"
-      printf 'PATCH\n' >> "$rename_calls"
-    elif [[ "$3" == POST ]]; then
-      printf 'POST\n' >> "$rename_calls"
-    else
-      return 99
-    fi
-  }
-  ensure_label >/dev/null
-  jq -e --arg name "$name" --arg color "$color" --arg description "$description" \
-    '.new_name == $name and .color == $color and .description == $description' "$captured_payload" >/dev/null || {
-    echo "self-test failed: case-equivalent label was not renamed with exact canonical metadata" >&2; return 1;
-  }
-  label_metadata_is_desired "$mock_labels_file" &&
-    jq -e --arg name "$name" '[.[] | select((.name | ascii_downcase) == ($name | ascii_downcase))] | length == 1' \
-      "$mock_labels_file" >/dev/null &&
-    jq -e 'any(.[]; .name == "bug" and .description == "consumer label")' "$mock_labels_file" >/dev/null || {
-      echo "self-test failed: label rename did not preserve consumer labels or unique canonical name" >&2; return 1;
-    }
-  ensure_label >/dev/null
-  [[ "$(cat "$rename_calls")" == PATCH ]] || {
-    echo "self-test failed: case-equivalent label migration was not idempotent or created a label" >&2; return 1;
-  }
-  jq -n '[{name:"G-lite approved",color:"ffffff",description:"legacy"},
-    {name:"consumer-approved",color:"eeeeee",description:"consumer label"}]' > "$mock_labels_file"
-  : > "$rename_calls"
-  : > "$RESULTS"
-  audit_label
-  grep -q $'^DRIFT\tlive\tlabel\t' "$RESULTS" || {
-    echo "self-test failed: known legacy label was accepted as final PASS" >&2; return 1;
-  }
-  gh() {
-    [[ "$3" == PATCH && "$4" == "repos/$REPO/labels/G-lite%20approved" && "$5" == --input ]] || return 99
-    jq --slurpfile patch "$6" 'map(if .name == "G-lite approved" then
-      .name = $patch[0].new_name | .color = $patch[0].color | .description = $patch[0].description
-    else . end)' "$mock_labels_file" > "$tmpdir/legacy-label-next.json"
-    cp "$tmpdir/legacy-label-next.json" "$mock_labels_file"
-    printf 'PATCH\n' >> "$rename_calls"
-  }
-  ensure_label >/dev/null
-  ensure_label >/dev/null
-  : > "$RESULTS"
-  audit_label
-  [[ "$(cat "$rename_calls")" == PATCH ]] && label_metadata_is_desired "$mock_labels_file" &&
-    grep -q $'^PASS\tlive\tlabel\t' "$RESULTS" &&
-    jq -e 'any(.[]; .name == "consumer-approved" and .description == "consumer label")' \
-      "$mock_labels_file" >/dev/null || {
-        echo "self-test failed: known legacy label did not converge in place or was not idempotent" >&2; return 1;
-      }
-  jq -n '[{name:"approved",color:"0e8a16",description:"canonical"},
-    {name:"G-lite approved",color:"ffffff",description:"legacy"}]' > "$mock_labels_file"
-  : > "$rename_calls"
-  : > "$WRITE_RESULTS"
-  ensure_label >/dev/null 2>&1 && {
-    echo "self-test failed: ambiguous owned labels were modified" >&2; return 1;
-  }
-  [[ ! -s "$rename_calls" ]] && grep -q $'^DRIFT\tlive\tlabel\t' "$WRITE_RESULTS" || return 1
-  printf '[{"color":"ffffff"}]\n' > "$mock_labels_file"
-  : > "$RESULTS"
-  : > "$WRITE_RESULTS"
-  audit_label
-  ensure_label >/dev/null 2>&1 && return 1
-  grep -q $'^UNVERIFIED\tlive\tlabel\t' "$RESULTS" &&
-    grep -q $'^UNVERIFIED\tlive\tlabel\t' "$WRITE_RESULTS" || {
-      echo "self-test failed: malformed label inventory did not fail closed" >&2; return 1;
-    }
-  jq -n '[{name:"approved",color:"ffffff",description:"drift"}]' > "$mock_labels_file"
-  local message expected
-  for expected in PERMISSION_BLOCKER PLATFORM_BLOCKER UNVERIFIED; do
-    case "$expected" in
-      PERMISSION_BLOCKER) message='HTTP 403 Forbidden' ;;
-      PLATFORM_BLOCKER) message='feature is not available for this repository' ;;
-      UNVERIFIED) message='HTTP 500 Internal Server Error' ;;
-    esac
-    gh() { printf '%s\n' "$message" >&2; return 1; }
-    : > "$WRITE_RESULTS"
-    ensure_label >/dev/null 2>&1 && return 1
-    grep -q "^${expected}"$'\twrite\tlabel\t' "$WRITE_RESULTS" || {
-      echo "self-test failed: label write error was not classified $expected" >&2; return 1;
-    }
-  done
-  echo "self-test: exact/legacy label convergence, ambiguity, blockers, and idempotency: PASS"
-)
-
 paginated_inventory_self_test() (
   local out="$tmpdir/paginated-inventory.json" error="$tmpdir/paginated-inventory.err"
   local calls="$tmpdir/paginated-inventory-calls"
@@ -468,14 +329,12 @@ paginated_inventory_self_test() (
   }
   api_get "repos/$REPO/rulesets?includes_parents=true&per_page=100" "$out" "$error"
   jq -e 'map(.id) == [1,2]' "$out" >/dev/null || return 1
-  api_get "repos/$REPO/labels?per_page=100" "$out" "$error"
-  jq -e 'map(.id) == [1,2]' "$out" >/dev/null || return 1
-  [[ "$(wc -l < "$calls" | tr -d ' ')" == 2 ]] || return 1
+  [[ "$(wc -l < "$calls" | tr -d ' ')" == 1 ]] || return 1
   gh() { printf '[{"incomplete":true}]\n'; }
   api_get "repos/$REPO/rulesets?includes_parents=true&per_page=100" "$out" "$error" && {
     echo "self-test failed: malformed paginated Ruleset inventory was accepted" >&2; return 1;
   }
-  echo "self-test: labels and Rulesets enumerate all pages or fail closed: PASS"
+  echo "self-test: Rulesets enumerate all pages or fail closed: PASS"
 )
 
 repository_settings_self_test() (
@@ -997,7 +856,7 @@ activate_live_check_self_test() (
 )
 
 bootstrap_idempotency_self_test() (
-  local mock_labels_file="$tmpdir/idempotent-labels.json" mock_repo_file="$tmpdir/idempotent-repository.json"
+  local mock_repo_file="$tmpdir/idempotent-repository.json"
   local ruleset="$tmpdir/idempotent-ruleset.json" extras="$tmpdir/idempotent-extras.json"
   local calls="$tmpdir/idempotent-calls" ruleset_exists=false
   REPO="self-test/fixture"
@@ -1006,9 +865,6 @@ bootstrap_idempotency_self_test() (
   REQUIRED_CHECK=""
   RULESET_NAME="$(jq -r '.ruleset.name' "$MANIFEST")"
   printf '[]\n' > "$extras"
-  jq -n --slurpfile manifest "$MANIFEST" '
-    [{name:$manifest[0].required_label.name,color:"ffffff",description:"old metadata"}]
-  ' > "$mock_labels_file"
   jq -n --slurpfile manifest "$MANIFEST" '
     {
       default_branch:"main",
@@ -1028,7 +884,6 @@ bootstrap_idempotency_self_test() (
   : > "$WRITE_RESULTS"
   api_get() {
     case "$1" in
-      */labels?per_page=100) cp "$mock_labels_file" "$2" ;;
       "repos/$REPO") cp "$mock_repo_file" "$2" ;;
       *) printf 'unexpected mocked GET: %s\n' "$1" >&2; return 99 ;;
     esac
@@ -1055,11 +910,7 @@ bootstrap_idempotency_self_test() (
     local input="$6"
     case "$3" in
       PATCH)
-        if [[ "$4" == "repos/$REPO/labels/approved" ]]; then
-          printf 'write:label\n' >> "$calls"
-          jq --slurpfile patch "$input" 'map(if .name == "approved" then . + $patch[0] else . end)' "$mock_labels_file" > "$tmpdir/labels-next.json"
-          cp "$tmpdir/labels-next.json" "$mock_labels_file"
-        elif [[ "$4" == "repos/$REPO" ]]; then
+        if [[ "$4" == "repos/$REPO" ]]; then
           if jq -e 'has("security_and_analysis")' "$input" >/dev/null; then
             local key
             key="$(jq -r '.security_and_analysis | keys[0]' "$input")"
@@ -1092,7 +943,6 @@ bootstrap_idempotency_self_test() (
   }
   bootstrap_file() { printf 'protocol:%s\n' "$1" >> "$calls"; }
   DEVELOPER_APP_VERIFIED=true
-  REVIEWER_APP_VERIFIED=true
   run_apply >/dev/null
   local first_count first_log
   local audit_status=0 audit_report="$tmpdir/idempotent-audit-1.tsv"
@@ -1106,11 +956,11 @@ bootstrap_idempotency_self_test() (
     }
   first_count="$(grep -c '^write:' "$calls")"
   first_log="$(cat "$calls")"
-  [[ "$first_count" -eq 5 ]] || {
-    echo "self-test failed: Genesis did not apply label/settings/base Ruleset/security in order" >&2; return 1;
+  [[ "$first_count" -eq 4 ]] || {
+    echo "self-test failed: Genesis did not apply settings/base Ruleset/security in order" >&2; return 1;
   }
   [[ "$(sed -n '1,3p' "$calls" | sed 's/:.*//')" == $'protocol\nprotocol\nprotocol' ]] || return 1
-  [[ "$(sed -n '4,8p' "$calls" | cut -d: -f2 | tr '\n' ' ')" == "label repository ruleset security security " ]] || {
+  [[ "$(sed -n '4,7p' "$calls" | cut -d: -f2 | tr '\n' ' ')" == "repository ruleset security security " ]] || {
     echo "self-test failed: Genesis write order differs from canonical sequence" >&2; return 1;
   }
   run_apply >/dev/null
@@ -1123,7 +973,7 @@ bootstrap_idempotency_self_test() (
     ! grep -Eq '^(DRIFT|PLATFORM_BLOCKER|PERMISSION_BLOCKER|UNVERIFIED)\t' "$tmpdir/idempotent-audit-2.tsv" || {
       echo "self-test failed: second apply did not audit as BOOTSTRAPPED" >&2; return 1;
     }
-  [[ "$(grep -c '^write:' "$calls")" == "$first_count" && "$(head -n 8 "$calls")" == "$first_log" ]] || {
+  [[ "$(grep -c '^write:' "$calls")" == "$first_count" && "$(head -n 7 "$calls")" == "$first_log" ]] || {
     echo "self-test failed: second apply issued duplicate governance writes" >&2; return 1;
   }
   jq -e --argjson desired "$(jq -c '.repository_settings' "$MANIFEST")" '
@@ -1134,7 +984,6 @@ bootstrap_idempotency_self_test() (
     .delete_branch_on_merge == false and
     .has_wiki == true
   ' "$mock_repo_file" >/dev/null || return 1
-  label_metadata_is_desired "$mock_labels_file" || return 1
   echo "self-test: Genesis order, preservation, and second apply idempotency: PASS"
 
   REQUIRED_CHECK="consumer CI / linux"
@@ -1211,19 +1060,16 @@ run_self_test() {
   bootstrap_target_self_test
   REPO="self-test/fixture"
   DEVELOPER_APP_VERIFIED=true
-  REVIEWER_APP_VERIFIED=true
   HUMAN_AUTHORITY_VERIFIED=true
   : > "$RESULTS"
   audit_apps
   overall_exit
-  grep -q $'^PASS\tlive\tdeveloper_app\t' "$RESULTS" &&
-    grep -q $'^PASS\tlive\treviewer_app\t' "$RESULTS" || {
-      echo "self-test failed: invocation-only App assertions were not reflected in audit" >&2; return 1;
+  grep -q $'^PASS\tlive\tdeveloper_app\t' "$RESULTS" || {
+      echo "self-test failed: invocation-only App assertion was not reflected in audit" >&2; return 1;
     }
-  echo "self-test: independent App assertions remain invocation-only: PASS"
+  echo "self-test: Developer App assertion remains invocation-only: PASS"
 
   paginated_inventory_self_test
-  label_self_test
   repository_settings_self_test
   security_self_test
   ruleset_self_test
