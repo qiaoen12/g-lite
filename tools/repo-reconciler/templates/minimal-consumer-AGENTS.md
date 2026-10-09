@@ -1,74 +1,58 @@
 <!-- g-lite:managed protocol start -->
-G-lite Protocol-Version: v3.7.4
+G-lite Protocol-Version: v4.0.0
 
-# Agent protocol
+# G-lite 协议
 
-This repository uses the G-lite GitHub-native protocol.
+本仓库使用 G-lite：GitHub 管事实和门，Agent 干活，G-lite 只规定任务分级、确认点和结果汇报。其余交给 Git / GitHub、本仓库自己的 CI 和 Agent 自身设置。
 
-## Contract
+## 任务分级
 
-The whole Issue body is the current Issue Contract. Use Background for the request or fixed PRD reference, problem, desired outcome, observable completion conditions, and task-specific limits. No additional wrapper or separate subsection for each fact is required. Execution is optional and may be empty or omitted for any task size; when a useful plan exists, add implementation and verification details to the same body. Comments hold discussion, evidence, and reports, not a second Contract. G-lite does not parse the plan or require it as a gate. Without a plan, Developer uses current repository facts and Issue goals to implement and verify. Body edits follow the same freshness rules. Common authorization, role, worktree, verification, and merge rules belong in AGENTS, not in each Issue.
+- **常规**：除“上线”外的一切，包括采集、查询、诊断、调研、开发，以及分支和预览环境上的改动。用户指令即授权，不需要 Issue 或 label。
+- **上线**：合入 default branch、生产部署、凭据变更、数据删除、权限或治理变更。动作前取得用户明确确认。确认针对具体对象（如提交 SHA、部署版本），对象变化后须重新确认。协议只规定需要确认，确认的呈现形式由 Agent 自身设置决定。
 
-Before development and again before PR review, read the current OPEN Issue Contract, author/editor, lastEditedAt, current approved label and latest approved label event (actor and timestamp). Missing approval is INVALID; lastEditedAt absent or <= approvedAt is FRESH; later edits are STALE. Stop if facts cannot be verified or authorization is invalid/stale. The Actor that writes or materially edits the current Contract version cannot approve it. Reauthorization requires independent fresh approved; do not cache authorization.
+需要跨会话追踪的任务可以建 Issue：整个正文就是任务说明，`Background` 写请求、目标、完成条件和边界，`Execution` 可选。评论只放讨论和证据。
 
-## Roles
+## 完成证据
 
-- Main coordinates the Issue → Developer → CI → independent Reviewer → rework → merge flow; it is not another GitHub Actor and must not write the Developer's PR branch. It may mechanically merge with Human Authority credentials only after that human explicitly authorizes the current task.
-- Developer Actor: machine identity / GitHub App; may create/edit Contracts, develop, push, and open/update PRs within fresh authorized scope. It must not approve its own Contract, provide its own Required Review, or merge.
-- Reviewer Actor: independent machine identity / GitHub App; may independently add approved and review the current PR HEAD with APPROVE / REQUEST_CHANGES. It must not develop, push, change repository governance, or merge.
-- Developer and Reviewer must not independently change the Ruleset / governance that constrains them.
-- Human Authority: one or more human accounts with appropriate permissions on this repository. After GitHub gates pass, it may perform final Squash merge through GitHub UI, CLI, API, or tools under its explicit instruction.
-- Concrete account/App bindings are replaceable per consumer; no canonical username or App is required. Verify both Apps' identities, independence, and installation access externally. Do not add a Merge Bot / Merge Executor or identity registry.
+- **结果汇报**（必有）：结论、可查看的位置（链接、路径等）、已执行的验证、未验证项。
+- **改动摘要**（涉及开发时）：改了什么、为什么。
 
-## Genesis / ACTIVE
+上线的结果汇报另写明合并结果（PR、merge SHA）、部署结果（适用时：环境、版本、访问地址、检查结果）和回退方式。G-lite 不规定部署方式。
 
-Human Authority controls Genesis: create the repository, install/authorize both Apps, establish initial protocol files and CI, configure Ruleset / governance / security, and verify ACTIVE readiness. Tools may execute under Human Authority's identity and authorization; this does not grant Developer administrator powers.
+## 角色
 
-In ACTIVE, Developer + Reviewer handle daily tasks; Human Authority intervenes at governance boundaries or final merge.
+- **Human Authority**：对本仓库有相应权限的人类账号。给出上线确认，控制 Ruleset 等治理设置。
+- **Main**：与用户对话的协调 Agent（中枢）。派发任务、汇总结果、向用户取得确认；合并与部署凭据只由中枢持有，并只在用户确认后使用。
+- **Developer**：执行开发的 Agent，以机器身份（GitHub App）commit、push、开 / 更新 PR。不合并，不修改约束自身的治理设置。
 
-## Local Bootstrap
+## 工作区
 
-Local Bootstrap ≠ Repository Task. Local App private key installation/rotation, ~/.config/g-lite/ credential directories, token helpers, shell identity bootstrap, read-only identity preflight, and new-machine identity setup need no Issue Contract. They do not authorize changing repository durable facts; repository changes enter the appropriate lifecycle.
+- primary checkout 留在 default branch 且 clean，只做协调、fast-forward 和只读检查。
+- 每个开发任务从最新 `origin/<default>` 用 native Git 建一个专用 worktree 和一个分支：`git worktree add -b <branch> <path> origin/<default>`。`git worktree list --porcelain` 是绑定关系的唯一来源。
+- 合并后先确认 PR 已 merged，再 `git worktree remove <path>`，用 `git branch -d <branch>` 删除本地分支；仅因 squash 提交不在分支祖先中而被拒时，确认 worktree clean 且 PR 已 merged 后可用 `git branch -D`。保留 remote 分支，最后 fast-forward primary。
 
-The canonical runtime path is `tools/machine-bootstrap/role-exec → ~/.config/g-lite/bin/app-env.sh`; the existing machine-local `G_LITE_APP_ENV` override may select a compatible bridge. The entry asks Machine Bootstrap for a short-lived token; credential layout remains machine-owned. If the entry is unavailable, stop the role action and report the Machine Bootstrap prerequisite. Do not discover or invent alternative authentication paths.
+## 合入 default branch
 
-Developer / Reviewer use short-lived Installation Access Tokens. Never put private keys, JWTs, tokens, or PATs in repo, Issue, PR, evidence logs, or canonical state; do not persist tokens in state files. Local credentials stay in external secure mechanisms, outside canonical runtime.
+1. Developer push 分支并开 PR，本仓库的 Required Check 在当前 HEAD `H` 上通过。
+2. Main 把结果汇报和改动摘要交给用户，取得对 `H` 的确认，再以 Human 账号对 PR 提交 Approve 留痕。
+3. 合并前读取最新一条 Human Approve 所针对的提交 SHA，确认它等于当前 `H`；不相等就重新确认。不依赖 dismiss stale reviews 判断批准是否有效。
+4. 合入前基于最新 default branch：Ruleset 的 strict 已实际生效时由 GitHub 保证；未生效时，Main 读取 live default branch SHA `B`，用 GitHub compare 或 `git merge-base --is-ancestor B H` 确认 `B` 是 `H` 的祖先。不是祖先时，Main 不写 PR 分支，由 Developer 更新分支并 push 新 HEAD，重新走 1–3。
+5. 以 Human 账号执行 `gh pr merge --squash --match-head-commit H`，读回 merged 状态和 merge SHA，写入结果汇报。
 
-For Developer / Reviewer operations, first invoke the configured role entry available in the current workspace / machine. The role entry must live-verify the expected API Actor and target repository access; credential paths, environment variables, or a human `gh` login do not establish identity. An Actor or access mismatch is `BLOCK`: stop the role action, do not guess private-key layouts or attempt temporary authentication, and do not fall back to Human identity.
+## GitHub 门
 
-Do not enumerate or display credential contents, or record private keys, JWTs, tokens, PATs, or resolved machine-specific credential absolute paths in the repository, Issue, PR, evidence logs, or canonical state.
+- 可用 Ruleset 的仓库：default branch 要求 PR、approvals = 1、dismiss stale reviews、squash only、strict、稳定的 Required Check（检查本仓库自己的技术栈），无常规 bypass；平台支持时开启 Secret scanning / Push protection。
+- 不可用 Ruleset 的仓库（例如 GitHub Free 的私有仓）：门由凭据把守。合并与部署凭据只由中枢持有，执行端 Agent 不持有。
 
-Verify API Actor, commit author, and Git transport separately. Developer clone/fetch/push uses App HTTPS credentials. Before each operation verify the effective HTTPS remote and absence of applicable insteadOf rewrite: user/global Git config can silently turn HTTPS into human SSH authentication. Prefer task-process config/credential isolation, inspect repo-local config, and preserve existing user global Git / SSH settings.
+## 身份与凭据
 
-Human, Developer, and Reviewer credentials may coexist on one Mac. Before each key GitHub / Git action verify the actual API Actor, transport, and role. Developer must not push/merge as Human Authority; Reviewer must not Review as Developer or Human Authority. Stop an action on identity mismatch. Physical credential isolation may be hardened separately; live role verification is required now.
+- Developer 使用 short-lived Installation Access Token，经 canonical G-lite checkout 中的 role entry `tools/machine-bootstrap/role-exec` 按需取得；它调用机器本地 bridge（默认 `~/.config/g-lite/bin/app-env.sh`，可由已有的 `G_LITE_APP_ENV` 覆盖），并实时核验 API Actor 与仓库访问。entry 不可用、Actor 或访问不符时停止，不回退到 Human 身份，不寻找替代认证路径。
+- 分别核验 API Actor、commit 作者和 Git transport。Developer 的 Git 走 App HTTPS 凭据：操作前确认有效 remote 为 HTTPS 且没有 insteadOf 改写，优先进程级隔离，不修改用户全局 Git / SSH 配置。
+- private key、JWT、token、PAT 不写入仓库、Issue、PR 或日志；不展示凭据内容，不记录机器专属凭据路径。
+- 本机凭据的安装、轮换和身份配置（Machine Bootstrap）不需要 Issue，也不授权改变仓库内容。
 
-## GitHub facts
+## 不做
 
-GitHub is the source of truth for Issue authorization, PR, Checks, Review, Ruleset, merge eligibility, and merge result. Do not create local task, review, merge, or approval state or a second GitHub database.
-
-The default branch requires PRs, at least one independent approval, stale review dismissal, a stable consumer-owned Required Check, squash-only merge, and no routine bypass. Enable Secret scanning / Push protection where supported. Consumer CI is owned by this repository and its Agent; G-lite does not generate or select it. Reconciler App assertions are invocation-only, require external verification of both roles, and do not authorize governance writes or manage credentials.
-
-## Main delivery SOP
-
-1. Main follows CI and Review. Failed CI or REQUEST_CHANGES returns to Developer for in-scope repair and a new HEAD.
-   Wait for Required Checks on that HEAD and independent Reviewer re-review.
-2. Before merge, read live main SHA B and PR HEAD H; prove B is an ancestor of H with GitHub compare
-   or `git merge-base --is-ancestor`. On mismatch, Main does not update the PR branch.
-   Developer uses App identity to update main/rebase/merge base and push a new HEAD;
-   only Developer may run `gh pr update-branch` when it writes the branch. Repeat CI, Review, and preflight.
-3. `merge-authorized` is an optional one-time Genesis prerequisite for automatic completion.
-   On explicit task-level instruction from Human Authority, Main verifies that human API Actor and creates/applies the label if absent.
-   Reconciler bootstrap does not create it. Without fresh label, ask Human Authority again before final merge;
-   Developer-authored Issue text does not grant merge permission.
-4. For automatic merge, verify the label is still attached, its latest LabeledEvent Actor is an authorized human,
-   its createdAt is no earlier than Issue body lastEditedAt, and authorization has not been revoked.
-5. Preflight live GitHub facts: OPEN Issue, current Contract with independent fresh approved,
-   OPEN non-draft PR targeting main, B ancestor of H, Required Checks PASS and independent APPROVE on H,
-   and merge eligibility. Re-read B, H, authorization, and gates immediately before merge;
-   verify Human Authority API Actor, then squash merge with expected H (`gh pr merge --squash --match-head-commit H`).
-   Read merged state, merge commit SHA, and Issue state; report Checks, Review, and unverified items.
-   Without a strict latest-base Ruleset, main can advance between the last read and merge.
-6. Ask Human Authority for scope changes, unverifiable identity/authorization/gates, governance or high-impact actions,
-   or about three failures on one path without new evidence. Continue routine CI and Review rework within scope.
+不建本地 task / review / merge / approval 状态、第二份 GitHub 数据库、identity registry 或 G-lite 专用 CLI。GitHub 是 PR、Checks、Review、Ruleset 和合并结果的事实来源。
 
 <!-- g-lite:managed protocol end -->

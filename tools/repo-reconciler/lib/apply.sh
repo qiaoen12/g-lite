@@ -4,12 +4,11 @@ write_preflight() {
   local missing=()
   [[ "$HUMAN_AUTHORITY_VERIFIED" == true ]] || missing+=("Human Authority")
   [[ "$DEVELOPER_APP_VERIFIED" == true ]] || missing+=("Developer App")
-  [[ "$REVIEWER_APP_VERIFIED" == true ]] || missing+=("Reviewer App")
   if [[ ${#missing[@]} -gt 0 ]]; then
     echo "UNVERIFIED: write preflight missing assertion(s): ${missing[*]}; no remote governance writes performed" >&2
     return 3
   fi
-  echo "WRITE PREFLIGHT: Human Authority, Developer App, and Reviewer App assertions present (invocation-only)" >&2
+  echo "WRITE PREFLIGHT: Human Authority and Developer App assertions present (invocation-only)" >&2
 }
 
 empty_repo_initial_write_allowed() {
@@ -59,62 +58,6 @@ bootstrap_file() {
   fi
   record_write_failure "$path" "$error"
   echo "cannot seed $REPO:$path: $(cat "$error")" >&2
-  return 1
-}
-
-ensure_label() {
-  local labels="$tmpdir/apply-labels.json" error="$tmpdir/apply-labels.err"
-  local write_error="$tmpdir/apply-label-write.err" name path payload current_name equivalent_count
-  name="$(jq -r '.required_label.name' "$MANIFEST")"
-  if ! api_get "repos/$REPO/labels?per_page=100" "$labels" "$error"; then
-    echo "cannot inspect labels: $(cat "$error")" >&2
-    return 1
-  fi
-  if ! label_inventory_is_readable "$labels"; then
-    printf 'UNVERIFIED\tlive\tlabel\tGitHub returned an invalid label inventory\n' >> "$WRITE_RESULTS"
-    echo "UNVERIFIED: cannot identify existing labels reliably" >&2
-    return 1
-  fi
-  equivalent_count="$(label_candidates "$labels" | jq 'length')"
-  if [[ "$equivalent_count" -gt 1 ]]; then
-    printf 'DRIFT\tlive\tlabel\tmultiple G-lite-owned equivalent labels; refusing ambiguous migration\n' >> "$WRITE_RESULTS"
-    echo "DRIFT: multiple G-lite-owned labels match '$name'; refusing to merge label assignments" >&2
-    return 1
-  fi
-  if label_metadata_is_desired "$labels"; then
-    echo "APPLY: label $name already has canonical metadata"
-    return 0
-  fi
-  payload="$tmpdir/label-payload.json"
-  if [[ "$equivalent_count" -eq 1 ]]; then
-    current_name="$(label_candidates "$labels" | jq -r '.[0].name')"
-    path="$(jq -rn --arg name "$current_name" '$name | @uri')"
-    if [[ "$current_name" == "$name" ]]; then
-      jq '{color:.required_label.color,description:.required_label.description}' "$MANIFEST" > "$payload"
-    else
-      jq --arg name "$name" '{new_name:$name,color:.required_label.color,description:.required_label.description}' \
-        "$MANIFEST" > "$payload"
-    fi
-    if gh api --method PATCH "repos/$REPO/labels/$path" --input "$payload" >/dev/null 2>"$error"; then
-      echo "APPLY: repaired label '$current_name' in place as '$name' with canonical metadata"
-      return 0
-    fi
-  else
-    if gh api --method POST "repos/$REPO/labels" \
-      -f name="$name" -f color="$(jq -r '.required_label.color' "$MANIFEST")" \
-      -f description="$(jq -r '.required_label.description' "$MANIFEST")" >/dev/null 2>"$error"; then
-      echo "APPLY: created label $name"
-      return 0
-    fi
-  fi
-  cp "$error" "$write_error"
-  if api_get "repos/$REPO/labels?per_page=100" "$labels" "$error" &&
-    label_metadata_is_desired "$labels"; then
-    echo "APPLY: label $name converged concurrently"
-    return 0
-  fi
-  record_write_failure label "$write_error"
-  echo "cannot ensure label $name: $(cat "$write_error")" >&2
   return 1
 }
 
@@ -347,7 +290,6 @@ run_bootstrap() {
     path="$(jq -r '.path' <<<"$entry")"
     bootstrap_file "$path" || true
   done < <(jq -c '.bootstrap[]' "$MANIFEST")
-  ensure_label || true
   ensure_repository_settings || true
   ensure_base_ruleset || true
   ensure_security_setting secret_scanning || true
