@@ -285,7 +285,7 @@ schema 3 及更早或未知 schema 的 source / target snapshot 在任何目标�
 ### History / governance lineage
 
 - v3.4 的 Main 连续交付 SOP、回归保护与 Pilot 证据见 [#47](https://github.com/qiaoen12/g-lite/issues/47)、[#50](https://github.com/qiaoen12/g-lite/issues/50)、[#53](https://github.com/qiaoen12/g-lite/issues/53) 及 `v3.4.0` tag。manifest 的 `v3.4-main-continuous-delivery` 仅指这一历史沿革。
-- v3.1 的独立机器 Actor 与 HTTPS transport E2E 证据见 [#43](https://github.com/qiaoen12/g-lite/issues/43) 和 [fixture PR #4](https://github.com/qiaoen12/g-lite-developer-e2e/pull/4)。
+- v3.1 的独立机器 Actor 与 HTTPS transport E2E 证据见 [#43](https://github.com/qiaoen12/g-lite/issues/43)。
 - 早期 runtime 收缩为 GitHub-native 协议的决策见 [#27](https://github.com/qiaoen12/g-lite/issues/27)。历史 Freeze 不作为当前版本的授权或开发条件。
 
 最初从 `qiaoen12/Project-qiaoen` @ `988ba573c8bc8b841539223e547e82f70719f52c` 抽出。历史实现与发布证据留在 Git history / tag / archived repositories；当前规则以本文件和 `AGENTS.md` 为准。
