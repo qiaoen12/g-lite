@@ -31,6 +31,7 @@ verify_required_check_success() {
   local encoded checks_pages="$tmpdir/check-runs-pages.json" statuses_pages="$tmpdir/statuses-pages.json"
   local checks="$tmpdir/check-runs.json" statuses="$tmpdir/statuses.json"
   local error="$tmpdir/required-check.err" status_state check_count status_count
+  REQUIRED_CHECK_INTEGRATION_ID=""
   encoded="$(jq -rn --arg name "$REQUIRED_CHECK" '$name | @uri')"
 
   if ! gh api --paginate --slurp --method GET \
@@ -88,7 +89,19 @@ verify_required_check_success() {
     record DRIFT live required_check "exact context '$REQUIRED_CHECK' is not live SUCCESS on $CHECK_SHA"
     return 2
   fi
-  record PASS live required_check "exact context '$REQUIRED_CHECK' is live SUCCESS on $CHECK_SHA"
+  # Bind the source only when Check Runs from exactly one App produced the context.
+  if [[ "$status_count" -eq 0 ]]; then
+    REQUIRED_CHECK_INTEGRATION_ID="$(jq -r --arg name "$REQUIRED_CHECK" '
+      [.[] | select(.name == $name) | .app.id?] | unique |
+      if length == 1 and (.[0] | type) == "number" then .[0] else empty end
+    ' "$checks")"
+    [[ "$REQUIRED_CHECK_INTEGRATION_ID" =~ ^[0-9]+$ ]] || REQUIRED_CHECK_INTEGRATION_ID=""
+  fi
+  if [[ -n "$REQUIRED_CHECK_INTEGRATION_ID" ]]; then
+    record PASS live required_check "exact context '$REQUIRED_CHECK' is live SUCCESS on $CHECK_SHA from GitHub App $REQUIRED_CHECK_INTEGRATION_ID"
+  else
+    record PASS live required_check "exact context '$REQUIRED_CHECK' is live SUCCESS on $CHECK_SHA"
+  fi
 }
 
 api_error_state() {

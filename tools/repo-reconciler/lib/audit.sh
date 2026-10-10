@@ -221,6 +221,16 @@ ruleset_check_is_desired() {
   ' "$file" >/dev/null
 }
 
+ruleset_check_context_is_desired() {
+  local file="$1"
+  [[ -n "$REQUIRED_CHECK" ]] || return 1
+  jq -e --arg check "$REQUIRED_CHECK" '
+    [ .rules[]? | select(.type == "required_status_checks") ] as $rules |
+    ($rules | length) == 1 and
+    (($rules[0].parameters.required_status_checks // []) | map(.context) == [$check])
+  ' "$file" >/dev/null
+}
+
 load_named_ruleset() {
   local list="$tmpdir/rulesets.json" list_error="$tmpdir/rulesets.err"
   local id detail detail_error index source_type
@@ -347,6 +357,8 @@ audit_ruleset() {
     record UNVERIFIED live required_check "active audit requires --required-check NAME"
   elif ruleset_check_is_desired "$RULESET_FILE"; then
     record PASS live required_check "exact Required Check context '$REQUIRED_CHECK' is required"
+  elif ruleset_check_context_is_desired "$RULESET_FILE"; then
+    record DRIFT live required_check_policy "Required Check '$REQUIRED_CHECK' is bound, but strict or do_not_enforce_on_create differs from canonical"
   else
     record DRIFT live required_check "Required Check configuration does not exactly match target '$REQUIRED_CHECK'"
   fi
@@ -400,6 +412,7 @@ plan_from_results() {
       developer_app) echo "PLAN: complete external consumer Developer App identity and installation preflight, then pass --developer-app-verified for this invocation; no credential manager is used." ;;
       ruleset) echo "PLAN: safely migrate/consolidate only G-lite-owned Rulesets for the target branch." ;;
       required_check) echo "PLAN: provide the exact real Required Check context; never infer it from a workflow file." ;;
+      required_check_policy) echo "PLAN: run apply; it keeps the bound Required Check context and source and writes the canonical policy." ;;
       *) echo "PLAN: $category/$key -> $detail" ;;
     esac
   done < "$RESULTS"

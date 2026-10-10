@@ -762,7 +762,7 @@ apply_required_check_rejection_self_test() (
 
 activate_live_check_self_test() (
   local scenario calls="$tmpdir/activate-live-writes" output="$tmpdir/activate-no-sha.err"
-  local check_mode status_mode status=0
+  local check_mode status_mode expected_id status=0
   REPO="self-test/fixture"
   BRANCH="main"
   CHECK_SHA="$(printf 'a%.0s' {1..40})"
@@ -789,7 +789,14 @@ activate_live_check_self_test() (
         case "$check_mode" in
           success|wrong_sha)
             jq -n --arg sha "$CHECK_SHA" --arg name "$REQUIRED_CHECK" --arg mode "$check_mode" '
-              [{total_count:1,check_runs:[{name:$name,head_sha:(if $mode == "wrong_sha" then ("b" * 40) else $sha end),status:"completed",conclusion:"success"}]}]
+              [{total_count:1,check_runs:[{name:$name,head_sha:(if $mode == "wrong_sha" then ("b" * 40) else $sha end),status:"completed",conclusion:"success",app:{id:15368}}]}]
+            ' ;;
+          multi_app)
+            jq -n --arg sha "$CHECK_SHA" --arg name "$REQUIRED_CHECK" '
+              [{total_count:2,check_runs:[
+                {name:$name,head_sha:$sha,status:"completed",conclusion:"success",app:{id:15368}},
+                {name:$name,head_sha:$sha,status:"completed",conclusion:"success",app:{id:42}}
+              ]}]
             ' ;;
           wrong_name)
             jq -n --arg sha "$CHECK_SHA" '[{total_count:1,check_runs:[{name:"different check",head_sha:$sha,status:"completed",conclusion:"success"}]}]' ;;
@@ -815,9 +822,10 @@ activate_live_check_self_test() (
     esac
   }
 
-  for scenario in check_success status_success wrong_name pending failure stale_success collision api_error status_api_error wrong_sha; do
+  for scenario in check_success status_success multi_app wrong_name pending failure stale_success collision api_error status_api_error wrong_sha; do
     case "$scenario" in
       check_success) check_mode=success status_mode=none ;;
+      multi_app) check_mode=multi_app status_mode=none ;;
       status_success) check_mode=none status_mode=success ;;
       wrong_name) check_mode=wrong_name status_mode=none ;;
       pending) check_mode=pending status_mode=none ;;
@@ -832,9 +840,14 @@ activate_live_check_self_test() (
     : > "$RESULTS"
     status=0
     run_activate || status=$?
-    if [[ "$scenario" == check_success || "$scenario" == status_success ]]; then
+    if [[ "$scenario" == check_success || "$scenario" == status_success || "$scenario" == multi_app ]]; then
+      expected_id=""
+      [[ "$scenario" != check_success ]] || expected_id=15368
       [[ "$status" -eq 0 && "$(cat "$calls")" == ruleset-write ]] || {
         echo "self-test failed: activate rejected live $scenario or skipped Ruleset write" >&2; return 1;
+      }
+      [[ "$REQUIRED_CHECK_INTEGRATION_ID" == "$expected_id" ]] || {
+        echo "self-test failed: activate derived the wrong check source for $scenario" >&2; return 1;
       }
     elif [[ "$scenario" == api_error || "$scenario" == status_api_error || "$scenario" == wrong_sha ]]; then
       [[ "$status" -eq 3 && ! -s "$calls" ]] || {
@@ -853,6 +866,7 @@ activate_live_check_self_test() (
     echo "self-test failed: activate CLI accepted an implicit commit SHA" >&2; return 1;
   }
   echo "self-test: activate exact live SUCCESS on explicit SHA; wrong/missing/pending/failed/API-error checks block writes: PASS"
+  echo "self-test: activate derives a check source only from Check Runs of exactly one App: PASS"
 )
 
 bootstrap_idempotency_self_test() (
@@ -988,7 +1002,7 @@ bootstrap_idempotency_self_test() (
 
   REQUIRED_CHECK="consumer CI / linux"
   CHECK_SHA="0123456789abcdef0123456789abcdef01234567"
-  verify_required_check_success() { :; }
+  verify_required_check_success() { REQUIRED_CHECK_INTEGRATION_ID=15368; }
   run_activate > "$tmpdir/activated-report.tsv"
   grep -q $'^SUMMARY\tACTIVE$' "$tmpdir/activated-report.tsv" || {
     echo "self-test failed: activate did not report ACTIVE" >&2; return 1;
@@ -997,10 +1011,53 @@ bootstrap_idempotency_self_test() (
   active_count="$(grep -c '^write:' "$calls")"
   [[ "$active_count" -eq $((first_count + 1)) ]] &&
     jq -e --arg context "$REQUIRED_CHECK" '
-      [.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]?.context] == [$context]
+      [.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]?] ==
+        [{context:$context,integration_id:15368}]
     ' "$ruleset" >/dev/null || {
-      echo "self-test failed: activate did not bind one exact Required Check" >&2; return 1;
+      echo "self-test failed: activate did not bind one exact Required Check with its verified source" >&2; return 1;
     }
+  run_activate > /dev/null
+  [[ "$(grep -c '^write:' "$calls")" -eq "$active_count" ]] || {
+    echo "self-test failed: repeated activate rewrote an already bound Required Check" >&2; return 1;
+  }
+  jq '.rules |= map(if .type == "required_status_checks" then
+    .parameters.required_status_checks[0] |= del(.integration_id) else . end)' "$ruleset" > "$tmpdir/active-no-source.json"
+  cp "$tmpdir/active-no-source.json" "$ruleset"
+  run_activate > /dev/null
+  active_count="$(grep -c '^write:' "$calls")"
+  [[ "$active_count" -eq $((first_count + 2)) ]] &&
+    jq -e '
+      [.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]?.integration_id] == [15368]
+    ' "$ruleset" >/dev/null || {
+      echo "self-test failed: activate did not restore a missing Required Check source" >&2; return 1;
+    }
+  echo "self-test: activate binds the verified check source, restores it when missing, and is inert when bound: PASS"
+
+  REQUIRED_CHECK_INTEGRATION_ID=""
+  jq '.rules |= map(if .type == "required_status_checks" then
+    .parameters.strict_required_status_checks_policy = false else . end)' "$ruleset" > "$tmpdir/active-not-strict.json"
+  cp "$tmpdir/active-not-strict.json" "$ruleset"
+  PHASE="active"
+  auditor
+  plan_from_results > "$tmpdir/active-not-strict-plan.txt"
+  grep -q $'^DRIFT\tlive\trequired_check_policy\t' "$RESULTS" &&
+    ! grep -q $'^DRIFT\tlive\trequired_check\t' "$RESULTS" &&
+    grep -Fq 'PLAN: run apply;' "$tmpdir/active-not-strict-plan.txt" || {
+      echo "self-test failed: strict-only drift was not reported as Required Check policy drift" >&2; return 1;
+    }
+  REQUIRED_CHECK=""
+  run_apply > /dev/null
+  active_count="$(grep -c '^write:' "$calls")"
+  [[ "$active_count" -eq $((first_count + 3)) ]] &&
+    jq -e '
+      [.rules[] | select(.type == "required_status_checks")][0].parameters |
+      .strict_required_status_checks_policy == true and
+      .required_status_checks == [{context:"consumer CI / linux",integration_id:15368}]
+    ' "$ruleset" >/dev/null || {
+      echo "self-test failed: apply did not restore strict while keeping context and source" >&2; return 1;
+    }
+  echo "self-test: strict-only drift plans apply, and apply keeps context and source: PASS"
+
   REQUIRED_CHECK=""
   run_apply > "$tmpdir/active-apply-report.tsv"
   run_bootstrap > "$tmpdir/active-bootstrap-report.tsv"
