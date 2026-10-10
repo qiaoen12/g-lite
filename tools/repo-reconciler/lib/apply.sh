@@ -134,7 +134,7 @@ make_ruleset_payload() {
     fi
   fi
   jq -n --arg name "$name" --arg branch "$branch" --arg check "$check" --arg phase "$phase" \
-    --argjson preserved_check "$preserved_check" \
+    --argjson preserved_check "$preserved_check" --arg integration_id "${REQUIRED_CHECK_INTEGRATION_ID:-}" \
     --argjson desired "$(jq -c '.ruleset' "$MANIFEST")" --slurpfile extras "$extras" '
     ($extras[0] // []) as $extra |
     [
@@ -160,7 +160,9 @@ make_ruleset_payload() {
           [{type:"required_status_checks",parameters:{
             strict_required_status_checks_policy:$desired.strict_required_status_checks_policy,
             do_not_enforce_on_create:$desired.do_not_enforce_on_create,
-            required_status_checks:(if $preserved_check == null then [{context:$check}] else [$preserved_check] end)
+            required_status_checks:(if $preserved_check == null then
+              [{context:$check} + (if $integration_id == "" then {} else {integration_id:($integration_id | tonumber)} end)]
+            else [$preserved_check] end)
           }}]
         else [] end
       ))
@@ -194,6 +196,16 @@ ruleset_phase_is_desired() {
   else
     ruleset_check_is_desired "$file"
   fi
+}
+
+# activate verified the check source on CHECK_SHA; the live binding must carry it.
+ruleset_check_source_is_desired() {
+  local file="$1" phase="$2"
+  [[ "$phase" == active && -n "${REQUIRED_CHECK_INTEGRATION_ID:-}" ]] || return 0
+  jq -e --argjson id "$REQUIRED_CHECK_INTEGRATION_ID" '
+    [.rules[]? | select(.type == "required_status_checks") | .parameters.required_status_checks[]?] as $checks |
+    ($checks | length) == 1 and $checks[0].integration_id == $id
+  ' "$file" >/dev/null
 }
 
 ensure_ruleset_state() {
@@ -236,7 +248,8 @@ ensure_ruleset_state() {
   fi
   if [[ ${#RULESET_IDS[@]} -eq 1 ]] &&
     [[ "$(jq -r '.name // empty' "$RULESET_FILE")" == "$RULESET_NAME" ]] &&
-    ruleset_phase_is_desired "$RULESET_FILE" "$phase"; then
+    ruleset_phase_is_desired "$RULESET_FILE" "$phase" &&
+    ruleset_check_source_is_desired "$RULESET_FILE" "$phase"; then
     echo "APPLY: Ruleset '$RULESET_NAME' already satisfies $phase"
     return 0
   fi
